@@ -7,6 +7,16 @@ export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
+      dedupe: [
+        '@firebase/app',
+        '@firebase/component',
+        '@firebase/auth',
+        '@firebase/firestore',
+        '@firebase/util',
+        'firebase',
+        'react',
+        'react-dom',
+      ],
       alias: {
         '@': path.resolve(import.meta.dirname || process.cwd(), '.'),
       },

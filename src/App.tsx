@@ -205,10 +205,13 @@ export default function App() {
   const [featuredIndex, setFeaturedIndex] = useState<number>(0);
   const [pendingSharedDraft, setPendingSharedDraft] = useState<SharedReceiptDraft | null>(null);
 
-  // Firebase Auth & Portal Session Gate State
+  // Firebase Auth & Portal Session Gate State (separated initialization, auth check, and visual loading)
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [portalInitialized,setPortalInitialized]=useState(false);
+  const [portalInitialized, setPortalInitialized] = useState(false);
   usePortalInitialized(portalInitialized);
+  const [sessionChecking, setSessionChecking] = useState<boolean>(true);
+  const [bootApiError, setBootApiError] = useState<string | null>(null);
+  const [authSessionNotice, setAuthSessionNotice] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   useEffect(() => {
@@ -526,22 +529,26 @@ export default function App() {
   }, [freights]);
 
   // 0. Restore & Validate Corporate Session and System Config from Server
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const cfg = await apiFetchSystemConfig();
-        if (mounted && cfg?.systemConfig) {
-          setSystemConfig(cfg.systemConfig);
-        }
-      } catch (err) {
-        console.debug('System config load info:', err);
+  const verifySessionAndConfig = React.useCallback(async (isRetry = false) => {
+    setSessionChecking(true);
+    if (isRetry) {
+      setBootApiError(null);
+    }
+    try {
+      const [cfgResult, sessionResult] = await Promise.allSettled([
+        apiFetchSystemConfig(),
+        apiFetchSession(),
+      ]);
+
+      if (cfgResult.status === 'fulfilled' && cfgResult.value?.systemConfig) {
+        setSystemConfig(cfgResult.value.systemConfig);
       }
 
-      try {
-        const sessionRes = await apiFetchSession();
-        if (!mounted) return;
+      if (sessionResult.status === 'fulfilled') {
+        const sessionRes = sessionResult.value;
+        setBootApiError(null);
         if (sessionRes.authenticated && sessionRes.user) {
+          setAuthSessionNotice(null);
           if (sessionRes.systemConfig) {
             setSystemConfig(sessionRes.systemConfig);
           }
@@ -575,37 +582,52 @@ export default function App() {
               ) {
                 setActiveSection(targetSec);
               }
+            } else {
+              const pathSec = getSectionFromPathname(window.location.pathname);
+              if (pathSec && (pathSec === 'inicio' || pathSec === 'perfil' || pathSec === 'ajuda' || hasPagePermission(serverUser, pathSec))) {
+                setActiveSection(pathSec);
+              } else {
+                setActiveSection(permittedHome(serverUser) as MenuSection);
+              }
             }
           } catch {
             // ignore
           }
 
-          if (
-            serverUser.accessLevel === 'ADMINISTRADOR'
-          ) {
-            try {
-              const adminData = await apiFetchAdminAccessRequests();
-              if (mounted && adminData.ok) {
-                setPendingAccessRequestsCount(adminData.pendingCount);
-                setEmployees(adminData.accounts);
-              }
-            } catch {
-              // ignore
-            }
+          if (serverUser.accessLevel === 'ADMINISTRADOR') {
+            void apiFetchAdminAccessRequests()
+              .then((adminData) => {
+                if (adminData.ok) {
+                  setPendingAccessRequestsCount(adminData.pendingCount);
+                  setEmployees(adminData.accounts);
+                }
+              })
+              .catch(() => {});
           }
         } else {
           setIsAuthenticated(false);
         }
-      } catch (err) {
-        console.debug('Server session check info:', err);
-      } finally {
-        if(mounted)setPortalInitialized(true);
+      } else {
+        setIsAuthenticated(false);
+        setBootApiError(
+          'Não foi possível comunicar com o servidor para verificar a sessão. Verifique sua conexão e tente novamente.'
+        );
       }
-    })();
-    return () => {
-      mounted = false;
-    };
+    } catch (err) {
+      console.debug('Server session check info:', err);
+      setIsAuthenticated(false);
+      setBootApiError(
+        'Não foi possível comunicar com o servidor para verificar a sessão. Verifique sua conexão e tente novamente.'
+      );
+    } finally {
+      setSessionChecking(false);
+      setPortalInitialized(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void verifySessionAndConfig(false);
+  }, [verifySessionAndConfig]);
 
   // Synchronize URL pathname & browser Back button (popstate) in standalone PWA & browser
   useEffect(() => {
@@ -688,12 +710,19 @@ export default function App() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const timer=setInterval(async()=>{
-      try {const session=await apiFetchSession(); if(session.authenticated === false) setIsAuthenticated(false);}
-      catch { /* A temporary connection failure does not revoke the server session. */ }
-    },15000);
-    return()=>clearInterval(timer);
-  },[isAuthenticated]);
+    const timer = setInterval(async () => {
+      try {
+        const session = await apiFetchSession();
+        if (session.authenticated === false) {
+          setIsAuthenticated(false);
+          setAuthSessionNotice('Sua sessão expirou ou foi encerrada. Faça login novamente para continuar.');
+        }
+      } catch {
+        /* A temporary connection failure does not revoke the server session. */
+      }
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated]);
   useEffect(()=>{
     if(!isAuthenticated || !hasPagePermission(currentUser,'solicitacoes')) {setRequests([]);return;}
     let cancelled=false;
@@ -1265,71 +1294,75 @@ export default function App() {
     const emp =
       userOrPayload && 'user' in userOrPayload ? userOrPayload.user : (userOrPayload as Employee);
     if (!emp || !emp.id) return;
+    setBootApiError(null);
+    setAuthSessionNotice(null);
     // Called only after server-validated authentication.
     authenticatedPanelRelease.current?.();
     authenticatedPanelRelease.current = portalLoading.begin();
     setPreparingAuthenticatedPanel(true);
     try {
-
-    const resolvedConfig =
-      userOrPayload && 'user' in userOrPayload ? userOrPayload.systemConfig : configArg;
-    if (resolvedConfig) {
-      setSystemConfig(resolvedConfig);
-    }
-    if (
-      userOrPayload &&
-      'user' in userOrPayload &&
-      typeof userOrPayload.pendingAccessRequestsCount === 'number'
-    ) {
-      setPendingAccessRequestsCount(userOrPayload.pendingAccessRequestsCount);
-    }
-
-    setEmployees((prev) => {
-      const cleanPrev = prev.filter((e) => e && typeof e === 'object' && e.id);
-      const exists = cleanPrev.some((e) => e.id === emp.id);
-      return exists
-        ? cleanPrev.map((e) => (e.id === emp.id ? { ...e, ...emp } : e))
-        : [emp, ...cleanPrev];
-    });
-    setCurrentUserId(emp.id);
-    setIsAuthenticated(true);
-
-    let nextSection: MenuSection = permittedHome(emp) as MenuSection;
-    try {
-      const intended = sessionStorage.getItem('rodovar_intended_section_v1') as MenuSection | null;
-      if (intended) {
-        sessionStorage.removeItem('rodovar_intended_section_v1');
-        if (
-          intended === 'inicio' ||
-          intended === 'perfil' ||
-          intended === 'ajuda' ||
-          hasPagePermission(emp, intended)
-        ) {
-          nextSection = intended;
-        }
+      const resolvedConfig =
+        userOrPayload && 'user' in userOrPayload ? userOrPayload.systemConfig : configArg;
+      if (resolvedConfig) {
+        setSystemConfig(resolvedConfig);
       }
-    } catch {
-      // ignore
-    }
-    setActiveSection(nextSection);
+      if (
+        userOrPayload &&
+        'user' in userOrPayload &&
+        typeof userOrPayload.pendingAccessRequestsCount === 'number'
+      ) {
+        setPendingAccessRequestsCount(userOrPayload.pendingAccessRequestsCount);
+      }
 
-    if (emp.accessLevel === 'ADMINISTRADOR') {
+      setEmployees((prev) => {
+        const cleanPrev = prev.filter((e) => e && typeof e === 'object' && e.id);
+        const exists = cleanPrev.some((e) => e.id === emp.id);
+        return exists
+          ? cleanPrev.map((e) => (e.id === emp.id ? { ...e, ...emp } : e))
+          : [emp, ...cleanPrev];
+      });
+      setCurrentUserId(emp.id);
+      setIsAuthenticated(true);
+
+      let nextSection: MenuSection = permittedHome(emp) as MenuSection;
       try {
-        const adminData = await apiFetchAdminAccessRequests();
-        if(adminData.ok){setPendingAccessRequestsCount(adminData.pendingCount);
-        setEmployees(adminData.accounts);}
+        const intended = sessionStorage.getItem('rodovar_intended_section_v1') as MenuSection | null;
+        if (intended) {
+          sessionStorage.removeItem('rodovar_intended_section_v1');
+          if (
+            intended === 'inicio' ||
+            intended === 'perfil' ||
+            intended === 'ajuda' ||
+            hasPagePermission(emp, intended)
+          ) {
+            nextSection = intended;
+          }
+        }
       } catch {
         // ignore
       }
-    }
+      setActiveSection(nextSection);
 
-    await recordAuditLog(
-      'LOGIN_CREDENCIAL_CORPORATIVA',
-      `Acesso autenticado via servidor (${emp.email} • ${emp.department}).`,
-      emp.name,
-      emp.accessLevel
-    );
-    } finally { setPreparingAuthenticatedPanel(false); }
+      if (emp.accessLevel === 'ADMINISTRADOR') {
+        void apiFetchAdminAccessRequests()
+          .then((adminData) => {
+            if (adminData.ok) {
+              setPendingAccessRequestsCount(adminData.pendingCount);
+              setEmployees(adminData.accounts);
+            }
+          })
+          .catch(() => {});
+      }
+
+      void recordAuditLog(
+        'LOGIN_CREDENCIAL_CORPORATIVA',
+        `Acesso autenticado via servidor (${emp.email} • ${emp.department}).`,
+        emp.name,
+        emp.accessLevel
+      );
+    } finally {
+      setPreparingAuthenticatedPanel(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -3211,6 +3244,30 @@ export default function App() {
             >
               {isUpdating ? 'Atualizando...' : 'Atualizar agora'}
             </button>
+          </div>
+        )}
+        {bootApiError && (
+          <div
+            role="alert"
+            className="bg-[#1B1214] border-b border-[#E5252A]/60 px-4 py-2.5 text-xs text-white flex flex-wrap items-center justify-center gap-3 z-50"
+          >
+            <span className="font-semibold text-[#FCA5A5]">{bootApiError}</span>
+            <button
+              type="button"
+              onClick={() => void verifySessionAndConfig(true)}
+              disabled={sessionChecking}
+              className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold px-3 py-1 rounded-lg cursor-pointer transition disabled:opacity-60"
+            >
+              {sessionChecking ? 'Verificando...' : 'Tentar novamente'}
+            </button>
+          </div>
+        )}
+        {authSessionNotice && !bootApiError && (
+          <div
+            role="status"
+            className="bg-[#15191D] border-b border-[#FFD400]/50 px-4 py-2 text-xs text-[#FFD400] font-semibold text-center z-50"
+          >
+            {authSessionNotice}
           </div>
         )}
         {pendingSharedDraft && (

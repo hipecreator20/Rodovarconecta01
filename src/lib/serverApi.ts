@@ -88,6 +88,15 @@ export function resolveAvatarUrl(
   return withRevisionParam(defaultAvatarBase, rev);
 }
 
+function createTimeoutSignal(timeoutMs = 10000): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timer),
+  };
+}
+
 export async function apiFetchSession(): Promise<{
   authenticated: boolean;
   user?: Employee;
@@ -95,23 +104,37 @@ export async function apiFetchSession(): Promise<{
   sessionId?: string;
   systemConfig?: SystemConfig;
   pendingAccessRequestsCount?: number;
+  apiError?: string;
 }> {
   const { sessionId } = loadStoredAuthTokens();
   const headers: Record<string, string> = {};
   if (sessionId) headers['X-Rodovar-Session'] = sessionId;
 
-  const res = await fetch('/api/auth/session', {
-    method: 'GET',
-    credentials: 'include',
-    headers,
-  });
-  const data = await res.json();
-  if (res.ok && data.authenticated && data.csrfToken && data.sessionId) {
-    setAuthTokens(data.csrfToken, data.sessionId);
-  } else if (res.status === 401 || res.status === 403) {
-    setAuthTokens(null, null);
+  const { signal, clear } = createTimeoutSignal(10000);
+  try {
+    const res = await fetch('/api/auth/session', {
+      method: 'GET',
+      credentials: 'include',
+      headers,
+      signal,
+    });
+    const data = await res.json().catch(() => null);
+    if (!data || typeof data !== 'object') {
+      if (res.status === 401 || res.status === 403) {
+        setAuthTokens(null, null);
+        return { authenticated: false };
+      }
+      throw new Error(`Resposta inválida do servidor (HTTP ${res.status}).`);
+    }
+    if (res.ok && data.authenticated && data.csrfToken && data.sessionId) {
+      setAuthTokens(data.csrfToken, data.sessionId);
+    } else if (res.status === 401 || res.status === 403) {
+      setAuthTokens(null, null);
+    }
+    return data;
+  } finally {
+    clear();
   }
-  return data;
 }
 
 export async function apiCheckLockStatus(identifier: string): Promise<{
@@ -121,14 +144,24 @@ export async function apiCheckLockStatus(identifier: string): Promise<{
   remainingSeconds: number;
   message?: string;
 }> {
-  const res = await fetch(
-    `/api/auth/lock-status?identifier=${encodeURIComponent(identifier.trim())}`,
-    {
-      method: 'GET',
-      credentials: 'include',
+  const { signal, clear } = createTimeoutSignal(6000);
+  try {
+    const res = await fetch(
+      `/api/auth/lock-status?identifier=${encodeURIComponent(identifier.trim())}`,
+      {
+        method: 'GET',
+        credentials: 'include',
+        signal,
+      }
+    );
+    const data = await res.json().catch(() => null);
+    if (!data || typeof data !== 'object') {
+      return { locked: false, blockedUntil: null, serverNow: Date.now(), remainingSeconds: 0 };
     }
-  );
-  return res.json();
+    return data;
+  } finally {
+    clear();
+  }
 }
 
 export async function apiLogin(
@@ -151,21 +184,27 @@ export async function apiLogin(
   remainingAttempts?: number;
   approvalStatus?: AccountApprovalStatus;
 }> {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier, password, rememberMe }),
-  });
-  const data = await res.json();
-  if (res.ok && data.ok && data.csrfToken && data.sessionId) {
-    setAuthTokens(data.csrfToken, data.sessionId);
+  const { signal, clear } = createTimeoutSignal(12000);
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier, password, rememberMe }),
+      signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok && data.csrfToken && data.sessionId) {
+      setAuthTokens(data.csrfToken, data.sessionId);
+    }
+    return {
+      ...data,
+      ok: Boolean(res.ok && data.ok),
+      status: res.status,
+    };
+  } finally {
+    clear();
   }
-  return {
-    ...data,
-    ok: Boolean(res.ok && data.ok),
-    status: res.status,
-  };
 }
 
 export async function apiRequestAccess(payload: {
@@ -381,11 +420,21 @@ export async function apiFetchSystemConfig(): Promise<{
   systemConfig: SystemConfig;
   defaults: SystemConfig;
 }> {
-  const res = await fetch('/api/system-config', {
-    method: 'GET',
-    credentials: 'include',
-  });
-  return res.json();
+  const { signal, clear } = createTimeoutSignal(10000);
+  try {
+    const res = await fetch('/api/system-config', {
+      method: 'GET',
+      credentials: 'include',
+      signal,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || typeof data !== 'object') {
+      throw new Error(`Falha ao carregar configuração (HTTP ${res.status}).`);
+    }
+    return data;
+  } finally {
+    clear();
+  }
 }
 
 export async function apiUploadSystemConfigImage(

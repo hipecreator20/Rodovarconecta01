@@ -22,19 +22,41 @@ import {
   serverTimestamp,
   getDocs,
 } from 'firebase/firestore';
-// The previous AI Studio project configuration is intentionally not bundled.
-// These legacy exports remain only for compatibility with dormant code paths;
-// the operational portal uses its server session and the new Firebase test
-// adapter uses a separate named app connected explicitly to local emulators.
+import firebaseAppletConfig from '../../firebase-applet-config.json';
+
 const legacyDisabledConfig = {
-  projectId: 'demo-rodovar-conecta-disabled',
-  apiKey: 'disabled-local-placeholder',
-  authDomain: 'demo-rodovar-conecta-disabled.invalid',
+  projectId: firebaseAppletConfig?.projectId || 'demo-rodovar-conecta-disabled',
+  apiKey: firebaseAppletConfig?.apiKey || 'disabled-local-placeholder',
+  authDomain: firebaseAppletConfig?.authDomain || 'demo-rodovar-conecta-disabled.invalid',
+  appId: firebaseAppletConfig?.appId,
+  storageBucket: firebaseAppletConfig?.storageBucket,
+  messagingSenderId: firebaseAppletConfig?.messagingSenderId,
 };
 
 const app = initializeApp(legacyDisabledConfig);
-export const db = getFirestore(app);
-export const auth = getAuth(app);
+
+function initSafeFirestore() {
+  try {
+    return firebaseAppletConfig?.firestoreDatabaseId
+      ? getFirestore(app, firebaseAppletConfig.firestoreDatabaseId)
+      : getFirestore(app);
+  } catch (err) {
+    console.warn('Firestore initialization fallback:', err);
+    return {} as ReturnType<typeof getFirestore>;
+  }
+}
+
+function initSafeAuth() {
+  try {
+    return getAuth(app);
+  } catch (err) {
+    console.warn('Firebase Auth initialization fallback:', err);
+    return { currentUser: null } as unknown as ReturnType<typeof getAuth>;
+  }
+}
+
+export const db = initSafeFirestore();
+export const auth = initSafeAuth();
 export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {

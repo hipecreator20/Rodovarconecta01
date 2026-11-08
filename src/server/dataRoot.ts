@@ -33,12 +33,13 @@ function seedFromEmbeddedArchive(tmpDataDir: string): void {
  *   embedded seed archive on read-only serverless filesystems (Vercel / AWS Lambda).
  */
 export function resolveDataRoot(): string {
-  if (process.env.RODOVAR_DATA_ROOT && process.env.RODOVAR_DATA_ROOT.trim() !== '') {
-    return process.env.RODOVAR_DATA_ROOT.trim();
-  }
-
   const cwd = process.cwd();
   const isVercel = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  const configuredRoot = process.env.RODOVAR_DATA_ROOT?.trim();
+
+  if (configuredRoot && !isVercel) {
+    return configuredRoot;
+  }
 
   if (!isVercel) {
     try {
@@ -55,8 +56,12 @@ export function resolveDataRoot(): string {
     return cachedServerlessRoot;
   }
 
-  const tmpRoot = path.join(os.tmpdir(), 'rodovar-conecta-runtime-v2');
-  const tmpDataDir = path.join(tmpRoot, 'data');
+  let candidateRoot = path.join(os.tmpdir(), 'rodovar-conecta-runtime-v2');
+  if (configuredRoot && configuredRoot.startsWith(os.tmpdir())) {
+    candidateRoot = configuredRoot;
+  }
+
+  const tmpDataDir = path.join(candidateRoot, 'data');
   const bundledDataDir = path.join(cwd, 'data');
 
   try {
@@ -71,7 +76,7 @@ export function resolveDataRoot(): string {
     // Best-effort copy in restricted serverless environments
   }
 
-  cachedServerlessRoot = tmpRoot;
-  return tmpRoot;
+  cachedServerlessRoot = candidateRoot;
+  return candidateRoot;
 }
 

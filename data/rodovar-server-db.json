@@ -646,7 +646,44 @@
       "lastFailureAt": 0
     }
   },
-  "sessions": {},
+  "sessions": {
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ2NzgyODAsImUiOjE3OTUzNzQyNzgyODAsIm4iOiJjMzkzZWI5MjM3NGQwNjM1In0.Z3RL-k-9xz3hmUGjLkpXCkT8kliFWt7Kb-QSSP-inqU": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ2NzgyODAsImUiOjE3OTUzNzQyNzgyODAsIm4iOiJjMzkzZWI5MjM3NGQwNjM1In0.Z3RL-k-9xz3hmUGjLkpXCkT8kliFWt7Kb-QSSP-inqU",
+      "csrfToken": "7779d45182ca2409abeec65fea4010427773a632e8c41611",
+      "userId": "emp-admin-master",
+      "createdAt": 1794164678280,
+      "expiresAt": 1795374278280,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ2OTgyNjEsImUiOjE3OTUzNzQyOTgyNjEsIm4iOiIwYTljYzRkMTU1MWNhMzE2In0.-cvMztqsFkuorK7nXOA7AcXp2Acsc0NVKmny9bTC44U": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ2OTgyNjEsImUiOjE3OTUzNzQyOTgyNjEsIm4iOiIwYTljYzRkMTU1MWNhMzE2In0.-cvMztqsFkuorK7nXOA7AcXp2Acsc0NVKmny9bTC44U",
+      "csrfToken": "7decc498886cfc495fbd847465caacd39f3fd9ddd02d61ac",
+      "userId": "emp-admin-master",
+      "createdAt": 1794164698261,
+      "expiresAt": 1795374298261,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ3MTU1NDYsImUiOjE3OTUzNzQzMTU1NDYsIm4iOiI0ZDJiNWZhMWFkNjFhMzMzIn0.x5IAreXlRPQAo2TtE7gky57BgtSARC1AAiIqeyl20-0": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQxNjQ3MTU1NDYsImUiOjE3OTUzNzQzMTU1NDYsIm4iOiI0ZDJiNWZhMWFkNjFhMzMzIn0.x5IAreXlRPQAo2TtE7gky57BgtSARC1AAiIqeyl20-0",
+      "csrfToken": "c6c2258b57ad59ede366e768a846140e9a8e5859c9d88df4",
+      "userId": "emp-admin-master",
+      "createdAt": 1794164715546,
+      "expiresAt": 1795374315546,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MTY0NzE1NjMyLCJlIjoxNzk1Mzc0MzE1NjMyLCJuIjoiZmQ3MDYyNGE3MDFmZGVmOSJ9.WMEws_kjDX-D3e2iuI9pu3xoKWODOEBBoJD76Kgkpzg": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MTY0NzE1NjMyLCJlIjoxNzk1Mzc0MzE1NjMyLCJuIjoiZmQ3MDYyNGE3MDFmZGVmOSJ9.WMEws_kjDX-D3e2iuI9pu3xoKWODOEBBoJD76Kgkpzg",
+      "csrfToken": "ef299845f172e9f2245da4f4452041f7945c853e2782a5fd",
+      "userId": "emp-2",
+      "createdAt": 1794164715632,
+      "expiresAt": 1795374315632,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    }
+  },
   "passwordResetTokens": [],
   "accessDecisions": [
     {
@@ -765,6 +802,72 @@
     }
   ],
   "auditLogs": [
+    {
+      "id": "aud-1794166530464-12d650",
+      "timestampIso": "2026-11-08T19:35:30.464Z",
+      "timestampFormatted": "08/11/2026, 19:35:30",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (administrador@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794166528850-93c959",
+      "timestampIso": "2026-11-08T19:35:28.849Z",
+      "timestampFormatted": "08/11/2026, 19:35:28",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794164715712-a9a5f2",
+      "timestampIso": "2026-11-08T19:05:15.712Z",
+      "timestampFormatted": "08/11/2026, 19:05:15",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (vitor@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794164715610-c76a3a",
+      "timestampIso": "2026-11-08T19:05:15.610Z",
+      "timestampFormatted": "08/11/2026, 19:05:15",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794164698318-0e257e",
+      "timestampIso": "2026-11-08T19:04:58.318Z",
+      "timestampFormatted": "08/11/2026, 19:04:58",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794164678338-264aaa",
+      "timestampIso": "2026-11-08T19:04:38.337Z",
+      "timestampFormatted": "08/11/2026, 19:04:38",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
     {
       "id": "aud-1794163538272-070e63",
       "timestampIso": "2026-11-08T18:45:38.272Z",

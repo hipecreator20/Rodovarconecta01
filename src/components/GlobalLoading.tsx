@@ -26,7 +26,11 @@ export function usePortalInitialized(ready: boolean) {
 /** Release a successful-login task only after the prepared panel commits. */
 export function useAuthenticatedPanelLoading(preparing: boolean, release: {current: (() => void) | null}) {
   useEffect(() => {
-    if (!preparing) { release.current?.(); release.current = null; }
-  }, [preparing, release]);
+    if (!preparing && release.current) {
+      const releaseFn = release.current;
+      release.current = null;
+      releaseFn();
+    }
+  });
   useEffect(() => () => { release.current?.(); release.current = null; }, [release]);
 }

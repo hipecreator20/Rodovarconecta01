@@ -1744,9 +1744,8 @@ export function createExpressApp(): express.Express {
     }
 
     try {
-      const { verifyFirebasePortalIdentity } = await import(
-        './src/server/firebase-test/portalIdentity.ts'
-      );
+      const emulatorPortalModule = './src/server/firebase-test/' + 'portalIdentity.ts';
+      const { verifyFirebasePortalIdentity } = await import(emulatorPortalModule);
       const identity = await verifyFirebasePortalIdentity(req.headers.authorization);
       const user = dbState.users.find((candidate) => candidate.id === identity.employeeId);
 
