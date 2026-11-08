@@ -766,6 +766,50 @@
   ],
   "auditLogs": [
     {
+      "id": "aud-1794163538272-070e63",
+      "timestampIso": "2026-11-08T18:45:38.272Z",
+      "timestampFormatted": "08/11/2026, 18:45:38",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (vitor@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794163538255-cbfe19",
+      "timestampIso": "2026-11-08T18:45:38.255Z",
+      "timestampFormatted": "08/11/2026, 18:45:38",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (vitor@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794163538142-372a85",
+      "timestampIso": "2026-11-08T18:45:38.142Z",
+      "timestampFormatted": "08/11/2026, 18:45:38",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (administrador@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794163538092-3e354c",
+      "timestampIso": "2026-11-08T18:45:38.092Z",
+      "timestampFormatted": "08/11/2026, 18:45:38",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
       "id": "aud-1794160842381-e49e1b",
       "timestampIso": "2026-11-08T18:00:42.381Z",
       "timestampFormatted": "08/11/2026, 18:00:42",

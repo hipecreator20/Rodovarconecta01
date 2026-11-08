@@ -42,5 +42,12 @@
     "eslint": "^10.13.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "overrides": {
+    "jose": "^4.15.9"
   }
 }
+

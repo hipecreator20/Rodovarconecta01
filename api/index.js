@@ -9,16 +9,24 @@ var __export = (target, all) => {
 };
 
 // src/server/firebase-test/runtime.ts
-import { initializeApp, getApps } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-import { getFirestore } from "firebase-admin/firestore";
+import { createRequire } from "node:module";
 function assertEmulatorEnvironment(env = process.env) {
-  if (env.RODOVAR_FIREBASE_ENV !== "emulator" || env.GCLOUD_PROJECT !== TEST_PROJECT || env.NODE_ENV === "production") throw Error("Integra\xE7\xE3o de testes bloqueada: ambiente emulador expl\xEDcito obrigat\xF3rio.");
-  if (env.FIREBASE_AUTH_EMULATOR_HOST !== "127.0.0.1:9099" || env.FIRESTORE_EMULATOR_HOST !== "127.0.0.1:8080") throw Error("Os emuladores devem usar apenas os endere\xE7os locais previstos.");
-  if (env.VERCEL || env.GOOGLE_APPLICATION_CREDENTIALS) throw Error("Credenciais de produ\xE7\xE3o ou Vercel n\xE3o s\xE3o permitidas neste ambiente de testes.");
+  if (env.RODOVAR_FIREBASE_ENV !== "emulator" || env.GCLOUD_PROJECT !== TEST_PROJECT || env.NODE_ENV === "production") {
+    throw Error("Integra\xE7\xE3o de testes bloqueada: ambiente emulador expl\xEDcito obrigat\xF3rio.");
+  }
+  if (env.FIREBASE_AUTH_EMULATOR_HOST !== "127.0.0.1:9099" || env.FIRESTORE_EMULATOR_HOST !== "127.0.0.1:8080") {
+    throw Error("Os emuladores devem usar apenas os endere\xE7os locais previstos.");
+  }
+  if (env.VERCEL || env.GOOGLE_APPLICATION_CREDENTIALS) {
+    throw Error("Credenciais de produ\xE7\xE3o ou Vercel n\xE3o s\xE3o permitidas neste ambiente de testes.");
+  }
 }
 function firebaseTestRuntime() {
   assertEmulatorEnvironment();
+  const req = createRequire(import.meta.url);
+  const { initializeApp, getApps } = req("firebase-admin/app");
+  const { getAuth } = req("firebase-admin/auth");
+  const { getFirestore } = req("firebase-admin/firestore");
   const app = getApps().find((a) => a.name === TEST_PROJECT) || initializeApp({ projectId: TEST_PROJECT }, TEST_PROJECT);
   return { auth: getAuth(app), db: getFirestore(app) };
 }
