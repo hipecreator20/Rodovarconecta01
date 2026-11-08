@@ -5,8 +5,8 @@
       "name": "Priscila Sousa dos Santos",
       "email": "priscila.santos@rodovar.com.br",
       "login": "priscila.santos@rodovar.com.br",
-      "passwordHash": "d346c2cff0d9b360d95ab2ffd778c5e6a34501cba9d37dbc8f50217efdd71b751b23df0b723b65cd8e2b63eab5f12c3c8c493d7cf44fe6e022ae5c351345670e",
-      "passwordSalt": "9590ca69342fb544dce4df19100968a4",
+      "passwordHash": "9ce98f2b905720f50dd4a2c9d8c7a7f9a20b8f425aaf3c4c9213b80bfb26779396824039886c26735ce87b5ae20920052cda9ce5f7c28ca55b3ea445e144b82f",
+      "passwordSalt": "8c9671c9edd6c3908e00804f72a62f3b",
       "mustChangePassword": true,
       "roleTitle": "EXPEDICAO",
       "department": "Logística",
@@ -33,8 +33,8 @@
       "name": "Elinete",
       "email": "elinete@rodovar.com.br",
       "login": "elinete@rodovar.com.br",
-      "passwordHash": "f1e67abd8cad00a6b6051875b95376070a79abcab42a7f14d7b0ad1411af9a11dad4a9b9cd3e542b637a2e5a8ff05975540841177d5e08ffc2e358df22515bcf",
-      "passwordSalt": "4559991c3c22da2fc1157b02ecd4000f",
+      "passwordHash": "4959f412337c9a1cce13a6d1aa2e43fa9accd58a408da5025fe8cafca9693f1499e2b1faaa0090477f5c664ec9c629513a8e383db62c93e5abdd37c7d11110ae",
+      "passwordSalt": "1029d2f875498b75488567f23c502d15",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -61,8 +61,8 @@
       "name": "Suellen Aranda",
       "email": "suellen.aranda@rodovar.com.br",
       "login": "suellen.aranda@rodovar.com.br",
-      "passwordHash": "6bb2170d0fcc9ed6b1ae2dabb97eec892900dcdd21dd70fac048aaecaeff663e8b45f5f28522fb863793a95e50ed06286bfa3f6049e5d628bb7b47a2ddb8f004",
-      "passwordSalt": "0b0f9cb25c717cc5bbed4fcab897c62b",
+      "passwordHash": "642d1d15ad089e47cd174642ce5f73c031ab8925c9c4a258ee600b8c1220955096a51e2c6144aa5f356ed3f3f7ad9b0b1cec87777cd587ccf4f1755c217fe4c9",
+      "passwordSalt": "d806d9276c33e4ed68e077f3761a0ffd",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -89,8 +89,8 @@
       "name": "Mariane",
       "email": "mariane@rodovar.com.br",
       "login": "mariane@rodovar.com.br",
-      "passwordHash": "26357123dfdd9e93b0925de5f9eb972063d61d47b635cef361a4d2184834922bf27cc1c1f2c25ac6208dc1a469771f6227ee4157356564b1cd1d75c74e0c3020",
-      "passwordSalt": "94574cfc0140995917aaf33e7e05d556",
+      "passwordHash": "f7db71492022a8a4331035874b201cf4f5bb2faa609a1e78a47f8df0d859f5839734e89185e9a694f1e0eae474f0276812ab0b2c990978c75606457f317fd610",
+      "passwordSalt": "640262afa27050c6f7f4359180930796",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -117,8 +117,8 @@
       "name": "Administrador Geral RODOVAR",
       "email": "administrador@rodovar.com.br",
       "login": "administrador@rodovar.com.br",
-      "passwordHash": "d729c0207fb0f8aa92e13a4937352e3a907e911a5798516dd14905b7b9c975be1ab043e4aeff7da73d27f066b82e0b9ccbc4c5f56ee2b562f27599247d9d42da",
-      "passwordSalt": "36b47976ad7989ec3923bd0391c4c247",
+      "passwordHash": "78bf34f6aa65bd410a7c22c0e6f6b1ad135b186da5c5bc0e8641e1290294fe33d217e1695c58367cc582a24ca90622f1198f429d2edfe411befadf2073a9253c",
+      "passwordSalt": "1fe5dd595297f922a3b0ce53375e0d62",
       "mustChangePassword": false,
       "roleTitle": "Administrador Geral do Portal",
       "department": "Administrativo",
@@ -152,15 +152,16 @@
         "fretes_transferir",
         "fretes_cancelar",
         "financeiro_confirmar"
-      ]
+      ],
+      "rosterActivationVersion": 1
     },
     {
       "id": "emp-1",
       "name": "Monica Nery",
       "email": "monica.nery@rodovar.com.br",
       "login": "monica.nery@rodovar.com.br",
-      "passwordHash": "51172f57fb0f4e0c4dc497143950d004de19198bbc74d37eb3fe2b12944a6a31dd31107b09afb6f63f2cdc6782373db0274a0e96111b134f9db57c3366849d1d",
-      "passwordSalt": "19aded1bbe00d3f3bf172a154ebe72e7",
+      "passwordHash": "1b3fbcd12b62aa18ae258185194bde0147457c5c854dfa4e21353c96058ce3ed4bf4a847385b810f0b7ccfcb6f3f7163652246fb749f54abafd906197e03e326",
+      "passwordSalt": "925f6d23868c5ee649a6ad495dc33f29",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -188,8 +189,8 @@
       "name": "Vitor",
       "email": "vitor@rodovar.com.br",
       "login": "vitor@rodovar.com.br",
-      "passwordHash": "433e38f59617c33f44947238b560ceb75222f133e2c9d52e1c9e15ffad1c2c1e9e831fba35fb5e85534370184b28c5910ea8a2d13c402062aeac17377aff0c74",
-      "passwordSalt": "b186d24d031431c39ae75779416d527b",
+      "passwordHash": "31291d357b75fdd8160b7ef250d6c16ffd586a9cff57563400782119057453837d8cfdd92f4941cad1ceab16f91ff3322a7632475af3c9408271a299f132b3a0",
+      "passwordSalt": "d31faccdb8b66c76d9b8c5aa33d751da",
       "mustChangePassword": true,
       "roleTitle": "DIRETORIA",
       "department": "Diretoria",
@@ -226,8 +227,8 @@
       "name": "Juliane Vitória Silva de Aquino",
       "email": "juliane.aquino@rodovar.com.br",
       "login": "juliane.aquino@rodovar.com.br",
-      "passwordHash": "9d195fd21fcf7883d9c99656fbe98172ce3173fd5f05cc01c5d69be93e17304514ed9cb8a4421df3975f0b016cf5448cdaa8188e6d198d498c4152690ad73d04",
-      "passwordSalt": "68909bc5e9c91aa0fc49507c7eaf4c0b",
+      "passwordHash": "53a20e10833155b3d186ffc20690543fd3ec53ad570410d6ca92b7a3f531adc64a8b87e3fe308a0f894acaed04a342c2316388156bccc64a9df5715e8b67b3dc",
+      "passwordSalt": "0dffc97e03f927fbf227ba8d9b40ab14",
       "mustChangePassword": true,
       "roleTitle": "RH",
       "department": "Recursos Humanos",
@@ -255,8 +256,8 @@
       "name": "Jairo Bahia dos Santos e Santos",
       "email": "jairo.bahia@rodovar.com.br",
       "login": "jairo.bahia@rodovar.com.br",
-      "passwordHash": "26723bcfe32445944df9a1601cc41ff28928687c878cd1d825df405d29e4e5af2a8fb344b50df702853a9a4cdbcbf18cd21793dd0284b231779178440f533a0b",
-      "passwordSalt": "fb7ebf05c962d637609c3a09d69e387f",
+      "passwordHash": "4fed934b56286646e8f287f38023d6ee45050013518ddf34672782aaa8a5f984acdad5af638e2ad30f7e7fc8a51b31a14fef261b61cfe050ad70332923162c7e",
+      "passwordSalt": "e6622e0959771dcdebff2ad2f030ab47",
       "mustChangePassword": true,
       "roleTitle": "MONITORAMENTO",
       "department": "Logística",
@@ -293,8 +294,8 @@
       "name": "Ana Caroline Araújo Xavier Dia",
       "email": "ana.caroline@rodovar.com.br",
       "login": "ana.caroline@rodovar.com.br",
-      "passwordHash": "3c09b201ac104ad2e25c836e93c452456b8cd5c38e286fe3a0d4c3e27cdbc3478f1b05df9865ccb551d45358cfad6b49c0654be31745ca742ca75712e0e8082c",
-      "passwordSalt": "1983ac7fec494bd2159767df0970dde7",
+      "passwordHash": "bcc0caf069634bc9e7af1d81987c6af0b86df33c114c8375752c33b0dc0824f39be96471862f447975f7dfb046f83d1f497cc9ca843249600b2e0ff094629008",
+      "passwordSalt": "c1cc05e8297fb276f56cd9245ddf1123",
       "mustChangePassword": true,
       "roleTitle": "RH",
       "department": "Recursos Humanos",
@@ -322,8 +323,8 @@
       "name": "Marival Jerônimo Chagas Filho",
       "email": "marival.chagas@rodovar.com.br",
       "login": "marival.chagas@rodovar.com.br",
-      "passwordHash": "07e33b7a9a26ef2617e23146bd6a8dbc3aed387ab67789c9fed2e651c1cb6f1ae545f8c2f222404a82fbe870a2254fadf42ff9c18465404986519b0e2c35c67e",
-      "passwordSalt": "cd1210308ad54bf34cdfb6d87630735a",
+      "passwordHash": "ab94a076d89ff6a794f21d3be83c373a6571d835b7e071b478c3063526b1161896c9606ccea6d5be014104252ac3a65a83edc7e046990c3395add4cca90942ae",
+      "passwordSalt": "256d147ab04eabd93e62de101e398bd8",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -351,8 +352,8 @@
       "name": "Petrônio Santos",
       "email": "petronio.santos@rodovar.com.br",
       "login": "petronio.santos@rodovar.com.br",
-      "passwordHash": "dcd8acd692698e1e7649c0474f74c1031585acf607053390f35c4e22aa13d7abe589bf524639db7d1c106bc187472ae5b73f627cf547b220c7e0a48a234506e4",
-      "passwordSalt": "708d8b962dac9af17b9c607c74ffd988",
+      "passwordHash": "6abac5865dee3743460d59884edb9d0c344f5c10ab9cbe1c780161996f8f5cf9a81ae3036493e154e9737873ab3e32d9b8216853196aa2a2a057b12998db9d7d",
+      "passwordSalt": "fbde98e1ec5a87dc404a7fa6bdfdf62a",
       "mustChangePassword": true,
       "roleTitle": "FINANCEIRO",
       "department": "Financeiro",
@@ -383,8 +384,8 @@
       "name": "Alexandre",
       "email": "alexandre@rodovar.com.br",
       "login": "alexandre@rodovar.com.br",
-      "passwordHash": "80761cd633f12abda1c985ed542a1ab4427c5642ebcfc6fa5e9df00cb4978dc235c1ab29784185137b94c5c04a0c88dd5613bddde4475e9896c66d4a83990693",
-      "passwordSalt": "756ebd814c708febf173788d284053b0",
+      "passwordHash": "0e464868ac4c9b694d27044296707aa9750d0cf9eee2f6cb68a33877e5b8f6b69011fd017045c63f15a418c6254fc5c2da3f426bb5c832a384fdfeadfd5c0ed4",
+      "passwordSalt": "3d4ea3b7e4692a1bfc31530b67c958ba",
       "mustChangePassword": true,
       "roleTitle": "DIRETORIA",
       "department": "Diretoria",
@@ -421,8 +422,8 @@
       "name": "Jeise Ribeiro de Souza",
       "email": "jeise.souza@rodovar.com.br",
       "login": "jeise.souza@rodovar.com.br",
-      "passwordHash": "0139b69f4899550efc4475fadccf20f03d6842d6167873c15aecbf1744b0892e8d9302935a2599f28d06d720944683c396f4ce40a1d8a9ceefac02c90f4d3099",
-      "passwordSalt": "939b333bcaa7b9300ff348158ac2508b",
+      "passwordHash": "643c6d5f19e7e816000379807dedde160737a1065a0c2582e57d278b2b495dc8a70865cced7facf7115759dea0a3d2fac7ae159db4e101d319f73f7af50bbd8c",
+      "passwordSalt": "526ed7583b0548e51d7df95475456724",
       "mustChangePassword": true,
       "roleTitle": "COMERCIAL",
       "department": "Logística",
@@ -450,8 +451,8 @@
       "name": "Augusto César Brito da Cruz",
       "email": "augusto.cruz@rodovar.com.br",
       "login": "augusto.cruz@rodovar.com.br",
-      "passwordHash": "6fddb09acc869ba2de08dacaf9dccc67e52e7db9f7f9b2ebc41266c44849d3a9d25b64a9d92b3fd144405652d59200244e49f8a49fcc2a3aed2478c4ec7654ec",
-      "passwordSalt": "098619ef1b5477ab8f17f3f6efebf2f8",
+      "passwordHash": "2605bfc26b59a6cb80e70bb682b9c564e1796c06437752099c377f4dc5277a7256be1be75a9755e4690fbce21d7743b9b4fb96709e9526c2027027d647ebcc04",
+      "passwordSalt": "e48a158e04c3613bf1a59cba736da5fd",
       "mustChangePassword": true,
       "roleTitle": "EXPEDICAO",
       "department": "Logística",
@@ -479,8 +480,8 @@
       "name": "Ana Claudia Anunciação da Silva",
       "email": "ana.claudia@rodovar.com.br",
       "login": "ana.claudia@rodovar.com.br",
-      "passwordHash": "f9f90b05c045a2670230f8e96e3f466dd9c616e4a7bae6dd0d02f6f44ad6679431ab3be7d84eabbace5ff0ae25eb54f92d4b2fbfedcd0c527bb723844604a73e",
-      "passwordSalt": "c286ef0a7975d1309a336651d9175f89",
+      "passwordHash": "a5f5c51a81f86d0c7aa6df77af9018b01c1fc54ea65d471a59b96c0af83f89310c4d06db97b8dd24fb9d24c1ac0f16935d70fa7b17a8dda1ac0f2c44b63d4b64",
+      "passwordSalt": "6d338994dac63a7ac14472a96d458266",
       "mustChangePassword": true,
       "roleTitle": "EXPEDICAO",
       "department": "Logística",
@@ -535,33 +536,51 @@
       "approvalStatus": "APROVADO",
       "approvedBy": "emp-admin-master",
       "approvedAt": "2026-11-08T16:38:51.814Z",
-      "passwordSalt": "eafbad1db256316f754c6dc4a54012df",
-      "passwordHash": "3debc806b33a27cbfc055407d6f06780b5bde09941455687ab68e0d795426c62db1bbefc416a5a6bd58e8fbfefcc5c959d0286fbd4a7aabda85de2027e86d769",
+      "passwordSalt": "a7874371ed8af4bc1a3ec033e497ec9d",
+      "passwordHash": "d58ec5df409cfd3201778c6937e417e91309d194672effdf27aad3b47aea0d57f441bde46a84a39aa88b0b39263230839a7536de975fc59a68e02555998899fe",
       "mustChangePassword": true,
       "rosterActivationVersion": 1
     }
   ],
   "loginLocks": {
-    "user:emp-comercial-1": {
-      "identifier": "user:emp-comercial-1",
+    "user:emp-teste-logistica": {
+      "identifier": "user:emp-teste-logistica",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "user:emp-comercial-2": {
-      "identifier": "user:emp-comercial-2",
+    "user:emp-req-1793216031738-fbb81d": {
+      "identifier": "user:emp-req-1793216031738-fbb81d",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "user:emp-4": {
-      "identifier": "user:emp-4",
+    "user:emp-req-1793215965091-cc7e49": {
+      "identifier": "user:emp-req-1793215965091-cc7e49",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "user:emp-expedicao-2": {
-      "identifier": "user:emp-expedicao-2",
+    "user:emp-req-1793215937034-9b80b2": {
+      "identifier": "user:emp-req-1793215937034-9b80b2",
+      "consecutiveFailures": 0,
+      "blockedUntil": null,
+      "lastFailureAt": 0
+    },
+    "user:emp-admin-master": {
+      "identifier": "user:emp-admin-master",
+      "consecutiveFailures": 0,
+      "blockedUntil": null,
+      "lastFailureAt": 0
+    },
+    "user:emp-1": {
+      "identifier": "user:emp-1",
+      "consecutiveFailures": 0,
+      "blockedUntil": null,
+      "lastFailureAt": 0
+    },
+    "user:emp-2": {
+      "identifier": "user:emp-2",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
@@ -572,8 +591,8 @@
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "user:emp-admin-master": {
-      "identifier": "user:emp-admin-master",
+    "user:emp-4": {
+      "identifier": "user:emp-4",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
@@ -596,44 +615,32 @@
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "user:emp-req-1793215937034-9b80b2": {
-      "identifier": "user:emp-req-1793215937034-9b80b2",
-      "consecutiveFailures": 1,
-      "blockedUntil": null,
-      "lastFailureAt": 1793215937098
-    },
-    "user:emp-req-1793215965091-cc7e49": {
-      "identifier": "user:emp-req-1793215965091-cc7e49",
+    "user:emp-admin-google-migrated": {
+      "identifier": "user:emp-admin-google-migrated",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "ident:lock_test_1793215965146": {
-      "identifier": "ident:lock_test_1793215965146",
-      "consecutiveFailures": 5,
-      "blockedUntil": 1793216085364,
-      "lastFailureAt": 1793215965364
-    },
-    "user:emp-req-1793216031738-fbb81d": {
-      "identifier": "user:emp-req-1793216031738-fbb81d",
+    "user:emp-comercial-1": {
+      "identifier": "user:emp-comercial-1",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
     },
-    "ident:lock_test_1793216031792": {
-      "identifier": "ident:lock_test_1793216031792",
-      "consecutiveFailures": 5,
-      "blockedUntil": 1793216152015,
-      "lastFailureAt": 1793216032015
-    },
-    "ident:beatriz": {
-      "identifier": "ident:beatriz",
-      "consecutiveFailures": 2,
+    "user:emp-comercial-2": {
+      "identifier": "user:emp-comercial-2",
+      "consecutiveFailures": 0,
       "blockedUntil": null,
-      "lastFailureAt": 1793294534246
+      "lastFailureAt": 0
     },
-    "user:emp-teste-logistica": {
-      "identifier": "user:emp-teste-logistica",
+    "user:emp-expedicao-2": {
+      "identifier": "user:emp-expedicao-2",
+      "consecutiveFailures": 0,
+      "blockedUntil": null,
+      "lastFailureAt": 0
+    },
+    "user:emp-diretoria-ricardo": {
+      "identifier": "user:emp-diretoria-ricardo",
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
@@ -758,6 +765,380 @@
     }
   ],
   "auditLogs": [
+    {
+      "id": "aud-1794160842381-e49e1b",
+      "timestampIso": "2026-11-08T18:00:42.381Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-diretoria-ricardo",
+      "actorName": "Ricardo",
+      "actorRole": "DIRETORIA",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (ricardo@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160842374-3c87bb",
+      "timestampIso": "2026-11-08T18:00:42.374Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-diretoria-ricardo",
+      "actorName": "Ricardo",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ricardo@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160842251-4c155e",
+      "timestampIso": "2026-11-08T18:00:42.251Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-expedicao-2",
+      "actorName": "Ana Claudia Anunciação da Silva",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (ana.claudia@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160842243-fcaa97",
+      "timestampIso": "2026-11-08T18:00:42.243Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-expedicao-2",
+      "actorName": "Ana Claudia Anunciação da Silva",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ana.claudia@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160842131-a2e257",
+      "timestampIso": "2026-11-08T18:00:42.131Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-comercial-2",
+      "actorName": "Augusto César Brito da Cruz",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (augusto.cruz@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160842085-4aa22d",
+      "timestampIso": "2026-11-08T18:00:42.085Z",
+      "timestampFormatted": "08/11/2026, 18:00:42",
+      "actorId": "emp-comercial-2",
+      "actorName": "Augusto César Brito da Cruz",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (augusto.cruz@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841943-01626c",
+      "timestampIso": "2026-11-08T18:00:41.943Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-comercial-1",
+      "actorName": "Jeise Ribeiro de Souza",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (jeise.souza@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841862-837993",
+      "timestampIso": "2026-11-08T18:00:41.862Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-comercial-1",
+      "actorName": "Jeise Ribeiro de Souza",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (jeise.souza@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841647-696880",
+      "timestampIso": "2026-11-08T18:00:41.647Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-admin-google-migrated",
+      "actorName": "Alexandre",
+      "actorRole": "DIRETORIA",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (alexandre@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841637-9290f1",
+      "timestampIso": "2026-11-08T18:00:41.637Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-admin-google-migrated",
+      "actorName": "Alexandre",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (alexandre@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841452-1cd460",
+      "timestampIso": "2026-11-08T18:00:41.452Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-7",
+      "actorName": "Petrônio Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (petronio.santos@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160841431-4bed4b",
+      "timestampIso": "2026-11-08T18:00:41.431Z",
+      "timestampFormatted": "08/11/2026, 18:00:41",
+      "actorId": "emp-7",
+      "actorName": "Petrônio Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (petronio.santos@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840962-0a74f5",
+      "timestampIso": "2026-11-08T18:00:40.962Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-6",
+      "actorName": "Marival Jerônimo Chagas Filho",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (marival.chagas@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840932-256a0b",
+      "timestampIso": "2026-11-08T18:00:40.932Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-6",
+      "actorName": "Marival Jerônimo Chagas Filho",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (marival.chagas@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840642-41296f",
+      "timestampIso": "2026-11-08T18:00:40.642Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-5",
+      "actorName": "Ana Caroline Araújo Xavier Dia",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (ana.caroline@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840636-912b00",
+      "timestampIso": "2026-11-08T18:00:40.636Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-5",
+      "actorName": "Ana Caroline Araújo Xavier Dia",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ana.caroline@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840461-079e3c",
+      "timestampIso": "2026-11-08T18:00:40.461Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-4",
+      "actorName": "Jairo Bahia dos Santos e Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (jairo.bahia@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840453-e3ceb4",
+      "timestampIso": "2026-11-08T18:00:40.453Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-4",
+      "actorName": "Jairo Bahia dos Santos e Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (jairo.bahia@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840274-c0482b",
+      "timestampIso": "2026-11-08T18:00:40.274Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-3",
+      "actorName": "Juliane Vitória Silva de Aquino",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (juliane.aquino@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840265-5640cc",
+      "timestampIso": "2026-11-08T18:00:40.265Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-3",
+      "actorName": "Juliane Vitória Silva de Aquino",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (juliane.aquino@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840146-c09bb9",
+      "timestampIso": "2026-11-08T18:00:40.146Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (vitor@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840139-95568b",
+      "timestampIso": "2026-11-08T18:00:40.139Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (vitor@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840063-2aa156",
+      "timestampIso": "2026-11-08T18:00:40.063Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-1",
+      "actorName": "Monica Nery",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (monica.nery@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160840055-1fe3c7",
+      "timestampIso": "2026-11-08T18:00:40.055Z",
+      "timestampFormatted": "08/11/2026, 18:00:40",
+      "actorId": "emp-1",
+      "actorName": "Monica Nery",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (monica.nery@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839973-816144",
+      "timestampIso": "2026-11-08T18:00:39.973Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (administrador@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839964-9bf295",
+      "timestampIso": "2026-11-08T18:00:39.964Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839847-32a54a",
+      "timestampIso": "2026-11-08T18:00:39.847Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793215937034-9b80b2",
+      "actorName": "Mariane",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (mariane@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839840-97845d",
+      "timestampIso": "2026-11-08T18:00:39.840Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793215937034-9b80b2",
+      "actorName": "Mariane",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (mariane@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839759-2b64d0",
+      "timestampIso": "2026-11-08T18:00:39.759Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793215965091-cc7e49",
+      "actorName": "Suellen Aranda",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (suellen.aranda@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839751-fee1ac",
+      "timestampIso": "2026-11-08T18:00:39.751Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793215965091-cc7e49",
+      "actorName": "Suellen Aranda",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (suellen.aranda@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839648-945ab4",
+      "timestampIso": "2026-11-08T18:00:39.648Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793216031738-fbb81d",
+      "actorName": "Elinete",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (elinete@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839642-bcefc7",
+      "timestampIso": "2026-11-08T18:00:39.642Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-req-1793216031738-fbb81d",
+      "actorName": "Elinete",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (elinete@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839538-0db909",
+      "timestampIso": "2026-11-08T18:00:39.538Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-teste-logistica",
+      "actorName": "Priscila Sousa dos Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (priscila.santos@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794160839501-6f4d84",
+      "timestampIso": "2026-11-08T18:00:39.501Z",
+      "timestampFormatted": "08/11/2026, 18:00:39",
+      "actorId": "emp-teste-logistica",
+      "actorName": "Priscila Sousa dos Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (priscila.santos@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
     {
       "id": "a124b880-a5c6-4760-b4c3-0cdf8596483e",
       "timestampIso": "2026-11-08T16:38:53.164Z",
