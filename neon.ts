@@ -14,8 +14,11 @@ function normalizeNeonConnectionString(raw: string): string {
   return trimmed.replace(/channel_binding=requerido/gi, 'channel_binding=require');
 }
 
+export const DEFAULT_NEON_DATABASE_URL =
+  'postgresql://neondb_owner:npg_WTmE1HUFL9cC@ep-raspy-river-b6yady4i-pooler.c-2.sa-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+
 const connectionString = normalizeNeonConnectionString(
-  process.env.DATABASE_URL || process.env.POSTGRES_URL || ''
+  process.env.DATABASE_URL || process.env.POSTGRES_URL || DEFAULT_NEON_DATABASE_URL
 );
 
 export const isNeonConfigured = Boolean(
@@ -27,13 +30,13 @@ export const isNeonConfigured = Boolean(
 export const pool = new Pool({
   connectionString: isNeonConfigured
     ? connectionString
-    : 'postgresql://user:pass@localhost:5432/db',
+    : DEFAULT_NEON_DATABASE_URL,
   connectionTimeoutMillis: 15000,
   idleTimeoutMillis: 10000,
   max: 10,
 });
 
-const sql = isNeonConfigured ? neon(connectionString) : null;
+export const sql = isNeonConfigured ? neon(connectionString) : null;
 
 export async function testNeonConnection(): Promise<boolean> {
   if (!isNeonConfigured || !sql) {
@@ -81,6 +84,10 @@ export interface NeonHealthStats {
     requests: number;
     payments: number;
     snapshots: number;
+    announcements?: number;
+    agenda?: number;
+    chats?: number;
+    auditLogs?: number;
   } | null;
   timestamp: string;
 }
@@ -108,7 +115,11 @@ export async function getNeonHealthStats(): Promise<NeonHealthStats> {
           (SELECT COUNT(*)::int FROM rodovar_fretes) AS fretes,
           (SELECT COUNT(*)::int FROM rodovar_requests) AS requests,
           (SELECT COUNT(*)::int FROM rodovar_payments) AS payments,
-          (SELECT COUNT(*)::int FROM rodovar_state_store) AS snapshots
+          (SELECT COUNT(*)::int FROM rodovar_state_store) AS snapshots,
+          (SELECT COUNT(*)::int FROM rodovar_announcements) AS announcements,
+          (SELECT COUNT(*)::int FROM rodovar_agenda) AS agenda,
+          (SELECT COUNT(*)::int FROM rodovar_chats) AS chats,
+          (SELECT COUNT(*)::int FROM rodovar_audit_logs) AS audit_logs
       `;
       if (rows[0]) {
         counts = {
@@ -117,10 +128,33 @@ export async function getNeonHealthStats(): Promise<NeonHealthStats> {
           requests: Number(rows[0].requests || 0),
           payments: Number(rows[0].payments || 0),
           snapshots: Number(rows[0].snapshots || 0),
+          announcements: Number(rows[0].announcements || 0),
+          agenda: Number(rows[0].agenda || 0),
+          chats: Number(rows[0].chats || 0),
+          auditLogs: Number(rows[0].audit_logs || 0),
         };
       }
     } catch {
-      // tables might still be initializing
+      // tables might still be initializing fallback
+      try {
+        const rows = await sql`
+          SELECT
+            (SELECT COUNT(*)::int FROM rodovar_users) AS users,
+            (SELECT COUNT(*)::int FROM rodovar_fretes) AS fretes,
+            (SELECT COUNT(*)::int FROM rodovar_requests) AS requests,
+            (SELECT COUNT(*)::int FROM rodovar_payments) AS payments,
+            (SELECT COUNT(*)::int FROM rodovar_state_store) AS snapshots
+        `;
+        if (rows[0]) {
+          counts = {
+            users: Number(rows[0].users || 0),
+            fretes: Number(rows[0].fretes || 0),
+            requests: Number(rows[0].requests || 0),
+            payments: Number(rows[0].payments || 0),
+            snapshots: Number(rows[0].snapshots || 0),
+          };
+        }
+      } catch {}
     }
   }
 
@@ -200,6 +234,47 @@ export async function initializeNeonSchema(): Promise<void> {
         key VARCHAR(128) PRIMARY KEY,
         payload JSONB NOT NULL,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_announcements (
+        id VARCHAR(64) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        author_name VARCHAR(255) NOT NULL,
+        target_audience VARCHAR(100) NOT NULL,
+        priority VARCHAR(50) NOT NULL,
+        content TEXT NOT NULL,
+        data JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_agenda (
+        id VARCHAR(64) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        date_iso VARCHAR(32) NOT NULL,
+        start_time VARCHAR(16),
+        end_time VARCHAR(16),
+        category VARCHAR(100),
+        data JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_chats (
+        id VARCHAR(64) PRIMARY KEY,
+        thread_id VARCHAR(64) NOT NULL,
+        sender_id VARCHAR(64) NOT NULL,
+        sender_name VARCHAR(255),
+        text TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_audit_logs (
+        id VARCHAR(64) PRIMARY KEY,
+        actor_id VARCHAR(64),
+        actor_name VARCHAR(255),
+        action VARCHAR(100) NOT NULL,
+        details TEXT,
+        ip_address VARCHAR(64),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -404,6 +479,206 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
         );
       }
     }
+  }
+
+  // 5. Sync Announcements (Mural) from rodovar-server-db.json
+  if (fs.existsSync(dbPath)) {
+    try {
+      const dbRaw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+      const announcements = dbRaw.mural?.announcements || [];
+      for (const a of announcements) {
+        if (!a || !a.id || !a.title) continue;
+        await client.query(
+          `INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+           ON CONFLICT (id) DO UPDATE SET
+             title = EXCLUDED.title,
+             author_name = EXCLUDED.author_name,
+             target_audience = EXCLUDED.target_audience,
+             priority = EXCLUDED.priority,
+             content = EXCLUDED.content,
+             data = EXCLUDED.data`,
+          [
+            String(a.id),
+            String(a.title).slice(0, 255),
+            String(a.authorName || 'Diretoria').slice(0, 255),
+            String(a.targetAudience || 'Todos').slice(0, 100),
+            String(a.priority || 'Normal').slice(0, 50),
+            String(a.content || a.summary || ''),
+            JSON.stringify(a),
+          ]
+        );
+      }
+      if (announcements.length > 0) {
+        await client.query(
+          `INSERT INTO rodovar_state_store (key, payload, updated_at)
+           VALUES ('rodovar-mural', $1::jsonb, CURRENT_TIMESTAMP)
+           ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+          [JSON.stringify(dbRaw.mural)]
+        );
+      }
+    } catch (e) {
+      console.warn('Neon announcements sync notice:', (e as Error).message);
+    }
+  }
+
+  // 6. Sync Corporate Agenda from data/agenda-local.json
+  const agendaPath = path.join(dataDir, 'agenda-local.json');
+  if (fs.existsSync(agendaPath)) {
+    try {
+      const agendaRaw = JSON.parse(fs.readFileSync(agendaPath, 'utf8'));
+      const events = Array.isArray(agendaRaw.events) ? agendaRaw.events : [];
+      for (const e of events) {
+        if (!e || !e.id || !e.title) continue;
+        await client.query(
+          `INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+           ON CONFLICT (id) DO UPDATE SET
+             title = EXCLUDED.title,
+             date_iso = EXCLUDED.date_iso,
+             start_time = EXCLUDED.start_time,
+             end_time = EXCLUDED.end_time,
+             category = EXCLUDED.category,
+             data = EXCLUDED.data`,
+          [
+            String(e.id),
+            String(e.title).slice(0, 255),
+            String(e.dateIso || new Date().toISOString().slice(0, 10)).slice(0, 32),
+            String(e.start || '08:00').slice(0, 16),
+            String(e.end || '09:00').slice(0, 16),
+            String(e.category || 'Geral').slice(0, 100),
+            JSON.stringify(e),
+          ]
+        );
+      }
+      await client.query(
+        `INSERT INTO rodovar_state_store (key, payload, updated_at)
+         VALUES ('rodovar-agenda', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(agendaRaw)]
+      );
+    } catch (e) {
+      console.warn('Neon agenda sync notice:', (e as Error).message);
+    }
+  }
+}
+
+// Live persistence helpers for mutation operations
+export async function persistUserToNeon(u: any): Promise<void> {
+  if (!isNeonConfigured || !u || !u.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           email = EXCLUDED.email,
+           department = EXCLUDED.department,
+           role = EXCLUDED.role,
+           access_level = EXCLUDED.access_level,
+           password_hash = EXCLUDED.password_hash,
+           must_change_password = EXCLUDED.must_change_password`,
+        [
+          String(u.id),
+          String(u.name || u.login || u.email),
+          String(u.email),
+          String(u.department || 'Administrativo'),
+          String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 50),
+          String(u.accessLevel || 'FUNCIONARIO').slice(0, 50),
+          String(u.passwordHash || 'managed'),
+          Boolean(u.mustChangePassword),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistUserToNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistAuditLogToNeon(log: {
+  id: string;
+  actorId?: string;
+  actorName?: string;
+  action: string;
+  details?: string;
+  ip?: string;
+}): Promise<void> {
+  if (!isNeonConfigured || !log || !log.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_audit_logs (id, actor_id, actor_name, action, details, ip_address)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          String(log.id),
+          log.actorId ? String(log.actorId).slice(0, 64) : null,
+          log.actorName ? String(log.actorName).slice(0, 255) : null,
+          String(log.action).slice(0, 100),
+          log.details ? String(log.details) : null,
+          log.ip ? String(log.ip).slice(0, 64) : null,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistAuditLogToNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistChatMessageToNeon(msg: {
+  id: string;
+  threadId: string;
+  senderId: string;
+  senderName?: string;
+  text: string;
+}): Promise<void> {
+  if (!isNeonConfigured || !msg || !msg.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_chats (id, thread_id, sender_id, sender_name, text)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text`,
+        [
+          String(msg.id),
+          String(msg.threadId).slice(0, 64),
+          String(msg.senderId).slice(0, 64),
+          String(msg.senderName || 'Colaborador').slice(0, 255),
+          String(msg.text),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistChatMessageToNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistStateSnapshotToNeon(key: string, data: any): Promise<void> {
+  if (!isNeonConfigured || !key) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_state_store (key, payload, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+        [key, JSON.stringify(data)]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistStateSnapshotToNeon error:', (err as Error).message);
   }
 }
 

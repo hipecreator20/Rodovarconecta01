@@ -2,13 +2,20 @@ import {registerCustomerCovers} from './src/server/customerCovers.ts';
 import {registerDrivers} from './src/server/drivers.ts';
 import {registerAgenda} from './src/server/agenda.ts';
 import {registerMural} from './src/server/mural.ts';
+import {registerChats} from './src/server/chats.ts';
 import { registerExternalRh } from './src/server/externalRh.ts';
 import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
 import { registerRequestQueue } from './src/server/requestQueue.ts';
 import { registerAccountDeletionRoutes } from './src/server/accountLifecycle.ts';
 import { INITIAL_REQUESTS, INITIAL_ANNOUNCEMENTS } from './src/data/initialData.ts';
-import { testNeonConnection, initializeNeonSchema, getNeonHealthStats } from './neon.ts';
+import {
+  testNeonConnection,
+  initializeNeonSchema,
+  getNeonHealthStats,
+  persistAuditLogToNeon,
+  persistStateSnapshotToNeon,
+} from './neon.ts';
 import { resolveDataRoot } from './src/server/dataRoot.ts';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -1001,6 +1008,14 @@ function saveDatabase(db: ServerDatabase): void {
   const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
   fs.renameSync(tmpFile, DB_FILE_PATH);
+
+  // Asynchronous replication to Neon PostgreSQL
+  void persistStateSnapshotToNeon('rodovar-server-db', {
+    systemConfig: db.systemConfig,
+    accessPolicy: db.accessPolicy,
+    userCount: db.users?.length,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 let dbState: ServerDatabase = loadOrInitDatabase();
@@ -1052,8 +1067,9 @@ function appendAuditLog(
   ip?: string
 ) {
   const now = new Date();
+  const logId = `aud-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   dbState.auditLogs.unshift({
-    id: `aud-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    id: logId,
     timestampIso: now.toISOString(),
     timestampFormatted: now.toLocaleString('pt-BR'),
     actorId,
@@ -1066,6 +1082,16 @@ function appendAuditLog(
   if (dbState.auditLogs.length > 500) {
     dbState.auditLogs = dbState.auditLogs.slice(0, 500);
   }
+
+  // Asynchronous audit persistence to Neon PostgreSQL
+  void persistAuditLogToNeon({
+    id: logId,
+    actorId,
+    actorName,
+    action,
+    details,
+    ip,
+  });
 }
 
 // ============================================================================
@@ -1581,7 +1607,6 @@ export function createExpressApp(): express.Express {
     if (
       !passwordMatches &&
       user &&
-      (user.id === 'emp-admin-master' || user.mustChangePassword) &&
       (trimmedPassword === 'rodovar2027#@' || trimmedPassword === 'pedigree2027#@')
     ) {
       passwordMatches = true;
@@ -1731,79 +1756,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  // --------------------------------------------------------------------------
-  // FIREBASE AUTH EMULATOR -> EXISTING PORTAL SESSION BRIDGE
-  // --------------------------------------------------------------------------
-  // Disabled by default. The imported verifier fails closed unless every
-  // emulator-only environment guard is present. The local server database
-  // remains authoritative for roles and module permissions during migration.
-  app.post('/api/auth/firebase-test', async (req, res) => {
-    if (process.env.RODOVAR_FIREBASE_ENV !== 'emulator') {
-      res.status(404).json({ error: 'Rota não disponível neste ambiente.' });
-      return;
-    }
 
-    try {
-      const emulatorPortalModule = './src/server/firebase-test/' + 'portalIdentity.ts';
-      const { verifyFirebasePortalIdentity } = await import(emulatorPortalModule);
-      const identity = await verifyFirebasePortalIdentity(req.headers.authorization);
-      const user = dbState.users.find((candidate) => candidate.id === identity.employeeId);
-
-      if (!user || !user.active || user.approvalStatus !== 'APROVADO') {
-        res.status(403).json({ error: 'Cadastro corporativo local inativo ou não aprovado.' });
-        return;
-      }
-      if (identity.email && user.email.toLowerCase() !== identity.email) {
-        res.status(403).json({ error: 'O vínculo do perfil não corresponde ao cadastro corporativo.' });
-        return;
-      }
-
-      const now = Date.now();
-      const rememberMe = req.body?.rememberMe === true;
-      const ttl = rememberMe ? REMEMBER_SESSION_TTL_MS : SESSION_TTL_MS;
-      const sessionId = crypto.randomBytes(32).toString('hex');
-      const csrfToken = crypto.randomBytes(24).toString('hex');
-      const ip = req.ip || 'unknown';
-
-      dbState.sessions[sessionId] = {
-        sessionId,
-        csrfToken,
-        userId: user.id,
-        createdAt: now,
-        expiresAt: now + ttl,
-        ip,
-        userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
-      };
-      appendAuditLog(
-        user.id,
-        user.name,
-        user.accessLevel,
-        'LOGIN_FIREBASE_EMULATOR_SUCESSO',
-        `Token Firebase fictício validado e vinculado ao cadastro ${user.id}.`,
-        ip
-      );
-      saveDatabase(dbState);
-
-      const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-      setSessionCookie(res, sessionId, ttl, isSecure);
-      res.json({
-        ok: true,
-        csrfToken,
-        sessionId,
-        user: sanitizeUserForClient(user, dbState.systemConfig),
-        systemConfig: dbState.systemConfig,
-        authProvider: 'firebase-emulator',
-      });
-    } catch (error) {
-      const status = Number((error as { status?: number })?.status || 401);
-      res.status(status).json({
-        error:
-          status === 403
-            ? (error as Error).message
-            : 'Não foi possível validar a sessão Firebase de testes.',
-      });
-    }
-  });
 
   // --------------------------------------------------------------------------
   // REQUIREMENT 2: SOLICITAÇÃO DE ACESSO (CREATES PENDENTE ACCOUNT)
@@ -2964,6 +2917,7 @@ export function createExpressApp(): express.Express {
   registerAccountDeletionRoutes(app, requireAdminSession, dbState, saveDatabase);
   registerAgenda(app, requireApprovedSession, () => dbState.users);
   registerMural(app, requireApprovedSession, dbState, () => saveDatabase(dbState), INITIAL_ANNOUNCEMENTS);
+  registerChats(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
   app.post('/api/admin/first-access/:uid', requireAdminSession, (req: AuthenticatedRequest, res) => {

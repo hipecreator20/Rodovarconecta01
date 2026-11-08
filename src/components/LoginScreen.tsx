@@ -29,10 +29,6 @@ import {
   apiLogin,
   apiRequestAccess,
 } from '../lib/serverApi';
-import {
-  isFirebaseEmulatorPortalEnabled,
-  signInFirebaseTest,
-} from '../firebase-test/client';
 
 interface LoginScreenProps {
   onAuthenticated: (user: Employee, rememberMe: boolean, systemConfig?: SystemConfig) => void;
@@ -66,7 +62,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   isInstalled = false,
   canPromptInstall = false,
 }) => {
-  const firebaseEmulatorLogin = isFirebaseEmulatorPortalEnabled();
   const [view, setView] = useState<AuthModalView>('login');
 
   // Login Form State
@@ -131,7 +126,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     if (!trimmed || trimmed.length < 3) return;
     const timer = window.setTimeout(async () => {
       try {
-        if (firebaseEmulatorLogin) return;
         const status = await apiCheckLockStatus(trimmed);
         if (status.locked && status.remainingSeconds > 0) {
           startCountdownFromServer(status.remainingSeconds);
@@ -145,7 +139,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [identifier, firebaseEmulatorLogin]);
+  }, [identifier]);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,9 +156,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     setIsSubmitting(true);
     try {
-      const result = firebaseEmulatorLogin
-        ? await signInFirebaseTest(cleanId, password, rememberMe)
-        : await apiLogin(cleanId, password, rememberMe);
+      const result = await apiLogin(cleanId, password, rememberMe);
 
       if (result.locked && (result.remainingSeconds || 0) > 0) {
         startCountdownFromServer(result.remainingSeconds || 120);
@@ -193,7 +185,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       onAuthenticated(result.user, rememberMe, result.systemConfig);
     } catch (error) {
       setLoginError(
-        firebaseEmulatorLogin && error instanceof Error
+        error instanceof Error
           ? error.message
           : 'Não foi possível entrar. Confira os dados ou tente novamente após o prazo indicado.'
       );

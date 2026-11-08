@@ -1,0 +1,115 @@
+{
+  "threads": [
+    {
+      "id": "g-geral",
+      "participantId": "g-geral",
+      "name": "Canal Geral",
+      "role": "Colaborador",
+      "avatar": "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
+      "online": true,
+      "unreadCount": 0,
+      "messages": [
+        {
+          "id": "m-1794168936717-d921",
+          "senderId": "emp-admin-master",
+          "senderName": "Administrador Geral RODOVAR",
+          "senderRole": "Administrador Geral do Portal",
+          "text": "Mensagem de validação de concorrência — Sessão administrador@rodovar.com.br às 2026-11-08T20:15:36.713Z",
+          "timestamp": "20:15",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169037772-c195",
+          "senderId": "emp-teste-logistica",
+          "senderName": "Priscila Sousa dos Santos",
+          "senderRole": "EXPEDICAO",
+          "text": "Teste de concorrência Neon: Usuário priscila.santos@rodovar.com.br (EXPEDICAO) [2026-11-08T20:17:17.718Z]",
+          "timestamp": "20:17",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169037846-bb2e",
+          "senderId": "emp-admin-master",
+          "senderName": "Administrador Geral RODOVAR",
+          "senderRole": "Administrador Geral do Portal",
+          "text": "Teste de concorrência Neon: Usuário administrador@rodovar.com.br (ADMINISTRADOR) [2026-11-08T20:17:17.842Z]",
+          "timestamp": "20:17",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169099143-a2b6",
+          "senderId": "emp-req-1793216031738-fbb81d",
+          "senderName": "Elinete",
+          "senderRole": "COMERCIAL",
+          "text": "Teste de concorrência Neon: Usuário elinete@rodovar.com.br (COMERCIAL) [2026-11-08T20:18:19.063Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169099291-91a1",
+          "senderId": "emp-teste-logistica",
+          "senderName": "Priscila Sousa dos Santos",
+          "senderRole": "EXPEDICAO",
+          "text": "Teste de concorrência Neon: Usuário priscila.santos@rodovar.com.br (EXPEDICAO) [2026-11-08T20:18:19.228Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169099599-a240",
+          "senderId": "emp-3",
+          "senderName": "Juliane Vitória Silva de Aquino",
+          "senderRole": "RH",
+          "text": "Teste de concorrência Neon: Usuário juliane.aquino@rodovar.com.br (RH) [2026-11-08T20:18:19.540Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169099627-4912",
+          "senderId": "emp-admin-master",
+          "senderName": "Administrador Geral RODOVAR",
+          "senderRole": "Administrador Geral do Portal",
+          "text": "Teste de concorrência Neon: Usuário administrador@rodovar.com.br (ADMINISTRADOR) [2026-11-08T20:18:19.624Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169136889-49a6",
+          "senderId": "emp-teste-logistica",
+          "senderName": "Priscila Sousa dos Santos",
+          "senderRole": "EXPEDICAO",
+          "text": "Teste de concorrência Neon: Usuário priscila.santos@rodovar.com.br (EXPEDICAO) [2026-11-08T20:18:56.820Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169136893-7a2e",
+          "senderId": "emp-req-1793216031738-fbb81d",
+          "senderName": "Elinete",
+          "senderRole": "COMERCIAL",
+          "text": "Teste de concorrência Neon: Usuário elinete@rodovar.com.br (COMERCIAL) [2026-11-08T20:18:56.816Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169136904-1a03",
+          "senderId": "emp-3",
+          "senderName": "Juliane Vitória Silva de Aquino",
+          "senderRole": "RH",
+          "text": "Teste de concorrência Neon: Usuário juliane.aquino@rodovar.com.br (RH) [2026-11-08T20:18:56.899Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        },
+        {
+          "id": "m-1794169136910-e352",
+          "senderId": "emp-admin-master",
+          "senderName": "Administrador Geral RODOVAR",
+          "senderRole": "Administrador Geral do Portal",
+          "text": "Teste de concorrência Neon: Usuário administrador@rodovar.com.br (ADMINISTRADOR) [2026-11-08T20:18:56.907Z]",
+          "timestamp": "20:18",
+          "status": "delivered"
+        }
+      ]
+    }
+  ],
+  "keys": {}
+}

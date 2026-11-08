@@ -56,11 +56,6 @@ import {
   saveFreightsToStorage,
 } from './lib/freightDatabase';
 import {
-  BOOTSTRAPPED_ADMIN_EMAIL,
-  provisionAuthenticatedUserInFirestore,
-  seedCorporateDatabaseInFirestore,
-} from './lib/databaseSeeder';
-import {
   useOnlineStatus,
   usePWAInstall,
   useServiceWorkerUpdate,
@@ -95,24 +90,6 @@ import {
   SystemConfig,
   UserRole,
 } from './types';
-import {
-  auth,
-  db,
-  firebaseSignOut,
-  onAuthStateChanged,
-  FirebaseUser,
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  collection,
-  query,
-  where,
-  onSnapshot,
-  serverTimestamp,
-  OperationType,
-  handleFirestoreError,
-} from './lib/firebase';
 import {
   apiFetchSession,
   apiFetchSystemConfig,
@@ -205,14 +182,13 @@ export default function App() {
   const [featuredIndex, setFeaturedIndex] = useState<number>(0);
   const [pendingSharedDraft, setPendingSharedDraft] = useState<SharedReceiptDraft | null>(null);
 
-  // Firebase Auth & Portal Session Gate State (separated initialization, auth check, and visual loading)
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  // Portal Session Gate State (Neon / Node backend authoritative session)
   const [portalInitialized, setPortalInitialized] = useState(false);
   usePortalInitialized(portalInitialized);
   const [sessionChecking, setSessionChecking] = useState<boolean>(true);
   const [bootApiError, setBootApiError] = useState<string | null>(null);
   const [authSessionNotice, setAuthSessionNotice] = useState<string | null>(null);
-  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authReady, setAuthReady] = useState<boolean>(true);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -773,458 +749,7 @@ export default function App() {
       },
       ...prev,
     ]);
-
-    if (
-      firebaseUser &&
-      firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()
-    ) {
-      try {
-        await setDoc(doc(db, 'audit_logs', logId), {
-          timestamp: timestamp.slice(0, 40),
-          actorId: firebaseUser.uid,
-          actor: actor.slice(0, 120),
-          role,
-          action: action.slice(0, 80),
-          details: details.slice(0, 500),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Audit log Firestore sync info:', err);
-      }
-    }
   };
-
-  // The local server session is the sole authority. Legacy Firebase sessions must not replace it.
-  useEffect(() => { setFirebaseUser(null); setAuthReady(true); }, []);
-
-  // 2. Real-Time Firestore Listeners (when authenticated)
-  useEffect(() => {
-    if (!authReady || !firebaseUser) return;
-
-    const allowedAudiences = [
-      'Todos',
-      'Administrativo',
-      'Operacional',
-      'Recursos Humanos',
-      'Financeiro',
-      'Segurança',
-      'Diretoria',
-      'Logística',
-    ];
-
-    // Announcements listener (preserving existing likes, comments, and readReceipts)
-    const annQuery = query(
-      collection(db, 'announcements'),
-      where('targetAudience', 'in', allowedAudiences)
-    );
-    const unsubAnn = onSnapshot(
-      annQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          setAnnouncements((prev) => {
-            const prevMap = new Map(prev.map((p) => [p.id, p]));
-            const loaded: Announcement[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              const existing = prevMap.get(d.id);
-              return normalizeAnnouncementTo2027({
-                id: d.id,
-                title: data.title,
-                summary: data.summary,
-                content: data.content,
-                authorName: data.authorName,
-                department: data.department,
-                dateFormatted: data.dateFormatted,
-                createdAtIso: existing?.createdAtIso || new Date().toISOString(),
-                coverImage: data.coverImage || '/assets/aistudio/010203_5a4289e5.png',
-                category: data.category,
-                priority: data.priority,
-                targetAudience: data.targetAudience,
-                requireReadConfirmation: Boolean(data.requireReadConfirmation),
-                pinned: Boolean(data.pinned),
-                archived: existing?.archived || false,
-                attachments: existing?.attachments,
-                likes: existing?.likes || [],
-                comments: existing?.comments || [],
-                readReceipts: existing?.readReceipts || [],
-              });
-            });
-            const existingIds = new Set(loaded.map((l) => l.id));
-            return [
-              ...loaded,
-              ...prev.filter((p) => !existingIds.has(p.id)).map(normalizeAnnouncementTo2027),
-            ];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'announcements')
-    );
-
-    // Events listener (preserving existing attendees list)
-    const evtQuery = query(
-      collection(db, 'events'),
-      where('department', 'in', ['Empresa', ...allowedAudiences.slice(1)])
-    );
-    const unsubEvt = onSnapshot(
-      evtQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          setEvents((prev) => {
-            const prevMap = new Map(prev.map((p) => [p.id, p]));
-            const loaded: CorporateEvent[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              const existing = prevMap.get(d.id);
-              return normalizeEventTo2027({
-                id: d.id,
-                day: data.day,
-                monthShort: data.monthShort,
-                dateIso: data.dateIso,
-                time: data.time,
-                location: data.location,
-                title: data.title,
-                organizer: data.organizer,
-                department: data.department,
-                badgeLabel: data.badgeLabel,
-                badgeColor: data.badgeColor,
-                description: data.description,
-                attendees: existing?.attendees || [firebaseUser.uid],
-              });
-            });
-            const existingIds = new Set(loaded.map((l) => l.id));
-            return [
-              ...loaded,
-              ...prev.filter((p) => !existingIds.has(p.id)).map(normalizeEventTo2027),
-            ];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'events')
-    );
-
-    // Documents listener
-    const docQuery = query(
-      collection(db, 'documents'),
-      where('allowedDepartments', 'in', allowedAudiences)
-    );
-    const unsubDoc = onSnapshot(
-      docQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const loaded: CorporateDocument[] = snapshot.docs.map((d) => {
-            const data = d.data();
-            return {
-              id: d.id,
-              title: data.title,
-              category: data.category,
-              version: data.version,
-              updatedAt: data.updatedAt,
-              author: data.author,
-              size: data.size,
-              fileType: data.fileType,
-              allowedDepartments: data.allowedDepartments || 'Todos',
-              description: data.description,
-              contentPreview: data.contentPreview,
-              pdfUrl: data.pdfUrl,
-              attachments: Array.isArray(data.attachments) ? data.attachments : undefined,
-            };
-          });
-          setDocuments((prev) => {
-            const existingIds = new Set(loaded.map((l) => l.id));
-            return normalizeDocumentsTo2027([
-              ...loaded,
-              ...prev.filter((p) => !existingIds.has(p.id)),
-            ]);
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'documents')
-    );
-
-    // Requests listener (scoped to current user's requests, preserving history)
-    const reqQuery = query(
-      collection(db, 'requests'),
-      where('requesterId', '==', firebaseUser.uid)
-    );
-    const unsubReq = onSnapshot(
-      reqQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          setRequests((prev) => {
-            const prevMap = new Map(prev.map((p) => [p.id, p]));
-            const loaded: InternalRequest[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              const existing = prevMap.get(d.id);
-              return {
-                id: d.id,
-                protocol: data.protocol,
-                requesterId: data.requesterId,
-                requesterName: data.requesterName,
-                requesterDepartment: data.requesterDepartment,
-                targetDepartment: data.targetDepartment,
-                subject: data.subject,
-                description: data.description,
-                priority: data.priority,
-                status: data.status,
-                createdAtIso: data.createdAtIso,
-                originalDueAtIso: data.originalDueAtIso,
-                currentDueAtIso: data.currentDueAtIso,
-                attachmentName: data.attachmentName,
-                history: existing?.history || [
-                  {
-                    id: `h-${d.id}`,
-                    timestamp: 'Registrado no Firestore',
-                    actorName: data.requesterName,
-                    action: `Protocolo ${data.protocol} sincronizado com SLA de 48h.`,
-                  },
-                ],
-              };
-            });
-            const existingIds = new Set(loaded.map((l) => l.id));
-            return [...loaded, ...prev.filter((p) => !existingIds.has(p.id))];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'requests')
-    );
-
-    // Chats & Corporate Groups listener
-    const chatsQuery = query(
-      collection(db, 'chats'),
-      where('department', 'in', allowedAudiences)
-    );
-    const unsubChats = onSnapshot(
-      chatsQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const loadedThreads: ChatThread[] = snapshot.docs.map((d) => {
-            const data = d.data();
-            return {
-              id: d.id,
-              isGroup: Boolean(data.isGroup),
-              name: data.name,
-              roleOrDept: data.roleOrDept,
-              department: data.department,
-              pinnedNotice: data.pinnedNotice,
-              participantsCount: data.participantsCount || 2,
-              unreadCount: 0,
-              messages: [],
-            };
-          });
-          setChats((prev) => {
-            const prevMap = new Map(prev.map((p) => [p.id, p]));
-            const merged = loadedThreads.map((lt) => {
-              const existing = prevMap.get(lt.id);
-              return existing
-                ? {
-                    ...existing,
-                    name: lt.name,
-                    roleOrDept: lt.roleOrDept,
-                    pinnedNotice: lt.pinnedNotice ?? existing.pinnedNotice,
-                    participantsCount: lt.participantsCount ?? existing.participantsCount,
-                  }
-                : lt;
-            });
-            const loadedIds = new Set(loadedThreads.map((l) => l.id));
-            return [...merged, ...prev.filter((p) => !loadedIds.has(p.id))];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'chats')
-    );
-
-    // Notifications listener (scoped to current user or ALL)
-    const notifQuery = query(
-      collection(db, 'notifications'),
-      where('recipientId', 'in', [firebaseUser.uid, 'ALL'])
-    );
-    const unsubNotif = onSnapshot(
-      notifQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const loadedNotifs: CorporateNotification[] = snapshot.docs.map((d) => {
-            const data = d.data();
-            return {
-              id: d.id,
-              type: data.type,
-              dotColor: data.dotColor,
-              title: data.title,
-              subtitle: data.subtitle,
-              timeLabel: data.timeLabel,
-              read: Boolean(data.read),
-              targetSection: data.targetSection as MenuSection,
-              targetId: data.targetId,
-              recipientId: data.recipientId,
-              publicationId: data.publicationId || data.targetId || d.id,
-              createdAtIso: data.createdAtIso || '2026-10-28T12:00:00.000Z',
-            };
-          });
-          setNotifications((prev) => {
-            const prevMap = new Map(prev.map((p) => [p.id, p]));
-            const merged = loadedNotifs.map((ln) => {
-              const existing = prevMap.get(ln.id);
-              return existing ? { ...ln, read: existing.read || ln.read } : ln;
-            });
-            const existingIds = new Set(loadedNotifs.map((l) => l.id));
-            return [...merged, ...prev.filter((p) => !existingIds.has(p.id))];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
-    );
-
-    // Admin-scoped listeners for Invites & Audit Logs when authenticated as Bootstrapped Admin
-    let unsubInvites: (() => void) | null = null;
-    let unsubAuditLogs: (() => void) | null = null;
-
-    if (firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
-      const invQuery = query(
-        collection(db, 'invites'),
-        where('status', 'in', ['Pendente', 'Ativado', 'Expirado'])
-      );
-      unsubInvites = onSnapshot(
-        invQuery,
-        (snapshot) => {
-          if (!snapshot.empty) {
-            const loadedInvites: EmployeeInvite[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              return {
-                id: d.id,
-                fullName: data.fullName,
-                email: data.email,
-                roleTitle: data.roleTitle,
-                department: data.department,
-                accessLevel: data.accessLevel,
-                token: data.token,
-                expiresAt: data.expiresAt,
-                status: data.status,
-              };
-            });
-            setInvites((prev) => {
-              const existingIds = new Set(loadedInvites.map((l) => l.id));
-              return [...loadedInvites, ...prev.filter((p) => !existingIds.has(p.id))];
-            });
-          }
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'invites')
-      );
-
-      const logsQuery = query(
-        collection(db, 'audit_logs'),
-        where('role', 'in', ['FUNCIONARIO', 'ADMINISTRADOR', 'DIRETORIA'])
-      );
-      unsubAuditLogs = onSnapshot(
-        logsQuery,
-        (snapshot) => {
-          if (!snapshot.empty) {
-            const loadedLogs: AuditLog[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              return {
-                id: d.id,
-                timestamp: data.timestamp,
-                actor: data.actor,
-                role: data.role,
-                action: data.action,
-                details: data.details,
-              };
-            });
-            setAuditLogs((prev) => {
-              const existingIds = new Set(loadedLogs.map((l) => l.id));
-              return [...loadedLogs, ...prev.filter((p) => !existingIds.has(p.id))];
-            });
-          }
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'audit_logs')
-      );
-    }
-
-    // Fretes Financeiro listener (real-time synchronized operations)
-    const fretesQuery = query(
-      collection(db, 'fretes_financeiro'),
-      where('status', 'in', [
-        'Pendente Adiantamento',
-        'Adiantamento Pago',
-        'Aguardando Entrega',
-        'Pendente Saldo',
-        'Pago',
-      ])
-    );
-    const unsubFretes = onSnapshot(
-      fretesQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          setFreights((prev) => {
-            const prevMap = new Map(prev.map((f) => [f.id, f]));
-            const loaded: FreightRecord[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              const existing = prevMap.get(d.id);
-              return {
-                id: d.id,
-                code: data.code,
-                createdAtDate: data.createdAtDate,
-                createdAtIso: data.createdAtIso,
-                empresaMarca: data.empresaMarca || existing?.empresaMarca || 'RODOVAR',
-                dataCarregamento: data.dataCarregamento || existing?.dataCarregamento,
-                unidadeOperacional: data.unidadeOperacional || existing?.unidadeOperacional || 'BA - Salvador',
-                comercialResponsavel: data.comercialResponsavel || existing?.comercialResponsavel,
-                expedicaoResponsavel: data.expedicaoResponsavel || existing?.expedicaoResponsavel,
-                cliente: data.cliente,
-                telefoneCliente: data.telefoneCliente || existing?.telefoneCliente,
-                motoristaNome: data.motoristaNome || existing?.motoristaNome,
-                motoristaTelefone: data.motoristaTelefone || existing?.motoristaTelefone,
-                emergenciaNome: data.emergenciaNome || existing?.emergenciaNome,
-                emergenciaTelefone: data.emergenciaTelefone || existing?.emergenciaTelefone,
-                origem: data.origem,
-                destino: data.destino,
-                dataColeta: data.dataColeta,
-                dataEntrega: data.dataEntrega,
-                valorFreteEmpresa: data.valorFreteEmpresa || existing?.valorFreteEmpresa,
-                valorFreteMotorista: data.valorFreteMotorista || existing?.valorFreteMotorista,
-                regraTipo: data.regraTipo,
-                regraLabel: data.regraLabel,
-                percentualAdiantamento: data.percentualAdiantamento,
-                percentualSaldo: data.percentualSaldo,
-                valorTotal: data.valorTotal,
-                valorAdiantamento: data.valorAdiantamento,
-                valorSaldo: data.valorSaldo,
-                favorecido: data.favorecido,
-                banco: data.banco,
-                agencia: data.agencia,
-                conta: data.conta,
-                tipoChavePix: data.tipoChavePix,
-                chavePix: data.chavePix,
-                status: data.status,
-                adiantamentoPago: Boolean(data.adiantamentoPago),
-                adiantamentoPagoEm: data.adiantamentoPagoEm || existing?.adiantamentoPagoEm,
-                codigoTransacaoAdiantamento: data.codigoTransacaoAdiantamento || existing?.codigoTransacaoAdiantamento,
-                entregaConfirmada: Boolean(data.entregaConfirmada),
-                entregaConfirmadaEm: data.entregaConfirmadaEm || existing?.entregaConfirmadaEm,
-                saldoPago: Boolean(data.saldoPago),
-                saldoPagoEm: data.saldoPagoEm || existing?.saldoPagoEm,
-                codigoTransacaoSaldo: data.codigoTransacaoSaldo || existing?.codigoTransacaoSaldo,
-                observacoes: data.observacoes || existing?.observacoes,
-                solicitanteNome: data.solicitanteNome,
-                docs: existing?.docs || {},
-              };
-            });
-            const existingIds = new Set(loaded.map((l) => l.id));
-            return [...loaded, ...prev.filter((p) => !existingIds.has(p.id))];
-          });
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'fretes_financeiro')
-    );
-
-    return () => {
-      unsubAnn();
-      unsubEvt();
-      unsubDoc();
-      unsubReq();
-      unsubChats();
-      unsubNotif();
-      unsubFretes();
-      if (unsubInvites) unsubInvites();
-      if (unsubAuditLogs) unsubAuditLogs();
-    };
-  }, [authReady, firebaseUser]);
 
   const handleMarkNotificationRead = async (notifId: string) => {
     if(notifId.startsWith('agenda:')){const response=await fetch('/api/agenda/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:[notifId]})});if(!response.ok)return;}
@@ -1238,13 +763,6 @@ export default function App() {
     }
     if (notifId.startsWith('fnotif-')) {
       void apiMarkFreightNotificationRead(notifId);
-    }
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'notifications', notifId), { read: true });
-      } catch (err) {
-        console.debug('Notification read sync info:', err);
-      }
     }
   };
 
@@ -1270,13 +788,6 @@ export default function App() {
   const handleDeleteNotification = async (notifId: string) => {
     if(notifId.startsWith('mural:')){const response=await fetch('/api/mural/notifications/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:[notifId],dismiss:true})});if(!response.ok)return;}
     setNotifications((prev) => prev.filter((n) => n.id !== notifId));
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'notifications', notifId));
-      } catch (err) {
-        console.debug('Delete notification sync info:', err);
-      }
-    }
   };
 
   // Server-Validated Credential Login Handler
@@ -1375,9 +886,6 @@ export default function App() {
     } catch (err) {
       console.debug('Session clear info:', err);
     }
-    if (firebaseUser) {
-      await firebaseSignOut(auth);
-    }
     setIsAuthenticated(false);
     setShowProfileDropdown(false);
     try {
@@ -1460,21 +968,6 @@ export default function App() {
       );
     }
 
-    if (firebaseUser) {
-      const readPath = `announcements/${annId}/reads/${firebaseUser.uid}`;
-      try {
-        await setDoc(doc(db, 'announcements', annId, 'reads', firebaseUser.uid), {
-          announcementId: annId,
-          userId: firebaseUser.uid,
-          userName: currentUser.name.slice(0, 120),
-          department: currentUser.department.slice(0, 60),
-          confirmedAt: nowStr.slice(0, 40),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Read receipt saved locally:', readPath, err);
-      }
-    }
   };
 
   const handleToggleLike = async (annId: string) => {
@@ -1494,22 +987,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      const likeRef = doc(db, 'announcements', annId, 'likes', firebaseUser.uid);
-      try {
-        if (alreadyLiked) {
-          await deleteDoc(likeRef);
-        } else {
-          await setDoc(likeRef, {
-            announcementId: annId,
-            userId: firebaseUser.uid,
-            createdAt: serverTimestamp(),
-          });
-        }
-      } catch (err) {
-        console.debug('Like sync info:', err);
-      }
-    }
   };
 
   const handleAddComment = async (annId: string, text: string) => {
@@ -1541,22 +1018,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'announcements', annId, 'comments', commentId), {
-          announcementId: annId,
-          authorId: firebaseUser.uid,
-          authorName: currentUser.name.slice(0, 120),
-          authorRole: currentUser.roleTitle.slice(0, 120),
-          authorAvatar: currentUser.avatar.slice(0, 300),
-          content: text.slice(0, 1000),
-          createdAtFormatted: createdAtFormatted.slice(0, 40),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Comment sync info:', err);
-      }
-    }
   };
 
   const handleDeleteComment = async (annId: string, commentId: string) => {
@@ -1570,13 +1031,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'announcements', annId, 'comments', commentId));
-      } catch (err) {
-        console.debug('Delete comment sync info:', err);
-      }
-    }
   };
 
   const handleUpdateAnnouncement = async (
@@ -1622,27 +1076,6 @@ export default function App() {
       ...prev,
     ]);
 
-    if (firebaseUser) {
-      try {
-        const fsUpdates: Record<string, unknown> = {};
-        if (updates.title) fsUpdates.title = updates.title.slice(0, 180);
-        if (updates.summary) fsUpdates.summary = updates.summary.slice(0, 400);
-        if (updates.content) fsUpdates.content = updates.content.slice(0, 5000);
-        if (updates.category) fsUpdates.category = updates.category;
-        if (updates.priority) fsUpdates.priority = updates.priority;
-        if (updates.targetAudience)
-          fsUpdates.targetAudience = String(updates.targetAudience).slice(0, 60);
-        if (typeof updates.requireReadConfirmation === 'boolean')
-          fsUpdates.requireReadConfirmation = updates.requireReadConfirmation;
-        if (typeof updates.pinned === 'boolean') fsUpdates.pinned = updates.pinned;
-        if (updates.coverImage && updates.coverImage.length <= 300)
-          fsUpdates.coverImage = updates.coverImage;
-
-        await updateDoc(doc(db, 'announcements', annId), fsUpdates);
-      } catch (err) {
-        console.debug('Announcement update local/Firestore info:', err);
-      }
-    }
   };
 
   const handleTogglePinAnnouncement = async (annId: string) => {
@@ -1655,13 +1088,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'announcements', annId), { pinned: nextPinned });
-      } catch (err) {
-        console.debug('Pin sync info:', err);
-      }
-    }
   };
 
   const handleToggleArchiveAnnouncement = async (annId: string) => {
@@ -1674,13 +1100,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'announcements', annId), { archived: nextArchived });
-      } catch (err) {
-        console.debug('Archive sync info:', err);
-      }
-    }
   };
 
   const handleDeleteAnnouncement = async (annId: string) => {
@@ -1694,13 +1113,6 @@ export default function App() {
         'EXCLUSAO_COMUNICADO',
         `Excluiu o comunicado oficial: "${target.title}"`
       );
-    }
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'announcements', annId));
-      } catch (err) {
-        console.debug('Delete announcement sync info:', err);
-      }
     }
   };
 
@@ -1764,28 +1176,6 @@ export default function App() {
       ...prev,
     ]);
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'announcements', annId), {
-          title: created.title.slice(0, 180),
-          summary: created.summary.slice(0, 400),
-          content: created.content.slice(0, 5000),
-          authorId: firebaseUser.uid,
-          authorName: currentUser.name.slice(0, 120),
-          department: created.department.slice(0, 60),
-          dateFormatted: dateFormatted.slice(0, 30),
-          coverImage: (created.coverImage || '/assets/aistudio/010203_5a4289e5.png').slice(0, 300),
-          category: created.category,
-          priority: created.priority,
-          targetAudience: String(created.targetAudience).slice(0, 60),
-          requireReadConfirmation: Boolean(created.requireReadConfirmation),
-          pinned: Boolean(created.pinned),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `announcements/${annId}`);
-      }
-    }
   };
 
   const handleCreateRequest = async (reqData: {
@@ -1851,32 +1241,6 @@ export default function App() {
       ];
     });
 
-    if (firebaseUser) {
-      try {
-        const payload: Record<string, unknown> = {
-          protocol: protocol.slice(0, 30),
-          requesterId: firebaseUser.uid,
-          requesterName: currentUser.name.slice(0, 120),
-          requesterDepartment: currentUser.department.slice(0, 60),
-          targetDepartment: reqData.targetDepartment.slice(0, 60),
-          subject: reqData.subject.slice(0, 200),
-          description: reqData.description.slice(0, 3000),
-          priority: reqData.priority,
-          status: 'Aberta',
-          createdAtIso: newReq.createdAtIso.slice(0, 40),
-          originalDueAtIso: newReq.originalDueAtIso.slice(0, 40),
-          currentDueAtIso: newReq.currentDueAtIso.slice(0, 40),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        if (reqData.attachmentName) {
-          payload.attachmentName = reqData.attachmentName.slice(0, 200);
-        }
-        await setDoc(doc(db, 'requests', reqId), payload);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `requests/${reqId}`);
-      }
-    }
   };
 
   const handleUpdateRequestStatus = async (
@@ -1904,16 +1268,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'requests', reqId), {
-          status,
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Status update local/Firestore info:', err);
-      }
-    }
   };
 
   const handleExtendRequestDeadline = async (
@@ -1945,16 +1299,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser && updatedDueIso) {
-      try {
-        await updateDoc(doc(db, 'requests', reqId), {
-          currentDueAtIso: updatedDueIso.slice(0, 40),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Deadline extension info:', err);
-      }
-    }
   };
 
   const handleAddRequestResponse = async (reqId: string, responseNote: string) => {
@@ -1984,21 +1328,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'requests', reqId, 'history', histId), {
-          requestId: reqId,
-          actorId: firebaseUser.uid,
-          actorName: currentUser.name.slice(0, 120),
-          action: 'Parecer / Acompanhamento registrado no protocolo',
-          note: responseNote.slice(0, 500),
-          timestamp: timestamp.slice(0, 40),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Request history sync info:', err);
-      }
-    }
   };
 
   const handleEscalateRequestToDiretoria = async (reqId: string, reason: string) => {
@@ -2042,18 +1371,6 @@ export default function App() {
       ...prev,
     ]);
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'requests', reqId), {
-          targetDepartment: 'Diretoria',
-          priority: 'Urgente',
-          status: 'Em análise',
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Escalate request sync info:', err);
-      }
-    }
   };
 
   const handleDeleteRequest = async (reqId: string) => {
@@ -2064,13 +1381,6 @@ export default function App() {
         'EXCLUSAO_PROTOCOLO_SLA',
         `Excluiu protocolo interno ${target.protocol} ("${target.subject}")`
       );
-    }
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'requests', reqId));
-      } catch (err) {
-        console.debug('Delete request sync info:', err);
-      }
     }
   };
 
@@ -2096,56 +1406,6 @@ export default function App() {
       'SOLICITACAO_PAGAMENTO_FRETE',
       `Registrou frete ${newFreight.code} (${newFreight.cliente}) • Rota ${newFreight.origem} ➔ ${newFreight.destino} • Total R$ ${newFreight.valorTotal.toFixed(2)}`
     );
-    if (firebaseUser) {
-      try {
-        const payload: Record<string, unknown> = {
-          code: newFreight.code.slice(0, 20),
-          createdAtDate: newFreight.createdAtDate.slice(0, 20),
-          createdAtIso: newFreight.createdAtIso.slice(0, 40),
-          empresaMarca: newFreight.empresaMarca || 'RODOVAR',
-          dataCarregamento: (newFreight.dataCarregamento || newFreight.createdAtDate).slice(0, 20),
-          unidadeOperacional: newFreight.unidadeOperacional || 'BA - Salvador',
-          comercialResponsavel: (newFreight.comercialResponsavel || 'Jeise / César').slice(0, 120),
-          expedicaoResponsavel: (newFreight.expedicaoResponsavel || 'Marcos Silva').slice(0, 120),
-          cliente: newFreight.cliente.slice(0, 120),
-          origem: newFreight.origem.slice(0, 140),
-          destino: newFreight.destino.slice(0, 140),
-          dataColeta: newFreight.dataColeta.slice(0, 20),
-          dataEntrega: newFreight.dataEntrega.slice(0, 20),
-          valorFreteEmpresa: newFreight.valorFreteEmpresa || newFreight.valorTotal,
-          valorFreteMotorista: newFreight.valorFreteMotorista || newFreight.valorTotal,
-          regraTipo: newFreight.regraTipo,
-          regraLabel: newFreight.regraLabel.slice(0, 40),
-          percentualAdiantamento: newFreight.percentualAdiantamento,
-          percentualSaldo: newFreight.percentualSaldo,
-          valorTotal: newFreight.valorTotal,
-          valorAdiantamento: newFreight.valorAdiantamento,
-          valorSaldo: newFreight.valorSaldo,
-          favorecido: newFreight.favorecido.slice(0, 120),
-          banco: newFreight.banco.slice(0, 80),
-          agencia: newFreight.agencia.slice(0, 30),
-          conta: newFreight.conta.slice(0, 40),
-          tipoChavePix: newFreight.tipoChavePix,
-          chavePix: newFreight.chavePix.slice(0, 120),
-          status: newFreight.status,
-          adiantamentoPago: Boolean(newFreight.adiantamentoPago),
-          entregaConfirmada: Boolean(newFreight.entregaConfirmada),
-          saldoPago: Boolean(newFreight.saldoPago),
-          solicitanteNome: newFreight.solicitanteNome.slice(0, 120),
-          updatedAt: serverTimestamp(),
-        };
-        if (newFreight.telefoneCliente) payload.telefoneCliente = newFreight.telefoneCliente.slice(0, 30);
-        if (newFreight.motoristaNome) payload.motoristaNome = newFreight.motoristaNome.slice(0, 120);
-        if (newFreight.motoristaTelefone) payload.motoristaTelefone = newFreight.motoristaTelefone.slice(0, 30);
-        if (newFreight.emergenciaNome) payload.emergenciaNome = newFreight.emergenciaNome.slice(0, 120);
-        if (newFreight.emergenciaTelefone) payload.emergenciaTelefone = newFreight.emergenciaTelefone.slice(0, 30);
-        if (newFreight.observacoes) payload.observacoes = newFreight.observacoes.slice(0, 1000);
-
-        await setDoc(doc(db, 'fretes_financeiro', newFreight.id), payload);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `fretes_financeiro/${newFreight.id}`);
-      }
-    }
   };
 
   const handleUpdateFreight = async (updatedFreight: FreightRecord, auditDescription: string) => {
@@ -2153,61 +1413,6 @@ export default function App() {
       prev.map((f) => (f.id === updatedFreight.id ? updatedFreight : f))
     );
     await recordAuditLog('ATUALIZACAO_FINANCEIRO_FRETE', auditDescription);
-    if (firebaseUser) {
-      try {
-        const payload: Record<string, unknown> = {
-          code: updatedFreight.code.slice(0, 20),
-          createdAtDate: updatedFreight.createdAtDate.slice(0, 20),
-          createdAtIso: updatedFreight.createdAtIso.slice(0, 40),
-          empresaMarca: updatedFreight.empresaMarca || 'RODOVAR',
-          dataCarregamento: (updatedFreight.dataCarregamento || updatedFreight.createdAtDate).slice(0, 20),
-          unidadeOperacional: updatedFreight.unidadeOperacional || 'BA - Salvador',
-          comercialResponsavel: (updatedFreight.comercialResponsavel || 'Jeise / César').slice(0, 120),
-          expedicaoResponsavel: (updatedFreight.expedicaoResponsavel || 'Marcos Silva').slice(0, 120),
-          cliente: updatedFreight.cliente.slice(0, 120),
-          origem: updatedFreight.origem.slice(0, 140),
-          destino: updatedFreight.destino.slice(0, 140),
-          dataColeta: updatedFreight.dataColeta.slice(0, 20),
-          dataEntrega: updatedFreight.dataEntrega.slice(0, 20),
-          valorFreteEmpresa: updatedFreight.valorFreteEmpresa || updatedFreight.valorTotal,
-          valorFreteMotorista: updatedFreight.valorFreteMotorista || updatedFreight.valorTotal,
-          regraTipo: updatedFreight.regraTipo,
-          regraLabel: updatedFreight.regraLabel.slice(0, 40),
-          percentualAdiantamento: updatedFreight.percentualAdiantamento,
-          percentualSaldo: updatedFreight.percentualSaldo,
-          valorTotal: updatedFreight.valorTotal,
-          valorAdiantamento: updatedFreight.valorAdiantamento,
-          valorSaldo: updatedFreight.valorSaldo,
-          favorecido: updatedFreight.favorecido.slice(0, 120),
-          banco: updatedFreight.banco.slice(0, 80),
-          agencia: updatedFreight.agencia.slice(0, 30),
-          conta: updatedFreight.conta.slice(0, 40),
-          tipoChavePix: updatedFreight.tipoChavePix,
-          chavePix: updatedFreight.chavePix.slice(0, 120),
-          status: updatedFreight.status,
-          adiantamentoPago: Boolean(updatedFreight.adiantamentoPago),
-          entregaConfirmada: Boolean(updatedFreight.entregaConfirmada),
-          saldoPago: Boolean(updatedFreight.saldoPago),
-          solicitanteNome: updatedFreight.solicitanteNome.slice(0, 120),
-          updatedAt: serverTimestamp(),
-        };
-        if (updatedFreight.telefoneCliente) payload.telefoneCliente = updatedFreight.telefoneCliente.slice(0, 30);
-        if (updatedFreight.motoristaNome) payload.motoristaNome = updatedFreight.motoristaNome.slice(0, 120);
-        if (updatedFreight.motoristaTelefone) payload.motoristaTelefone = updatedFreight.motoristaTelefone.slice(0, 30);
-        if (updatedFreight.emergenciaNome) payload.emergenciaNome = updatedFreight.emergenciaNome.slice(0, 120);
-        if (updatedFreight.emergenciaTelefone) payload.emergenciaTelefone = updatedFreight.emergenciaTelefone.slice(0, 30);
-        if (updatedFreight.adiantamentoPagoEm) payload.adiantamentoPagoEm = updatedFreight.adiantamentoPagoEm.slice(0, 40);
-        if (updatedFreight.codigoTransacaoAdiantamento) payload.codigoTransacaoAdiantamento = updatedFreight.codigoTransacaoAdiantamento.slice(0, 60);
-        if (updatedFreight.entregaConfirmadaEm) payload.entregaConfirmadaEm = updatedFreight.entregaConfirmadaEm.slice(0, 40);
-        if (updatedFreight.saldoPagoEm) payload.saldoPagoEm = updatedFreight.saldoPagoEm.slice(0, 40);
-        if (updatedFreight.codigoTransacaoSaldo) payload.codigoTransacaoSaldo = updatedFreight.codigoTransacaoSaldo.slice(0, 60);
-        if (updatedFreight.observacoes) payload.observacoes = updatedFreight.observacoes.slice(0, 1000);
-
-        await setDoc(doc(db, 'fretes_financeiro', updatedFreight.id), payload, { merge: true });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `fretes_financeiro/${updatedFreight.id}`);
-      }
-    }
   };
 
   const handleImportPortalBackup = (backupData: Record<string, unknown>): boolean => {
@@ -2296,27 +1501,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        const msgPayload: Record<string, unknown> = {
-          chatId: threadId,
-          senderId: firebaseUser.uid,
-          senderName: currentUser.name.slice(0, 120),
-          senderRole: currentUser.roleTitle.slice(0, 120),
-          text: text.slice(0, 2000),
-          timestamp: nowStr.slice(0, 40),
-          status: 'delivered',
-          createdAt: serverTimestamp(),
-        };
-        if (attachment) {
-          msgPayload.attachmentName = attachment.slice(0, 200);
-          msgPayload.attachmentSize = (attachmentSize || '450 KB').slice(0, 30);
-        }
-        await setDoc(doc(db, 'chats', threadId, 'messages', msgId), msgPayload);
-      } catch (err) {
-        console.debug('Chat message local/Firestore sync:', err);
-      }
-    }
   };
 
   const handleMarkThreadRead = (threadId: string) => {
@@ -2384,26 +1568,6 @@ export default function App() {
       ...prev,
     ]);
 
-    if (firebaseUser) {
-      try {
-        const threadPayload: Record<string, unknown> = {
-          isGroup: true,
-          name: groupData.name.slice(0, 140),
-          roleOrDept: newGroup.roleOrDept.slice(0, 160),
-          department: String(groupData.department).slice(0, 60),
-          participantsCount: uniqueParticipants.length,
-          createdBy: firebaseUser.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        if (groupData.pinnedNotice?.trim()) {
-          threadPayload.pinnedNotice = groupData.pinnedNotice.trim().slice(0, 400);
-        }
-        await setDoc(doc(db, 'chats', grpId), threadPayload);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `chats/${grpId}`);
-      }
-    }
   };
 
   const handleUpdateThreadPinnedNotice = async (threadId: string, pinnedNotice: string) => {
@@ -2411,16 +1575,6 @@ export default function App() {
       prev.map((c) => (c.id === threadId ? { ...c, pinnedNotice } : c))
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'chats', threadId), {
-          pinnedNotice: pinnedNotice.slice(0, 400),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Pinned notice sync info:', err);
-      }
-    }
   };
 
   const handleTogglePinMessage = async (threadId: string, messageId: string) => {
@@ -2454,13 +1608,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'chats', threadId, 'messages', messageId));
-      } catch (err) {
-        console.debug('Delete message sync info:', err);
-      }
-    }
   };
 
   const handleManageGroupParticipants = async (
@@ -2480,16 +1627,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'chats', threadId), {
-          participantsCount: participantIds.length,
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.debug('Manage participants sync info:', err);
-      }
-    }
   };
 
   const handleToggleEventRsvp = async (eventId: string) => {
@@ -2509,23 +1646,6 @@ export default function App() {
       })
     );
 
-    if (firebaseUser) {
-      const attRef = doc(db, 'events', eventId, 'attendees', firebaseUser.uid);
-      try {
-        if (alreadyAttending) {
-          await deleteDoc(attRef);
-        } else {
-          await setDoc(attRef, {
-            eventId,
-            userId: firebaseUser.uid,
-            userName: currentUser.name.slice(0, 120),
-            createdAt: serverTimestamp(),
-          });
-        }
-      } catch (err) {
-        console.debug('Event RSVP sync info:', err);
-      }
-    }
   };
 
   const handleCreateEvent = async (newEvt: Omit<CorporateEvent, 'id' | 'attendees'>) => {
@@ -2539,27 +1659,6 @@ export default function App() {
       },
     ]);
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'events', evtId), {
-          day: newEvt.day.slice(0, 4),
-          monthShort: newEvt.monthShort.slice(0, 10),
-          dateIso: newEvt.dateIso.slice(0, 20),
-          time: newEvt.time.slice(0, 40),
-          location: newEvt.location.slice(0, 160),
-          title: newEvt.title.slice(0, 180),
-          organizer: newEvt.organizer.slice(0, 120),
-          department: String(newEvt.department).slice(0, 60),
-          badgeLabel: newEvt.badgeLabel,
-          badgeColor: newEvt.badgeColor,
-          description: newEvt.description.slice(0, 2000),
-          authorId: firebaseUser.uid,
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `events/${evtId}`);
-      }
-    }
   };
 
   const handleUpdateEvent = async (
@@ -2573,20 +1672,6 @@ export default function App() {
       'EDICAO_EVENTO_AGENDA',
       `Atualizou evento da agenda corporativa: "${updates.title || eventId}"`
     );
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'events', eventId), {
-          ...(updates.title ? { title: updates.title.slice(0, 180) } : {}),
-          ...(updates.day ? { day: updates.day.slice(0, 4) } : {}),
-          ...(updates.monthShort ? { monthShort: updates.monthShort.slice(0, 10) } : {}),
-          ...(updates.time ? { time: updates.time.slice(0, 40) } : {}),
-          ...(updates.location ? { location: updates.location.slice(0, 160) } : {}),
-          ...(updates.description ? { description: updates.description.slice(0, 2000) } : {}),
-        });
-      } catch (err) {
-        console.debug('Update event sync info:', err);
-      }
-    }
   };
 
   const handleDeleteEvent = async (eventId: string) => {
@@ -2597,13 +1682,6 @@ export default function App() {
         'EXCLUSAO_EVENTO_AGENDA',
         `Removeu evento da agenda: "${target.title}"`
       );
-    }
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'events', eventId));
-      } catch (err) {
-        console.debug('Delete event sync info:', err);
-      }
     }
   };
 
@@ -2621,30 +1699,6 @@ export default function App() {
       ...prev,
     ]);
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'documents', docId), {
-          title: newDoc.title.slice(0, 180),
-          category: newDoc.category,
-          version: newDoc.version.slice(0, 20),
-          updatedAt: today.slice(0, 30),
-          author: newDoc.author.slice(0, 120),
-          authorId: firebaseUser.uid,
-          size: newDoc.size.slice(0, 30),
-          fileType: newDoc.fileType,
-          allowedDepartments: 'Todos',
-          description: newDoc.description.slice(0, 1500),
-          contentPreview: newDoc.contentPreview.slice(0, 4000),
-          ...(newDoc.pdfUrl ? { pdfUrl: newDoc.pdfUrl } : {}),
-          ...(newDoc.attachments && newDoc.attachments.length > 0
-            ? { attachments: newDoc.attachments }
-            : {}),
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `documents/${docId}`);
-      }
-    }
   };
 
   const handleUpdateDocumentVersion = async (
@@ -2680,18 +1734,6 @@ export default function App() {
       `Publicou revisão ${newVersion} para o documento ${docId}: ${newDescription}`
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'documents', docId), {
-          version: newVersion.slice(0, 20),
-          updatedAt: today.slice(0, 30),
-          description: nextDescription.slice(0, 1500),
-          contentPreview: nextPreview.slice(0, 4000),
-        });
-      } catch (err) {
-        console.debug('Document version sync info:', err);
-      }
-    }
   };
 
   const handleDeleteDocument = async (docId: string) => {
@@ -2702,13 +1744,6 @@ export default function App() {
         'EXCLUSAO_DOCUMENTO_POP',
         `Excluiu documento corporativo: "${target.title}" (${target.version})`
       );
-    }
-    if (firebaseUser) {
-      try {
-        await deleteDoc(doc(db, 'documents', docId));
-      } catch (err) {
-        console.debug('Delete document sync info:', err);
-      }
     }
   };
 
@@ -2734,24 +1769,6 @@ export default function App() {
       `Emitiu convite token único (${token}) para ${inv.email}`
     );
 
-    if (firebaseUser) {
-      try {
-        await setDoc(doc(db, 'invites', invId), {
-          fullName: inv.fullName.slice(0, 120),
-          email: inv.email.slice(0, 160),
-          roleTitle: inv.roleTitle.slice(0, 120),
-          department: inv.department.slice(0, 60),
-          accessLevel: inv.accessLevel,
-          token: token.slice(0, 64),
-          expiresAt: '24 horas (Uso Único)',
-          status: 'Pendente',
-          createdBy: firebaseUser.uid,
-          createdAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `invites/${invId}`);
-      }
-    }
   };
 
   const handleActivateInviteToken = async (tokenInput: string): Promise<boolean> => {
@@ -2788,15 +1805,6 @@ export default function App() {
       targetInv.accessLevel
     );
 
-    if (firebaseUser) {
-      try {
-        await updateDoc(doc(db, 'invites', targetInv.id), {
-          status: 'Ativado',
-        });
-      } catch (err) {
-        console.debug('Invite activation sync info:', err);
-      }
-    }
     return true;
   };
 
@@ -2810,15 +1818,6 @@ export default function App() {
         target.active ? 'DESATIVACAO_CONTA' : 'REATIVACAO_CONTA',
         `${target.active ? 'Desativou' : 'Reativou'} o acesso de ${target.name} (${target.email})`
       );
-      if (firebaseUser) {
-        try {
-          await updateDoc(doc(db, 'users', empId, 'public', 'profile'), {
-            active: !target.active,
-          });
-        } catch (err) {
-          console.debug('Toggle employee active Firestore sync info:', err);
-        }
-      }
     }
   };
 
@@ -2941,18 +1940,6 @@ export default function App() {
         'ALTERACAO_LOGIN_PERFIL_ADMIN',
         `Atualizou login/credenciais de ${updates.name || target.name}: Login ${updates.login || target.email} • ${updates.roleTitle} (${updates.accessLevel})`
       );
-      if (firebaseUser) {
-        try {
-          await updateDoc(doc(db, 'users', empId, 'public', 'profile'), {
-            name: (updates.name || target.name).slice(0, 120),
-            roleTitle: updates.roleTitle.slice(0, 120),
-            department: updates.department.slice(0, 60),
-            phoneExt: (updates.phoneExt ?? target.phoneExt).slice(0, 40),
-          });
-        } catch (err) {
-          console.debug('Admin employee update Firestore sync info:', err);
-        }
-      }
     }
   };
 
@@ -3058,22 +2045,6 @@ export default function App() {
       };
       setChats((prev) => [newChat, ...prev]);
 
-      if (firebaseUser) {
-        try {
-          await setDoc(doc(db, 'chats', chatId), {
-            isGroup: false,
-            name: emp.name.slice(0, 140),
-            roleOrDept: `${emp.roleTitle} • ${emp.department}`.slice(0, 160),
-            department: emp.department,
-            participantsCount: 2,
-            createdBy: firebaseUser.uid,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          console.debug('Direct chat Firestore creation info:', err);
-        }
-      }
     }
     setActiveSection('mensagens');
   };
