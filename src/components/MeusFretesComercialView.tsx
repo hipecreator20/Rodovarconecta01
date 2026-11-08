@@ -1036,18 +1036,23 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
 
   return (
     <div className="min-h-full bg-[#F3F5F7] text-slate-900 p-4 md:p-6 lg:p-8">
-      {/* TOP HEADER */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">
+      {/* TOP HEADER BANNER */}
+      <div
+        className="relative overflow-hidden rounded-2xl p-5 mb-6 text-white shadow-md border border-white/10 flex flex-col md:flex-row md:items-center md:justify-between gap-4"
+        style={{
+          background: "linear-gradient(90deg, #061019 0%, rgba(6,16,25,0.92) 38%, rgba(6,16,25,0.48) 72%, rgba(6,16,25,0.12) 100%), url('/assets/banner-rodovar-conecta-highway.png') center right / cover no-repeat #101a24"
+        }}
+      >
+        <div className="relative z-10">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
               Meus Fretes — Comercial
             </h1><DriverLookupButton/>
             {canAlsoAccessExpedicao && onSwitchToExpedicao && (
               <button
                 type="button"
                 onClick={onSwitchToExpedicao}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold bg-slate-900 text-[#FFD400] hover:bg-slate-800 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold bg-[#FFD400] text-slate-950 hover:bg-[#ffe033] transition-colors cursor-pointer"
                 title="Alternar para sua fila operacional na Expedição"
               >
                 <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -1055,7 +1060,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
               </button>
             )}
           </div>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <p className="text-sm text-gray-200 mt-1">
             Contratação com o cliente, encaminhamento à Expedição e acompanhamento da operação
           </p>
         </div>

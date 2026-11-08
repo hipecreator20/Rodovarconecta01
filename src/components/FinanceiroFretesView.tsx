@@ -1248,7 +1248,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       {/* =====================================================================
           1. BANNER ESCURO SUPERIOR (DESKTOP & MOBILE)
       ===================================================================== */}
-      <div className="rv-finance-header bg-[#11151C] rounded-2xl px-5 py-4 text-white shadow-md border border-white/5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      <div
+        className="rv-finance-header relative overflow-hidden rounded-2xl px-5 py-4 text-white shadow-md border border-white/10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3"
+        style={{
+          background: "linear-gradient(90deg, #061019 0%, rgba(6,16,25,0.92) 38%, rgba(6,16,25,0.48) 72%, rgba(6,16,25,0.12) 100%), url('/assets/banner-rodovar-conecta-highway.png') center right / cover no-repeat #101a24"
+        }}
+      >
         <div>
           {/* Desktop Title */}
           <h1 className="hidden md:block text-[20px] lg:text-[23px] font-black tracking-tight uppercase leading-tight">

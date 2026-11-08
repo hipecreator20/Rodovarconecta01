@@ -352,7 +352,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
     targetAudience: 'Todos' as Department | 'Todos',
     requireReadConfirmation: true,
     pinned: false,
-    coverImage: '/assets/aistudio/010203_5a4289e5.png',
+    coverImage: '/assets/banner-rodovar-conecta-highway.png',
     attachments: [] as AnnouncementAttachment[],
   });
 
@@ -369,7 +369,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
       targetAudience: ann.targetAudience,
       requireReadConfirmation: ann.requireReadConfirmation,
       pinned: Boolean(ann.pinned),
-      coverImage: ann.coverImage || '/assets/aistudio/010203_5a4289e5.png',
+      coverImage: ann.coverImage || '/assets/banner-rodovar-conecta-highway.png',
       attachments: ann.attachments || [],
     });
     setShowNewAnnModal(true);
@@ -1803,7 +1803,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                     targetAudience: 'Todos',
                     requireReadConfirmation: true,
                     pinned: false,
-                    coverImage: '/assets/aistudio/010203_5a4289e5.png',
+                    coverImage: '/assets/banner-rodovar-conecta-highway.png',
                     attachments: [],
                   });
                   setShowNewAnnModal(true);
@@ -2780,7 +2780,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                   </div>
                   <div className="flex items-center gap-2">
                     {[
-                      { label: 'Frota Oficial RODOVAR', url: '/assets/aistudio/010203_5a4289e5.png' },
+                      { label: 'Banner Oficial RODOVAR CONECTA', url: '/assets/banner-rodovar-conecta-highway.png' },
                       { label: 'Pátio Logístico RODOVAR', url: '/assets/aistudio/DSC00515_18c5e319.JPG' },
                     ].map((preset) => (
                       <button

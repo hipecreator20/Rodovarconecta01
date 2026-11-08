@@ -2420,17 +2420,17 @@ export default function App() {
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             <img
               src={withRevisionParam(
-                systemConfig?.topHeader.imageUrl || '/assets/header-sunset.jpg',
+                systemConfig?.topHeader.imageUrl || '/assets/banner-rodovar-conecta-highway.png',
                 systemConfig?.revision
               )}
-              alt="Cabeçalho Institucional RODOVAR"
+              alt="Cabeçalho Institucional RODOVAR CONECTA"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
               style={{
                 objectPosition: `${systemConfig?.topHeader.focusX ?? 50}% ${systemConfig?.topHeader.focusY ?? 50}%`,
               }}
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = '/assets/header-sunset.jpg';
+                (e.currentTarget as HTMLImageElement).src = '/assets/banner-rodovar-conecta-highway.png';
               }}
             />
             <div

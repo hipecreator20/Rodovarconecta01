@@ -17,7 +17,7 @@ interface WelcomeBannerCarouselProps {
   adminLabel?: string;
 }
 
-const FALLBACK_BANNER_URL = '/assets/aistudio/010203_5a4289e5.png';
+const FALLBACK_BANNER_URL = '/assets/banner-rodovar-conecta-highway.png';
 
 export const WelcomeBannerCarousel: React.FC<WelcomeBannerCarouselProps> = ({
   systemConfig,

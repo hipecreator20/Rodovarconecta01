@@ -1267,39 +1267,44 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         </div>
       )}
 
-      {/* 1. HEADER */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-1">
-        <div>
+      {/* 1. HEADER BANNER */}
+      <div
+        className="relative overflow-hidden rounded-2xl p-5 mb-5 text-white shadow-md border border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+        style={{
+          background: "linear-gradient(90deg, #061019 0%, rgba(6,16,25,0.92) 38%, rgba(6,16,25,0.48) 72%, rgba(6,16,25,0.12) 100%), url('/assets/banner-rodovar-conecta-highway.png') center right / cover no-repeat #101a24"
+        }}
+      >
+        <div className="relative z-10">
           <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="text-xl sm:text-2xl font-black text-[#15191D] tracking-tight">
+            <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
               Meus Fretes — Expedição
             </h1><DriverLookupButton/>
             {hasDualProfile && onSwitchToComercial && (
               <button
                 type="button"
                 onClick={onSwitchToComercial}
-                className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-[#080B0D] text-[#FFD400] px-3 py-1 rounded-lg hover:bg-gray-800 transition cursor-pointer"
+                className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-[#FFD400] text-slate-950 px-3 py-1 rounded-lg hover:bg-[#ffe033] transition cursor-pointer"
               >
                 <ArrowRight className="w-3.5 h-3.5" />
                 <span>Ir para Comercial</span>
               </button>
             )}
           </div>
-          <p className="text-xs text-gray-500 font-medium mt-0.5">
+          <p className="text-xs text-gray-200 font-medium mt-1">
             Preparação operacional, conferência dos 5 itens, videochamada com motorista, emissão da Ordem de Coleta e liberação para o Monitoramento
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <div className="inline-flex items-center gap-2 bg-white border border-gray-200/90 rounded-full pl-1.5 pr-3.5 py-1 shadow-2xs">
+        <div className="relative z-10 flex flex-wrap items-center gap-2.5">
+          <div className="inline-flex items-center gap-2 bg-black/40 backdrop-blur-sm border border-white/15 rounded-full pl-1.5 pr-3.5 py-1 shadow-2xs">
             <div className="w-7 h-7 rounded-full bg-[#FFD400] text-[#080B0D] font-black text-xs flex items-center justify-center">
               {getInitials(currentUser.name)}
             </div>
-            <span className="text-xs font-extrabold text-[#15191D]">
+            <span className="text-xs font-extrabold text-white">
               {currentUser.name.split(' ').slice(0, 2).join(' ')}
             </span>
-            <span className="text-xs text-gray-400">•</span>
-            <span className="text-xs font-semibold text-gray-500">Expedição</span>
+            <span className="text-xs text-gray-300">•</span>
+            <span className="text-xs font-semibold text-[#FFD400]">Expedição</span>
           </div>
         </div>
       </div>

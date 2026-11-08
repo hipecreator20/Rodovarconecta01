@@ -918,11 +918,11 @@ function getDefaultSystemConfig(): SystemConfig {
       height: 700,
     },
     topHeader: {
-      imageUrl: '/assets/header-sunset.jpg',
+      imageUrl: '/assets/banner-rodovar-conecta-highway.png',
       focusX: 50,
       focusY: 50,
-      width: 1920,
-      height: 240,
+      width: 2172,
+      height: 724,
     },
     welcomeBanner: {
       carouselEnabled: false,
@@ -930,13 +930,13 @@ function getDefaultSystemConfig(): SystemConfig {
       items: [
         {
           id: 'banner-default-1',
-          imageUrl: '/assets/aistudio/010203_5a4289e5.png',
+          imageUrl: '/assets/banner-rodovar-conecta-highway.png',
           altText: 'Frota Oficial RODOVAR — Sua carga em primeiro lugar!',
           isDecorative: false,
           focusX: 50,
           focusY: 50,
-          width: 1920,
-          height: 360,
+          width: 2172,
+          height: 724,
         },
       ],
     },

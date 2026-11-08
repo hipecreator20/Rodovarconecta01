@@ -350,9 +350,9 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
                 src={
                   systemConfig
                     ? withRevisionParam(systemConfig.topHeader.imageUrl, systemConfig.revision)
-                    : '/assets/header-sunset.jpg'
+                    : '/assets/banner-rodovar-conecta-highway.png'
                 }
-                alt="Céu de pôr do sol RODOVAR"
+                alt="Cabeçalho Institucional RODOVAR CONECTA"
                 referrerPolicy="no-referrer"
                 style={
                   systemConfig
@@ -390,8 +390,8 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
               ) : (
                 <div className="relative rounded-xl overflow-hidden bg-[#0B0E11] h-[132px] shadow-sm">
                   <img
-                    src="/assets/aistudio/010203_5a4289e5.png"
-                    alt="Caminhão RODOVAR"
+                    src="/assets/banner-rodovar-conecta-highway.png"
+                    alt="Frota RODOVAR CONECTA"
                     referrerPolicy="no-referrer"
                     className="absolute inset-0 w-full h-full object-cover object-center"
                   />
@@ -516,7 +516,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
                   </div>
                   <div className="absolute right-0 bottom-0 top-0 w-[42%] pointer-events-none">
                     <img
-                      src={featuredAnnouncement.coverImage || '/assets/aistudio/010203_5a4289e5.png'}
+                      src={featuredAnnouncement.coverImage || '/assets/banner-rodovar-conecta-highway.png'}
                       alt="Destaque RODOVAR"
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover object-center"
