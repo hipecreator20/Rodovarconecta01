@@ -1,0 +1,33 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidReceiptContentType() {
+      return request.resource.contentType.matches('application/pdf') ||
+             request.resource.contentType.matches('image/jpeg') ||
+             request.resource.contentType.matches('image/png');
+    }
+
+    function isValidReceiptSize() {
+      return request.resource.size > 0 && request.resource.size <= 10 * 1024 * 1024; // Max 10 MB
+    }
+
+    // Armazenamento privado de comprovantes de pagamento de fretes
+    // Proibido acesso público anônimo ou links permanentes não autenticados
+    match /payment-receipts/{freightId}/{installmentType}/{fileName} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() &&
+                    (installmentType == 'ADIANTAMENTO' || installmentType == 'SALDO') &&
+                    isValidReceiptContentType() &&
+                    isValidReceiptSize();
+      allow update, delete: if false; // Preservação de histórico de auditoria (sem sobrescrita silenciosa)
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
