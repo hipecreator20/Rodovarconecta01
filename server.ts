@@ -3084,6 +3084,11 @@ export function createExpressApp(): express.Express {
     })
   );
 
+  const bundledPublicDir = path.join(process.cwd(), 'public');
+  if (bundledPublicDir !== PUBLIC_DIR && fs.existsSync(bundledPublicDir)) {
+    app.use(express.static(bundledPublicDir));
+  }
+
   // Catch-all for unknown /api/* routes (deny by default)
   app.all('/api/*', (_req, res) => {
     res.status(404).json({
@@ -3100,17 +3105,19 @@ export async function startServer() {
   const app = createExpressApp();
 
   // Mount Vite middleware in development or static dist in production
-  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(path.join(ROOT_DIR, 'dist'));
+  const candidateDist = fs.existsSync(path.join(ROOT_DIR, 'dist'))
+    ? path.join(ROOT_DIR, 'dist')
+    : path.join(process.cwd(), 'dist');
+  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(candidateDist);
   if (isProd) {
-    const distPath = path.join(ROOT_DIR, 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(candidateDist));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(path.join(candidateDist, 'index.html'));
     });
   } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);

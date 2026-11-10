@@ -1,4 +1,4 @@
-import { jsPDF } from 'jspdf';
+import type { jsPDF } from 'jspdf';
 import { CarrierBrand, OperationalUnit } from '../types';
 import { getCarrierLogoPngDataUrl, getUnitShortTag } from './carrierLogos';
 import { formatCurrencyBRL } from './freightDatabase';
@@ -77,6 +77,7 @@ export async function generateFreightOrderPdfA4(
   order: FreightOrderDataForPdf,
   canViewFinancialValues: boolean
 ): Promise<void> {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',

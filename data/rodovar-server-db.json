@@ -644,6 +644,12 @@
       "consecutiveFailures": 0,
       "blockedUntil": null,
       "lastFailureAt": 0
+    },
+    "ident:lucas.pereira": {
+      "identifier": "ident:lucas.pereira",
+      "consecutiveFailures": 2,
+      "blockedUntil": null,
+      "lastFailureAt": 1794263024146
     }
   },
   "sessions": {
@@ -1267,6 +1273,222 @@
       "expiresAt": 1794255536835,
       "ip": "127.0.0.1",
       "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjA1OTIxODEsImUiOjE3OTU0NzAxOTIxODEsIm4iOiJiNmZkZjE3NjFmN2I4ZTcxIn0.-2u0aV7QCu3ygZlVJRFhPgI8OtR0cPTrb6015ANy72o": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjA1OTIxODEsImUiOjE3OTU0NzAxOTIxODEsIm4iOiJiNmZkZjE3NjFmN2I4ZTcxIn0.-2u0aV7QCu3ygZlVJRFhPgI8OtR0cPTrb6015ANy72o",
+      "csrfToken": "1ca1cdd625552cd24dfeeb103f1b26c114a8c9a6e2f385b4",
+      "userId": "emp-admin-master",
+      "createdAt": 1794260592181,
+      "expiresAt": 1795470192181,
+      "ip": "serverless",
+      "userAgent": "serverless"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NDE4NzAsImUiOjE3OTQzNDk4NDE4NzAsIm4iOiIyZmJiMDk3MzEwNzU3NTgzIn0.RpAQKs6JtMkZ_GBArXfIXn5pfOkQxfkD9eIscLEPo78": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NDE4NzAsImUiOjE3OTQzNDk4NDE4NzAsIm4iOiIyZmJiMDk3MzEwNzU3NTgzIn0.RpAQKs6JtMkZ_GBArXfIXn5pfOkQxfkD9eIscLEPo78",
+      "csrfToken": "5ad20a71ff228d4d4a2cdae47619e8aca8c5cdf93cc2c48f",
+      "userId": "emp-admin-master",
+      "createdAt": 1794263441870,
+      "expiresAt": 1794349841870,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLWdvb2dsZS1taWdyYXRlZCIsImMiOjE3OTQyNjM0NDE5MzYsImUiOjE3OTQzNDk4NDE5MzYsIm4iOiJjYmQyMjFjMDliMmNlZWZkIn0.uNYpne05y1pqpfKO6197dLPSfNy8_fGeT1mcXnCBBu0": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLWdvb2dsZS1taWdyYXRlZCIsImMiOjE3OTQyNjM0NDE5MzYsImUiOjE3OTQzNDk4NDE5MzYsIm4iOiJjYmQyMjFjMDliMmNlZWZkIn0.uNYpne05y1pqpfKO6197dLPSfNy8_fGeT1mcXnCBBu0",
+      "csrfToken": "2a067f0479c5feeb2456b77eac508fa8215be98f99894225",
+      "userId": "emp-admin-google-migrated",
+      "createdAt": 1794263441936,
+      "expiresAt": 1794349841936,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE1OTM3MDM0LTliODBiMiIsImMiOjE3OTQyNjM0NDIwMTMsImUiOjE3OTQzNDk4NDIwMTMsIm4iOiI3MWI2NDY4ZmM3NDNkMTZjIn0.vPSd0K0_MfC5CUUgk2dL_1RqPDuV_ZVDZ5JTDyuq3WI": {
+      "sessionId": "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE1OTM3MDM0LTliODBiMiIsImMiOjE3OTQyNjM0NDIwMTMsImUiOjE3OTQzNDk4NDIwMTMsIm4iOiI3MWI2NDY4ZmM3NDNkMTZjIn0.vPSd0K0_MfC5CUUgk2dL_1RqPDuV_ZVDZ5JTDyuq3WI",
+      "csrfToken": "c0c33b0a0c4aeba818fe24c6b7d8c015f5b76401ec55054c",
+      "userId": "emp-req-1793215937034-9b80b2",
+      "createdAt": 1794263442013,
+      "expiresAt": 1794349842013,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTYiLCJjIjoxNzk0MjYzNDQyMDg5LCJlIjoxNzk0MzQ5ODQyMDg5LCJuIjoiYTE2YTk4ZDVmZDg2M2NkYSJ9.draY0CkfuiP8RXXbRg4KigQBtWb1zFIzrDYU_oUiDG0": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTYiLCJjIjoxNzk0MjYzNDQyMDg5LCJlIjoxNzk0MzQ5ODQyMDg5LCJuIjoiYTE2YTk4ZDVmZDg2M2NkYSJ9.draY0CkfuiP8RXXbRg4KigQBtWb1zFIzrDYU_oUiDG0",
+      "csrfToken": "c1859e694525774922890ba3ef31e8e8c46347b1099c23a2",
+      "userId": "emp-6",
+      "createdAt": 1794263442089,
+      "expiresAt": 1794349842089,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLXRlc3RlLWxvZ2lzdGljYSIsImMiOjE3OTQyNjM0NDIxNDcsImUiOjE3OTQzNDk4NDIxNDcsIm4iOiJlZDQxMmVmYjQ2MjY0ZGRkIn0.WCD2f6PAydGsTQXHkpXss01pVglOV2GSgn03CfO1a7M": {
+      "sessionId": "s1.eyJ1IjoiZW1wLXRlc3RlLWxvZ2lzdGljYSIsImMiOjE3OTQyNjM0NDIxNDcsImUiOjE3OTQzNDk4NDIxNDcsIm4iOiJlZDQxMmVmYjQ2MjY0ZGRkIn0.WCD2f6PAydGsTQXHkpXss01pVglOV2GSgn03CfO1a7M",
+      "csrfToken": "63da6b4a100c384418e64529effd334a290ec7fc26524e42",
+      "userId": "emp-teste-logistica",
+      "createdAt": 1794263442147,
+      "expiresAt": 1794349842147,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWNvbWVyY2lhbC0yIiwiYyI6MTc5NDI2MzQ0MjIwOSwiZSI6MTc5NDM0OTg0MjIwOSwibiI6Ijg4YzQ2OWRmMjljZmVkMjEifQ.hKsiM9THWxNaFJOOhikQ2Mg-Rg-xI2W64JW12egS2iQ": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWNvbWVyY2lhbC0yIiwiYyI6MTc5NDI2MzQ0MjIwOSwiZSI6MTc5NDM0OTg0MjIwOSwibiI6Ijg4YzQ2OWRmMjljZmVkMjEifQ.hKsiM9THWxNaFJOOhikQ2Mg-Rg-xI2W64JW12egS2iQ",
+      "csrfToken": "20bb57a9b3e4c842bf96c63029dd4ab1511abd81920d2639",
+      "userId": "emp-comercial-2",
+      "createdAt": 1794263442209,
+      "expiresAt": 1794349842209,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTQiLCJjIjoxNzk0MjYzNDQyMjYzLCJlIjoxNzk0MzQ5ODQyMjYzLCJuIjoiY2ZjNDhlZWFjOTFhYWNjZiJ9.WiWfwfPxdBNFBjmVqC4X8Op1KlssWCSN-Z45KjFpDLs": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTQiLCJjIjoxNzk0MjYzNDQyMjYzLCJlIjoxNzk0MzQ5ODQyMjYzLCJuIjoiY2ZjNDhlZWFjOTFhYWNjZiJ9.WiWfwfPxdBNFBjmVqC4X8Op1KlssWCSN-Z45KjFpDLs",
+      "csrfToken": "782dc154d2bd36d2ff6b3a20227959a30d5e47a3e3420da4",
+      "userId": "emp-4",
+      "createdAt": 1794263442263,
+      "expiresAt": 1794349842263,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTMiLCJjIjoxNzk0MjYzNDQyMzE4LCJlIjoxNzk0MzQ5ODQyMzE4LCJuIjoiN2RjMjk1N2VmZTkwYmQxZiJ9.GvPjUIQNXeeMxvDw6Op7RP3zpfyGNLJspeVCNyMH4R8": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTMiLCJjIjoxNzk0MjYzNDQyMzE4LCJlIjoxNzk0MzQ5ODQyMzE4LCJuIjoiN2RjMjk1N2VmZTkwYmQxZiJ9.GvPjUIQNXeeMxvDw6Op7RP3zpfyGNLJspeVCNyMH4R8",
+      "csrfToken": "fe8d8ca19c60f7858e9f8709f286ec002143ec77dda408de",
+      "userId": "emp-3",
+      "createdAt": 1794263442318,
+      "expiresAt": 1794349842318,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTQiLCJjIjoxNzk0MjYzNDQyMzgxLCJlIjoxNzk0MzQ5ODQyMzgxLCJuIjoiYjg3ZDZjNDgyY2QzYzNlNyJ9.f-8zXVStpoU0rrtqX0A48pMXAnYsFni-7if0vbdMcUg": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTQiLCJjIjoxNzk0MjYzNDQyMzgxLCJlIjoxNzk0MzQ5ODQyMzgxLCJuIjoiYjg3ZDZjNDgyY2QzYzNlNyJ9.f-8zXVStpoU0rrtqX0A48pMXAnYsFni-7if0vbdMcUg",
+      "csrfToken": "f15796799ba4663e11e82dbff198e207d28a284f108adac7",
+      "userId": "emp-4",
+      "createdAt": 1794263442381,
+      "expiresAt": 1794349842381,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTciLCJjIjoxNzk0MjYzNDQyNDM3LCJlIjoxNzk0MzQ5ODQyNDM3LCJuIjoiYzRkOTUzOGFmNTgwZDcwOSJ9.e6Va3s6jH7TDVXUAQuCC3_Arvp8GziXhiAs4VPeyvKo": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTciLCJjIjoxNzk0MjYzNDQyNDM3LCJlIjoxNzk0MzQ5ODQyNDM3LCJuIjoiYzRkOTUzOGFmNTgwZDcwOSJ9.e6Va3s6jH7TDVXUAQuCC3_Arvp8GziXhiAs4VPeyvKo",
+      "csrfToken": "e352f0f35a9a2c499e575154ed780465820f51b5036c6ab9",
+      "userId": "emp-7",
+      "createdAt": 1794263442437,
+      "expiresAt": 1794349842437,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NDI0OTUsImUiOjE3OTQzNDk4NDI0OTUsIm4iOiJkMzY3MTZlMmMyNGIwMDkyIn0.ARz9Z7hkPkwcZHlrCD3Ax0YvRuNmrDLKeAPXwvTdb5w": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NDI0OTUsImUiOjE3OTQzNDk4NDI0OTUsIm4iOiJkMzY3MTZlMmMyNGIwMDkyIn0.ARz9Z7hkPkwcZHlrCD3Ax0YvRuNmrDLKeAPXwvTdb5w",
+      "csrfToken": "063d07a691ba27dc8f1df0eb321e3c8802d6827648cb2f15",
+      "userId": "emp-admin-master",
+      "createdAt": 1794263442495,
+      "expiresAt": 1794349842495,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MjYzNDQyNTQ4LCJlIjoxNzk0MzQ5ODQyNTQ4LCJuIjoiNWMyYTMyODA4MjJjZDA0OSJ9.KjIQ6j2vJMigFY28Nrf5AqBAV1u73OPaQE8KyhKwlLs": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MjYzNDQyNTQ4LCJlIjoxNzk0MzQ5ODQyNTQ4LCJuIjoiNWMyYTMyODA4MjJjZDA0OSJ9.KjIQ6j2vJMigFY28Nrf5AqBAV1u73OPaQE8KyhKwlLs",
+      "csrfToken": "9640597bd0445dd268eb4844bc6c0cb24444caac4f1f584e",
+      "userId": "emp-2",
+      "createdAt": 1794263442548,
+      "expiresAt": 1794349842548,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWRpcmV0b3JpYS1yaWNhcmRvIiwiYyI6MTc5NDI2MzQ0MjYwNCwiZSI6MTc5NDM0OTg0MjYwNCwibiI6IjAyZWUyMDBlZDJlZDc2YzUifQ.uBd8EyamhR-KwGcnuIx-4wy2R4MOsPe8f47rrT2sMkc": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWRpcmV0b3JpYS1yaWNhcmRvIiwiYyI6MTc5NDI2MzQ0MjYwNCwiZSI6MTc5NDM0OTg0MjYwNCwibiI6IjAyZWUyMDBlZDJlZDc2YzUifQ.uBd8EyamhR-KwGcnuIx-4wy2R4MOsPe8f47rrT2sMkc",
+      "csrfToken": "f391b9a1b6b978517cb6b975f2f42ecf0a0332c3d6db0cdd",
+      "userId": "emp-diretoria-ricardo",
+      "createdAt": 1794263442604,
+      "expiresAt": 1794349842604,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTEiLCJjIjoxNzk0MjYzNDQyNjU3LCJlIjoxNzk0MzQ5ODQyNjU3LCJuIjoiZjUwOTMzYjFmYTM5MDdkNCJ9.ZukZBz09GezXK15AkvHWFrImdXF_6u1nmEdaWQDd2l0": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTEiLCJjIjoxNzk0MjYzNDQyNjU3LCJlIjoxNzk0MzQ5ODQyNjU3LCJuIjoiZjUwOTMzYjFmYTM5MDdkNCJ9.ZukZBz09GezXK15AkvHWFrImdXF_6u1nmEdaWQDd2l0",
+      "csrfToken": "418d6c8a426f55ccc7b37c27fc915be0139f1196bc29c54b",
+      "userId": "emp-1",
+      "createdAt": 1794263442657,
+      "expiresAt": 1794349842657,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE2MDMxNzM4LWZiYjgxZCIsImMiOjE3OTQyNjM0NDI3MTMsImUiOjE3OTQzNDk4NDI3MTMsIm4iOiI5ZmNiZjVjYjFjZDI4YzZmIn0.TlPXqhDivP70CKyKTt_cCJHqeSjujG0CEGMzKcY19tI": {
+      "sessionId": "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE2MDMxNzM4LWZiYjgxZCIsImMiOjE3OTQyNjM0NDI3MTMsImUiOjE3OTQzNDk4NDI3MTMsIm4iOiI5ZmNiZjVjYjFjZDI4YzZmIn0.TlPXqhDivP70CKyKTt_cCJHqeSjujG0CEGMzKcY19tI",
+      "csrfToken": "bb559160a84a93e3ad713abfe5e338fde87a5f3f671809bc",
+      "userId": "emp-req-1793216031738-fbb81d",
+      "createdAt": 1794263442713,
+      "expiresAt": 1794349842713,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE1OTY1MDkxLWNjN2U0OSIsImMiOjE3OTQyNjM0NDI3NjcsImUiOjE3OTQzNDk4NDI3NjcsIm4iOiI0YzA4OWFhYzQ2NTRiZGE4In0.iftMJsTCrTneTofTdnXihZFhIPkbKUAhF9A-WfNKV48": {
+      "sessionId": "s1.eyJ1IjoiZW1wLXJlcS0xNzkzMjE1OTY1MDkxLWNjN2U0OSIsImMiOjE3OTQyNjM0NDI3NjcsImUiOjE3OTQzNDk4NDI3NjcsIm4iOiI0YzA4OWFhYzQ2NTRiZGE4In0.iftMJsTCrTneTofTdnXihZFhIPkbKUAhF9A-WfNKV48",
+      "csrfToken": "329e2a86e04818eadfb1c3d00cdf4f6fa1e0405a2bd51eeb",
+      "userId": "emp-req-1793215965091-cc7e49",
+      "createdAt": 1794263442767,
+      "expiresAt": 1794349842767,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWNvbWVyY2lhbC0xIiwiYyI6MTc5NDI2MzQ0MjgyMiwiZSI6MTc5NDM0OTg0MjgyMiwibiI6IjUyOWJlMDgyZWMyNDc5MDYifQ.CntdMLTKiWAOmXU3JDB7ZXs4jomYUMymEnEAVm0VsqA": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWNvbWVyY2lhbC0xIiwiYyI6MTc5NDI2MzQ0MjgyMiwiZSI6MTc5NDM0OTg0MjgyMiwibiI6IjUyOWJlMDgyZWMyNDc5MDYifQ.CntdMLTKiWAOmXU3JDB7ZXs4jomYUMymEnEAVm0VsqA",
+      "csrfToken": "66aeae16104805084829c1a3ba5ce47a03646811b3640abd",
+      "userId": "emp-comercial-1",
+      "createdAt": 1794263442822,
+      "expiresAt": 1794349842822,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWV4cGVkaWNhby0yIiwiYyI6MTc5NDI2MzQ0Mjg3OSwiZSI6MTc5NDM0OTg0Mjg3OSwibiI6IjQxZjdmNmQ3ZmE1ODFlMDMifQ.1i_d-E2F5T2X01j6x3OTezk9dcvO5zjGeJUxXjgB_HI": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWV4cGVkaWNhby0yIiwiYyI6MTc5NDI2MzQ0Mjg3OSwiZSI6MTc5NDM0OTg0Mjg3OSwibiI6IjQxZjdmNmQ3ZmE1ODFlMDMifQ.1i_d-E2F5T2X01j6x3OTezk9dcvO5zjGeJUxXjgB_HI",
+      "csrfToken": "e8357c03a50940206f43516c6bf387e58ade5ab9cb1aae78",
+      "userId": "emp-expedicao-2",
+      "createdAt": 1794263442879,
+      "expiresAt": 1794349842879,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTUiLCJjIjoxNzk0MjYzNDQyOTMyLCJlIjoxNzk0MzQ5ODQyOTMyLCJuIjoiNTkzYWZlMWYxZDc2ZGRmMSJ9.EaomgoMxMk7IwreZFYmd9ttRWuMV1MSc7RICdjELiUY": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTUiLCJjIjoxNzk0MjYzNDQyOTMyLCJlIjoxNzk0MzQ5ODQyOTMyLCJuIjoiNTkzYWZlMWYxZDc2ZGRmMSJ9.EaomgoMxMk7IwreZFYmd9ttRWuMV1MSc7RICdjELiUY",
+      "csrfToken": "8d366ebfc053a281773ec1c3f25b6c50bd02c76afefdba93",
+      "userId": "emp-5",
+      "createdAt": 1794263442932,
+      "expiresAt": 1794349842932,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MjYzNDQyOTg0LCJlIjoxNzk0MzQ5ODQyOTg0LCJuIjoiOGQ1ODI1NmUxZWFlZDdkNyJ9.LpnwCVYHFTUtQNc-ftCMhe4NGkzUYczWLUXh9im1aaA": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTIiLCJjIjoxNzk0MjYzNDQyOTg0LCJlIjoxNzk0MzQ5ODQyOTg0LCJuIjoiOGQ1ODI1NmUxZWFlZDdkNyJ9.LpnwCVYHFTUtQNc-ftCMhe4NGkzUYczWLUXh9im1aaA",
+      "csrfToken": "d85f0541eec278493c250afd34e7ee7e4024a27a18714916",
+      "userId": "emp-2",
+      "createdAt": 1794263442984,
+      "expiresAt": 1794349842984,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NjE5MDcsImUiOjE3OTQzNDk4NjE5MDcsIm4iOiIyMjE2ZWVhOWM0NDAyN2FjIn0.1Qv4_OGNiiAsOf9fvRNOhlSXqLl8L4aeyyT955cys8s": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0NjE5MDcsImUiOjE3OTQzNDk4NjE5MDcsIm4iOiIyMjE2ZWVhOWM0NDAyN2FjIn0.1Qv4_OGNiiAsOf9fvRNOhlSXqLl8L4aeyyT955cys8s",
+      "csrfToken": "319604b3c300a46c3766dff49d14e713788da42eba92ef5a",
+      "userId": "emp-admin-master",
+      "createdAt": 1794263461907,
+      "expiresAt": 1794349861907,
+      "ip": "127.0.0.1",
+      "userAgent": "node"
+    },
+    "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0ODk4OTQsImUiOjE3OTQzNDk4ODk4OTQsIm4iOiJiMjczY2IzNmY0NTFiMTU3In0.nGjf2hE_qGxNv9kOQhHM_CAylduAz7IaYU9r-RIs12A": {
+      "sessionId": "s1.eyJ1IjoiZW1wLWFkbWluLW1hc3RlciIsImMiOjE3OTQyNjM0ODk4OTQsImUiOjE3OTQzNDk4ODk4OTQsIm4iOiJiMjczY2IzNmY0NTFiMTU3In0.nGjf2hE_qGxNv9kOQhHM_CAylduAz7IaYU9r-RIs12A",
+      "csrfToken": "a2c8c4ca722fc28f837ba77294fb9f03bd212330c8850343",
+      "userId": "emp-admin-master",
+      "createdAt": 1794263489894,
+      "expiresAt": 1794349889894,
+      "ip": "127.0.0.1",
+      "userAgent": "curl/7.88.1"
+    },
+    "s1.eyJ1IjoiZW1wLTMiLCJjIjoxNzk0MjYzNTAxNTkxLCJlIjoxNzk0MzQ5OTAxNTkxLCJuIjoiYzU3MWExNTU3NzFiYTY3OCJ9.dYfsF3FGt4qNmqOuErF84exjbLIZDp54lioemZfVxOo": {
+      "sessionId": "s1.eyJ1IjoiZW1wLTMiLCJjIjoxNzk0MjYzNTAxNTkxLCJlIjoxNzk0MzQ5OTAxNTkxLCJuIjoiYzU3MWExNTU3NzFiYTY3OCJ9.dYfsF3FGt4qNmqOuErF84exjbLIZDp54lioemZfVxOo",
+      "csrfToken": "d1dd86fd5886101235a30b047d1079f0ae0843c402347cb7",
+      "userId": "emp-3",
+      "createdAt": 1794263501591,
+      "expiresAt": 1794349901591,
+      "ip": "127.0.0.1",
+      "userAgent": "curl/7.88.1"
     }
   },
   "passwordResetTokens": [],
@@ -1387,6 +1609,303 @@
     }
   ],
   "auditLogs": [
+    {
+      "id": "aud-1794263501645-0e3acd",
+      "timestampIso": "2026-11-09T22:31:41.645Z",
+      "timestampFormatted": "09/11/2026, 22:31:41",
+      "actorId": "emp-3",
+      "actorName": "Juliane Vitória Silva de Aquino",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (juliane.aquino@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263489946-ec5dee",
+      "timestampIso": "2026-11-09T22:31:29.946Z",
+      "timestampFormatted": "09/11/2026, 22:31:29",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263461958-32491c",
+      "timestampIso": "2026-11-09T22:31:01.958Z",
+      "timestampFormatted": "09/11/2026, 22:31:01",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263443034-2d1398",
+      "timestampIso": "2026-11-09T22:30:43.034Z",
+      "timestampFormatted": "09/11/2026, 22:30:43",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (vitor@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442980-35369a",
+      "timestampIso": "2026-11-09T22:30:42.980Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-5",
+      "actorName": "Ana Caroline Araújo Xavier Dia",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ana.caroline@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442928-aff414",
+      "timestampIso": "2026-11-09T22:30:42.928Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-expedicao-2",
+      "actorName": "Ana Claudia Anunciação da Silva",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ana.claudia@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442875-44586b",
+      "timestampIso": "2026-11-09T22:30:42.875Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-comercial-1",
+      "actorName": "Jeise Ribeiro de Souza",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (jeise.souza@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442817-f8205d",
+      "timestampIso": "2026-11-09T22:30:42.817Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-req-1793215965091-cc7e49",
+      "actorName": "Suellen Aranda",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (suellen.aranda@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442763-8dd383",
+      "timestampIso": "2026-11-09T22:30:42.763Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-req-1793216031738-fbb81d",
+      "actorName": "Elinete",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (elinete@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442709-ee6a04",
+      "timestampIso": "2026-11-09T22:30:42.709Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-1",
+      "actorName": "Monica Nery",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (monica.nery@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442653-3f8597",
+      "timestampIso": "2026-11-09T22:30:42.653Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-diretoria-ricardo",
+      "actorName": "Ricardo",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (ricardo@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442599-7d3cc8",
+      "timestampIso": "2026-11-09T22:30:42.599Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-2",
+      "actorName": "Vitor",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (vitor@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442545-5d3a98",
+      "timestampIso": "2026-11-09T22:30:42.545Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442491-4cd7b9",
+      "timestampIso": "2026-11-09T22:30:42.491Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-7",
+      "actorName": "Petrônio Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (petronio.santos@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442433-a77a1e",
+      "timestampIso": "2026-11-09T22:30:42.433Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-4",
+      "actorName": "Jairo Bahia dos Santos e Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (jairo.bahia@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442375-1894dd",
+      "timestampIso": "2026-11-09T22:30:42.375Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-3",
+      "actorName": "Juliane Vitória Silva de Aquino",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (juliane.aquino@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442314-903697",
+      "timestampIso": "2026-11-09T22:30:42.314Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-4",
+      "actorName": "Jairo Bahia dos Santos e Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (jairo.bahia@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442259-78676f",
+      "timestampIso": "2026-11-09T22:30:42.259Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-comercial-2",
+      "actorName": "Augusto César Brito da Cruz",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (augusto.cruz@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442200-9bd10f",
+      "timestampIso": "2026-11-09T22:30:42.200Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-teste-logistica",
+      "actorName": "Priscila Sousa dos Santos",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (priscila.santos@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442139-3fa63c",
+      "timestampIso": "2026-11-09T22:30:42.139Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-6",
+      "actorName": "Marival Jerônimo Chagas Filho",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (marival.chagas@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442083-0445d5",
+      "timestampIso": "2026-11-09T22:30:42.083Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-req-1793215937034-9b80b2",
+      "actorName": "Mariane",
+      "actorRole": "FUNCIONARIO",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (mariane@rodovar.com.br • FUNCIONARIO).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263442005-de0033",
+      "timestampIso": "2026-11-09T22:30:42.005Z",
+      "timestampFormatted": "09/11/2026, 22:30:42",
+      "actorId": "emp-admin-google-migrated",
+      "actorName": "Alexandre",
+      "actorRole": "DIRETORIA",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (alexandre@rodovar.com.br • DIRETORIA).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263441920-b454ea",
+      "timestampIso": "2026-11-09T22:30:41.920Z",
+      "timestampFormatted": "09/11/2026, 22:30:41",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263024195-cc6f71",
+      "timestampIso": "2026-11-09T22:23:44.195Z",
+      "timestampFormatted": "09/11/2026, 22:23:44",
+      "actorId": "anon",
+      "actorName": "lucas.pereira@rodovar.com.br",
+      "actorRole": "ANONIMO",
+      "action": "FALHA_AUTENTICACAO_SENHA",
+      "details": "Falha de autenticação (2/5).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794263004796-2eb37f",
+      "timestampIso": "2026-11-09T22:23:24.796Z",
+      "timestampFormatted": "09/11/2026, 22:23:24",
+      "actorId": "anon",
+      "actorName": "lucas.pereira@rodovar.com.br",
+      "actorRole": "ANONIMO",
+      "action": "FALHA_AUTENTICACAO_SENHA",
+      "details": "Falha de autenticação (1/5).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794254779148-65551d",
+      "timestampIso": "2026-11-09T20:06:19.148Z",
+      "timestampFormatted": "09/11/2026, 20:06:19",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGOUT_SESSAO",
+      "details": "Sessão encerrada pelo usuário (administrador@rodovar.com.br).",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud-1794254779014-4cdc92",
+      "timestampIso": "2026-11-09T20:06:19.014Z",
+      "timestampFormatted": "09/11/2026, 20:06:19",
+      "actorId": "emp-admin-master",
+      "actorName": "Administrador Geral RODOVAR",
+      "actorRole": "ADMINISTRADOR",
+      "action": "LOGIN_SUCESSO_SERVIDOR",
+      "details": "Login autenticado com sucesso no servidor (administrador@rodovar.com.br • ADMINISTRADOR).",
+      "ip": "127.0.0.1"
+    },
     {
       "id": "aud-1794169136884-10fd14",
       "timestampIso": "2026-11-08T20:18:56.884Z",
