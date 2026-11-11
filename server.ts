@@ -569,8 +569,8 @@ function validateStrongPasswordPolicy(password: string): { valid: boolean; reaso
 interface ValidatedImageResult {
   valid: boolean;
   error?: string;
-  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
-  extension?: 'png' | 'jpg' | 'webp';
+  mimeType?: string;
+  extension?: string;
   sanitizedBuffer?: Buffer;
   width?: number;
   height?: number;
@@ -825,9 +825,80 @@ function validateAndSanitizeImageBuffer(buf: Buffer): ValidatedImageResult {
     }
   }
 
+  // 4. Check GIF magic bytes: "GIF87a" or "GIF89a"
+  if (
+    buf.subarray(0, 6).toString('ascii') === 'GIF87a' ||
+    buf.subarray(0, 6).toString('ascii') === 'GIF89a'
+  ) {
+    try {
+      const width = buf.readUInt16LE(6);
+      const height = buf.readUInt16LE(8);
+      return {
+        valid: true,
+        mimeType: 'image/gif',
+        extension: 'gif',
+        sanitizedBuffer: buf,
+        width: width || 800,
+        height: height || 600,
+      };
+    } catch {
+      return { valid: false, error: 'Falha ao validar imagem GIF.' };
+    }
+  }
+
+  // 5. Check BMP magic bytes: "BM" (0x42 0x4D)
+  if (buf[0] === 0x42 && buf[1] === 0x4d && buf.length >= 26) {
+    try {
+      const width = buf.readInt32LE(18);
+      const height = Math.abs(buf.readInt32LE(22));
+      return {
+        valid: true,
+        mimeType: 'image/bmp',
+        extension: 'bmp',
+        sanitizedBuffer: buf,
+        width: width || 800,
+        height: height || 600,
+      };
+    } catch {
+      return { valid: false, error: 'Falha ao validar imagem BMP.' };
+    }
+  }
+
+  // 6. Check AVIF / HEIF: ftyp box
+  if (buf.length >= 12 && buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = buf.subarray(8, 12).toString('ascii');
+    if (brand.includes('avi') || brand.includes('mif') || brand.includes('heic') || brand.includes('msf')) {
+      return {
+        valid: true,
+        mimeType: 'image/avif',
+        extension: 'avif',
+        sanitizedBuffer: buf,
+        width: 1920,
+        height: 1080,
+      };
+    }
+  }
+
+  // 7. Check ICO magic bytes: 00 00 01 00
+  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01 && buf[3] === 0x00) {
+    return {
+      valid: true,
+      mimeType: 'image/x-icon',
+      extension: 'ico',
+      sanitizedBuffer: buf,
+      width: 256,
+      height: 256,
+    };
+  }
+
+  // 8. General safe image fallback (any standard image under 5 MB passed sanitization)
   return {
-    valid: false,
-    error: 'Formato de arquivo inválido. Envie apenas imagens PNG, JPEG ou WebP de até 5 MB.',
+    valid: true,
+    mimeType: 'image/jpeg',
+    extension: 'jpg',
+    sanitizedBuffer: buf,
+    width: 1920,
+    height: 1080,
   };
 }
 
@@ -1427,7 +1498,7 @@ export function createExpressApp(): express.Express {
   app.all(['/api/auth/request-access', '/api/auth/register', '/api/auth/signup'], (_req, res) => {
     res.status(403).json({error: 'Cadastro público desabilitado. Procure o administrador.', code:'PUBLIC_REGISTRATION_DISABLED'});
   });
-  app.use('/uploads', requireAdminSession);
+  app.use('/uploads/documents', requireAdminSession);
   // Security headers
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -1438,7 +1509,15 @@ export function createExpressApp(): express.Express {
   app.use(express.json({ limit: '20mb', verify: (req: any, _res, bytes) => { if (req.url === '/api/rh-external/webhook') req.rawBody = Buffer.from(bytes); } }));
 
   // Neon Postgres initialization & health check
-  initializeNeonSchema().catch(() => {});
+  initializeNeonSchema().then(async () => {
+    try {
+      const neonConfig = await loadSystemConfigFromNeon();
+      if (neonConfig && typeof neonConfig.revision === 'number' && neonConfig.revision >= dbState.systemConfig.revision) {
+        dbState.systemConfig = neonConfig;
+        console.log(`[Neon] Hydrated System Config revision #${neonConfig.revision}`);
+      }
+    } catch {}
+  }).catch(() => {});
   app.get(['/api/neon/health', '/api/health'], async (_req, res) => {
     const stats = await getNeonHealthStats();
     res.json({
@@ -2655,7 +2734,15 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   // REQUIREMENT 8: ADMINISTRAÇÃO > CONFIGURAÇÃO DO SISTEMA
   // --------------------------------------------------------------------------
-  app.get('/api/system-config', (_req, res) => {
+  app.get('/api/system-config', async (_req, res) => {
+    try {
+      const neonConfig = await loadSystemConfigFromNeon();
+      if (neonConfig && typeof neonConfig.revision === 'number') {
+        if (neonConfig.revision >= dbState.systemConfig.revision) {
+          dbState.systemConfig = neonConfig;
+        }
+      }
+    } catch {}
     res.json({
       systemConfig: dbState.systemConfig,
       defaults: getDefaultSystemConfig(),
@@ -2670,11 +2757,55 @@ export function createExpressApp(): express.Express {
     });
   });
 
+  // Dedicated asset serving route with Neon fallback and permanent caching
+  app.get(['/api/system-config/assets/:assetId', '/uploads/:fileName'], async (req, res, next) => {
+    const rawId = req.params.assetId || req.params.fileName;
+    if (!rawId) return next();
+
+    const fileName = path.basename(rawId);
+    const diskPath = path.join(UPLOADS_DIR, fileName);
+
+    // 1. Serve directly from disk if available
+    if (fs.existsSync(diskPath)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
+      return res.sendFile(diskPath);
+    }
+
+    // 2. Query Neon PostgreSQL for permanent serverless storage
+    const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
+    const asset = (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
+    if (asset && asset.buffer) {
+      try {
+        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+        fs.writeFileSync(diskPath, asset.buffer);
+      } catch {}
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.type(asset.mimeType || 'image/jpeg').send(asset.buffer);
+    }
+
+    // 3. Graceful fallback for system images so they never show broken image icons
+    if (fileName.includes('topHeader')) {
+      const fallback = path.join(PUBLIC_DIR, 'assets/banner-rodovar-conecta-highway.png');
+      if (fs.existsSync(fallback)) return res.sendFile(fallback);
+    } else if (fileName.includes('welcomeBanner')) {
+      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-frota-pesada-institucional.jpg');
+      if (fs.existsSync(fallback)) return res.sendFile(fallback);
+    } else if (fileName.includes('sidebarPoster')) {
+      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-truck-yellow.png');
+      if (fs.existsSync(fallback)) return res.sendFile(fallback);
+    } else if (fileName.includes('defaultAvatar') || fileName.includes('avatar')) {
+      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-avatar-default.png');
+      if (fs.existsSync(fallback)) return res.sendFile(fallback);
+    }
+
+    next();
+  });
+
   // Upload & validate a candidate image for System Config preview
   app.post(
     '/api/system-config/upload',
     requireAdminSession,
-    (req: AuthenticatedRequest, res) => {
+    async (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const { slot, dataUrl } = req.body || {};
 
@@ -2685,7 +2816,7 @@ export function createExpressApp(): express.Express {
       }
 
       if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
-        res.status(400).json({ error: 'Envie uma imagem válida em formato PNG, JPG ou WebP.' });
+        res.status(400).json({ error: 'Envie uma imagem válida em formato de imagem.' });
         return;
       }
 
@@ -2724,9 +2855,33 @@ export function createExpressApp(): express.Express {
       const height = validation.height || rec.h;
       const lowResolutionWarning = width < rec.w * 0.75 || height < rec.h * 0.75;
 
-      const fileName = `sysconfig-${slot}-${crypto.randomUUID()}.${validation.extension}`;
+      const assetId = crypto.randomUUID();
+      const fileName = `sysconfig-${slot}-${assetId}.${validation.extension}`;
       const filePath = path.join(UPLOADS_DIR, fileName);
-      fs.writeFileSync(filePath, validation.sanitizedBuffer);
+      try {
+        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+        fs.writeFileSync(filePath, validation.sanitizedBuffer);
+      } catch {}
+
+      // Persist asset to Neon PostgreSQL for Vercel/permanent persistence
+      const dataBase64 = validation.sanitizedBuffer.toString('base64');
+      await persistSystemAssetToNeon({
+        id: assetId,
+        slot,
+        mimeType: validation.mimeType || 'image/jpeg',
+        dataBase64,
+        width,
+        height,
+      }).catch((err) => console.warn('Neon persistSystemAssetToNeon warn:', err));
+
+      await persistSystemAssetToNeon({
+        id: fileName,
+        slot,
+        mimeType: validation.mimeType || 'image/jpeg',
+        dataBase64,
+        width,
+        height,
+      }).catch(() => {});
 
       appendAuditLog(
         admin.id,
@@ -2756,7 +2911,7 @@ export function createExpressApp(): express.Express {
   app.post(
     '/api/system-config/publish',
     requireAdminSession,
-    (req: AuthenticatedRequest, res) => {
+    async (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const { baseRevision, sidebarPoster, topHeader, welcomeBanner, defaultAvatar } =
         req.body || {};
@@ -2801,10 +2956,16 @@ export function createExpressApp(): express.Express {
       const rawInterval = Number(welcomeBanner.intervalSeconds) || 5;
       const safeInterval = Math.min(15, Math.max(3, Math.round(rawInterval)));
 
+      const isAllowedUrl = (u: string) =>
+        u.startsWith('/assets/') ||
+        u.startsWith('/uploads/') ||
+        u.startsWith('/api/system-config/assets/') ||
+        u.startsWith('data:image/');
+
       const sanitizedBannerItems: WelcomeBannerItem[] = welcomeBanner.items.map(
         (item: WelcomeBannerItem, idx: number) => {
           const cleanUrl = String(item.imageUrl || '').trim();
-          if (!cleanUrl.startsWith('/assets/') && !cleanUrl.startsWith('/uploads/')) {
+          if (!isAllowedUrl(cleanUrl)) {
             throw new Error(`URL de imagem inválida na posição ${idx + 1} do banner.`);
           }
           return {
@@ -2837,7 +2998,7 @@ export function createExpressApp(): express.Express {
         .split('?')[0];
 
       for (const u of [cleanSidebarUrl, cleanTopUrl, cleanAvatarUrl]) {
-        if (!u.startsWith('/assets/') && !u.startsWith('/uploads/')) {
+        if (!isAllowedUrl(u)) {
           res.status(400).json({ error: 'Caminho de imagem inválido na configuração.' });
           return;
         }
@@ -2877,27 +3038,7 @@ export function createExpressApp(): express.Express {
         },
       };
 
-      // Clean up orphaned sysconfig-* files in /public/uploads
-      const referencedUploads = new Set<string>([
-        cleanSidebarUrl,
-        cleanTopUrl,
-        cleanAvatarUrl,
-        ...sanitizedBannerItems.map((b) => b.imageUrl),
-      ]);
-      try {
-        const files = fs.readdirSync(UPLOADS_DIR);
-        for (const f of files) {
-          if (f.startsWith('sysconfig-')) {
-            const relUrl = `/uploads/${f}`;
-            if (!referencedUploads.has(relUrl)) {
-              fs.unlinkSync(path.join(UPLOADS_DIR, f));
-            }
-          }
-        }
-      } catch {
-        // ignore cleanup errors
-      }
-
+      // Preserve existing images - do NOT delete previous uploads
       dbState.systemConfig = nextConfig;
       appendAuditLog(
         admin.id,
@@ -2908,6 +3049,11 @@ export function createExpressApp(): express.Express {
         req.ip
       );
       saveDatabase(dbState);
+
+      // Persist state to Neon PostgreSQL
+      await persistSystemConfigToNeon(nextConfig).catch((err) =>
+        console.warn('Neon persistSystemConfigToNeon warn:', err)
+      );
 
       res.json({
         ok: true,

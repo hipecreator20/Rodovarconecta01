@@ -521,7 +521,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
             type="file"
             ref={coverInputRef}
             onChange={handleCoverFileChange}
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
             className="hidden"
           />
         </div>
@@ -554,7 +554,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   type="file"
                   ref={avatarInputRef}
                   onChange={handleAvatarFileChange}
-                  accept="image/png,image/jpeg,image/webp"
+                  accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                   className="hidden"
                 />
               </div>

@@ -1,8 +1,9 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {homeSources,bahiaToday,upcomingHomeEvents} from '../src/lib/homeData';import {compareRecent} from '../src/lib/activityOrder';
 const user=(profile:string):any=>({id:'u',active:true,approvalStatus:'APROVADO',accessLevel:'FUNCIONARIO',accessProfile:profile});
 test('Home consulta somente serviços autorizados, sem indicadores financeiros ou motoristas para funcionários',()=>{
- for(const profile of ['COMERCIAL','EXPEDICAO','MONITORAMENTO','RH']){const sources=homeSources(user(profile));assert.ok(!sources.some(([key])=>key==='finance'||key==='drivers'));}
+ for(const profile of ['COMERCIAL','EXPEDICAO','RH']){const sources=homeSources(user(profile));assert.ok(!sources.some(([key])=>key==='finance'||key==='drivers'));}
  assert.ok(homeSources(user('FINANCEIRO')).some(([key])=>key==='finance'));
+ assert.ok(homeSources(user('MONITORAMENTO')).some(([key])=>key==='finance'));
  assert.ok(homeSources(user('DIRETORIA')).some(([key])=>key==='finance'));
  const manager={...user('MONITORAMENTO'),accessProfile:undefined,roleTitle:'Gerente de Logística',department:'Logística'};assert.ok(homeSources(manager).find(([key])=>key==='freights')?.[1].includes('scope=MEUS'));
  assert.equal(homeSources({...user('RH'),active:false}).length,0);

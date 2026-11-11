@@ -543,7 +543,7 @@ export const MuralEditorModal: React.FC<MuralEditorModalProps> = ({
                   <input
                     ref={coverInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                     className="hidden"
                     onChange={handleCoverUpload}
                   />

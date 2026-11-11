@@ -523,11 +523,11 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
               <span>
                 {uploadingSlot === 'sidebarPoster'
                   ? 'Validando imagem…'
-                  : 'Selecionar Imagem (JPG, PNG, WebP até 5 MB)'}
+                  : 'Selecionar Imagem (JPG, PNG, WebP, GIF, etc. até 5 MB)'}
               </span>
               <input
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                 onChange={(e) => handleUploadSingleSlot('sidebarPoster', e)}
                 className="hidden"
               />
@@ -553,6 +553,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
             <img
               src={withRevisionParam(draft.sidebarPoster.imageUrl, draft.revision)}
               alt="Prévia do cartaz lateral RODOVAR"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = '/assets/rodovar-truck-yellow.png';
+              }}
               className="w-full max-h-[260px] object-contain rounded-xl mx-auto bg-[#080B0D]"
             />
           </div>
@@ -635,7 +638,7 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
               </span>
               <input
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                 onChange={(e) => handleUploadSingleSlot('topHeader', e)}
                 className="hidden"
               />
@@ -667,6 +670,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
               alt="Prévia do topo RODOVAR"
               style={{
                 objectPosition: `${draft.topHeader.focusX}% ${draft.topHeader.focusY}%`,
+              }}
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = '/assets/banner-rodovar-conecta-highway.png';
               }}
               className="w-full h-full object-cover"
             />
@@ -716,7 +722,7 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
                 </span>
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/webp"
+                  accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                   onChange={(e) => handleAddOrReplaceBannerImage(null, e)}
                   className="hidden"
                 />
@@ -864,7 +870,7 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
                       <span>Substituir</span>
                       <input
                         type="file"
-                        accept="image/png,image/jpeg,image/webp"
+                        accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                         onChange={(e) => handleAddOrReplaceBannerImage(idx, e)}
                         className="hidden"
                       />
@@ -974,6 +980,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
                   style={{
                     objectPosition: `${currentPreviewBanner.focusX}% ${currentPreviewBanner.focusY}%`,
                   }}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = '/assets/rodovar-frota-pesada-institucional.jpg';
+                  }}
                   className="absolute right-0 top-0 w-[75%] h-full object-cover"
                 />
               )}
@@ -1037,7 +1046,7 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
               </span>
               <input
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/*, .png, .jpg, .jpeg, .webp, .gif, .bmp, .avif, .ico"
                 onChange={(e) => handleUploadSingleSlot('defaultAvatar', e)}
                 className="hidden"
               />
@@ -1061,6 +1070,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
             <img
               src={withRevisionParam(draft.defaultAvatar.imageUrl, draft.revision)}
               alt="Prévia circular 96px"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = '/assets/rodovar-avatar-default.png';
+              }}
               className="w-24 h-24 rounded-full object-cover aspect-square border-4 border-[#FFD400] mx-auto bg-[#15191D]"
             />
           </div>
@@ -1069,6 +1081,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
             <img
               src={withRevisionParam(draft.defaultAvatar.imageUrl, draft.revision)}
               alt="Prévia circular 44px"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = '/assets/rodovar-avatar-default.png';
+              }}
               className="w-11 h-11 rounded-full object-cover aspect-square border-2 border-white mx-auto bg-[#15191D]"
             />
           </div>
