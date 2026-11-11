@@ -139,6 +139,14 @@ export const canConfirmFreightPayment = (u?: Employee | null) => !!u && u.access
 export const canViewFreightTeam = (u?: Employee | null) => !!u && u.active && u.approvalStatus === 'APROVADO' && (u.accessLevel === 'ADMINISTRADOR' || u.accessProfile === 'DIRETORIA' || u.accessLevel === 'DIRETORIA' || u.accessProfile === 'MONITORAMENTO' || u.accessProfile === 'FINANCEIRO');
 export const canTransferFreightResponsibility = (u?: Employee | null) => !!u && u.accessLevel === 'ADMINISTRADOR' && hasPagePermission(u, 'fretes_transferir');
 export const canOperateMonitoring = (u?: Employee | null) => !!u && (u.accessProfile === 'MONITORAMENTO'||isLogisticsManager(u)) && hasPagePermission(u, 'fretes_ativos');
+export function canViewPendingPaymentsCount(u?: Employee | null): boolean {
+  if (!u || u.active !== true || u.approvalStatus !== 'APROVADO') return false;
+  if (u.accessLevel === 'ADMINISTRADOR' || u.accessLevel === 'DIRETORIA' || u.accessProfile === 'DIRETORIA') return true;
+  if (u.accessProfile === 'FINANCEIRO') return true;
+  if (u.accessProfile === 'MONITORAMENTO') return true;
+  if (isLogisticsManager(u) || (u.roleTitle && /gerent/i.test(u.roleTitle))) return true;
+  return false;
+}
 export function permittedHome(u: Employee): string {
   if (hasPagePermission(u, 'inicio')) return 'inicio';
   return ['fretes_comercial','fretes_expedicao','financeiro','solicitacoes'].find(m => hasPagePermission(u,m)) || 'perfil';

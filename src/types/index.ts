@@ -859,5 +859,53 @@ export interface UnifiedFreightDetailsPayload {
   historico: UnifiedFreightHistoryEntry[];
 }
 
+export interface SocialLinks {
+  instagram?: string;
+  linkedin?: string;
+  facebook?: string;
+  youtube?: string;
+  tiktok?: string;
+  website?: string;
+}
+
+export interface UserSocialProfile {
+  userId: string;
+  coverUrl?: string;
+  bio?: string;
+  customDisplayName?: string;
+  phone?: string;
+  location?: string;
+  socialLinks: SocialLinks;
+  updatedAt?: string;
+}
+
+export interface SocialComment {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar: string;
+  authorRole?: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface SocialPost {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar: string;
+  authorRole?: string;
+  authorDepartment?: string;
+  content: string;
+  images: string[];
+  likes: string[]; // array of user IDs
+  comments: SocialComment[];
+  commentsCount: number;
+  audience?: string; // 'Comercial' | 'Público' | etc.
+  createdAt: string;
+  updatedAt?: string;
+}
+
 
 

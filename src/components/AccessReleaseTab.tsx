@@ -276,6 +276,64 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
         </div>
       )}
 
+      {/* Distinction Summary Cards: Existing Users vs Pending Requests */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs">
+          <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+            Colaboradores Ativos
+          </span>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-extrabold text-emerald-700 tabular-nums">
+              {accounts.filter((a) => (a.approvalStatus || 'APROVADO') === 'APROVADO' && a.active).length}
+            </span>
+            <span className="text-[11px] text-gray-400">no Neon</span>
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs">
+          <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+            Solicitações Pendentes
+          </span>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span
+              data-testid="summary-pending-count"
+              className={`text-xl font-extrabold tabular-nums ${
+                pendingCount > 0 ? 'text-amber-600' : 'text-gray-700'
+              }`}
+            >
+              {pendingCount}
+            </span>
+            <span className="text-[11px] text-gray-400">
+              {pendingCount === 0 ? 'fila em dia' : 'aguardando'}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs">
+          <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+            Total Cadastrado
+          </span>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-extrabold text-[#15191D] tabular-nums">
+              {accounts.length}
+            </span>
+            <span className="text-[11px] text-gray-400">usuários</span>
+          </div>
+        </div>
+
+        <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs">
+          <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+            Administradores
+          </span>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-extrabold text-[#15191D] tabular-nums">
+              {activeAdminsCount}
+            </span>
+            <span className="text-[11px] text-gray-400">ativos</span>
+          </div>
+        </div>
+      </div>
+
       {/* Status Filter Bar & Search */}
       <div className="bg-white rounded-xl p-4 border border-gray-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -338,8 +396,33 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
             <tbody className="divide-y divide-gray-100">
               {filteredAccounts.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-gray-500 font-semibold">
-                    Nenhum registro encontrado para o filtro selecionado.
+                  <td colSpan={6} className="py-10 px-6 text-center">
+                    {statusFilter === 'PENDENTE' ? (
+                      <div className="max-w-md mx-auto space-y-3">
+                        <div className="w-11 h-11 mx-auto rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+                          <CheckCircle2 className="w-6 h-6" />
+                        </div>
+                        <h3 className="text-sm font-extrabold text-[#080B0D]">
+                          Nenhuma solicitação de acesso pendente
+                        </h3>
+                        <p className="text-xs text-gray-500 leading-relaxed">
+                          Todos os <strong>{accounts.length} colaboradores corporativos</strong> cadastrados já possuem acesso aprovado e sincronizado no Neon PostgreSQL. Novas solicitações de acesso realizadas por colaboradores na tela inicial entrarão automaticamente nesta fila para deliberação do administrador.
+                        </p>
+                        <div className="pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setStatusFilter('TODOS')}
+                            className="bg-[#080B0D] hover:bg-black text-[#FFD400] text-xs font-bold px-4 py-2 rounded-lg cursor-pointer transition shadow-xs inline-flex items-center gap-1.5"
+                          >
+                            <span>Ver Todos os Colaboradores ({accounts.length})</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-4 text-gray-500 font-semibold">
+                        Nenhum registro encontrado para o filtro selecionado.
+                      </div>
+                    )}
                   </td>
                 </tr>
               ) : (

@@ -21,6 +21,7 @@ import { INITIAL_FREIGHTS, formatFileSize } from '../lib/freightDatabase.ts';
 import {
   canAccessFinanceiroFreights,
   canConfirmFreightPayment,
+  canViewPendingPaymentsCount,
 } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
 
@@ -649,7 +650,7 @@ export function registerPaymentReceiptRoutes(
       });
       return null;
     }
-    if (!canAccessFinanceiroFreights(user)) {
+    if (!canAccessFinanceiroFreights(user) && !canViewPendingPaymentsCount(user)) {
       res.status(403).json({
         error: 'Acesso negado. Você não possui permissão para o módulo Financeiro de Pagamentos.',
         code: 'FORBIDDEN_FINANCEIRO',

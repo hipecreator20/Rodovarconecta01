@@ -276,6 +276,53 @@ export async function initializeNeonSchema(): Promise<void> {
         ip_address VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS rodovar_social_profiles (
+        user_id VARCHAR(64) PRIMARY KEY,
+        cover_url TEXT,
+        bio TEXT,
+        custom_display_name VARCHAR(150),
+        phone VARCHAR(50),
+        location VARCHAR(100),
+        social_links JSONB DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_social_posts (
+        id VARCHAR(64) PRIMARY KEY,
+        author_id VARCHAR(64) NOT NULL,
+        author_name VARCHAR(255) NOT NULL,
+        author_avatar TEXT,
+        author_role VARCHAR(100),
+        author_department VARCHAR(100),
+        content TEXT NOT NULL,
+        images JSONB DEFAULT '[]'::jsonb,
+        likes JSONB DEFAULT '[]'::jsonb,
+        audience VARCHAR(50) DEFAULT 'Público',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_social_comments (
+        id VARCHAR(64) PRIMARY KEY,
+        post_id VARCHAR(64) NOT NULL,
+        author_id VARCHAR(64) NOT NULL,
+        author_name VARCHAR(255) NOT NULL,
+        author_avatar TEXT,
+        author_role VARCHAR(100),
+        content TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_system_assets (
+        id VARCHAR(128) PRIMARY KEY,
+        slot VARCHAR(64) NOT NULL,
+        mime_type VARCHAR(64) NOT NULL,
+        data_base64 TEXT NOT NULL,
+        width INT,
+        height INT,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     await syncLocalDataToNeon(client);
@@ -681,4 +728,253 @@ export async function persistStateSnapshotToNeon(key: string, data: any): Promis
     console.warn('Neon persistStateSnapshotToNeon error:', (err as Error).message);
   }
 }
+
+export async function persistSocialProfileToNeon(p: {
+  userId: string;
+  coverUrl?: string;
+  bio?: string;
+  customDisplayName?: string;
+  phone?: string;
+  location?: string;
+  socialLinks?: any;
+}): Promise<void> {
+  if (!isNeonConfigured || !p || !p.userId) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (user_id) DO UPDATE SET
+           cover_url = EXCLUDED.cover_url,
+           bio = EXCLUDED.bio,
+           custom_display_name = EXCLUDED.custom_display_name,
+           phone = EXCLUDED.phone,
+           location = EXCLUDED.location,
+           social_links = EXCLUDED.social_links,
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          p.userId,
+          p.coverUrl || null,
+          p.bio || null,
+          p.customDisplayName || null,
+          p.phone || null,
+          p.location || null,
+          JSON.stringify(p.socialLinks || {}),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistSocialProfileToNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistSocialPostToNeon(post: {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorRole?: string;
+  authorDepartment?: string;
+  content: string;
+  images?: string[];
+  likes?: string[];
+  audience?: string;
+}): Promise<void> {
+  if (!isNeonConfigured || !post || !post.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, CURRENT_TIMESTAMP)
+         ON CONFLICT (id) DO UPDATE SET
+           content = EXCLUDED.content,
+           images = EXCLUDED.images,
+           likes = EXCLUDED.likes,
+           audience = EXCLUDED.audience,
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          post.id,
+          post.authorId,
+          post.authorName,
+          post.authorAvatar || null,
+          post.authorRole || null,
+          post.authorDepartment || null,
+          post.content,
+          JSON.stringify(post.images || []),
+          JSON.stringify(post.likes || []),
+          post.audience || 'Público',
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistSocialPostToNeon error:', (err as Error).message);
+  }
+}
+
+export async function deleteSocialPostFromNeon(postId: string): Promise<void> {
+  if (!isNeonConfigured || !postId) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(`DELETE FROM rodovar_social_comments WHERE post_id = $1`, [postId]);
+      await client.query(`DELETE FROM rodovar_social_posts WHERE id = $1`, [postId]);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon deleteSocialPostFromNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistSocialCommentToNeon(c: {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorRole?: string;
+  content: string;
+}): Promise<void> {
+  if (!isNeonConfigured || !c || !c.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content`,
+        [
+          c.id,
+          c.postId,
+          c.authorId,
+          c.authorName,
+          c.authorAvatar || null,
+          c.authorRole || null,
+          c.content,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistSocialCommentToNeon error:', (err as Error).message);
+  }
+}
+
+export async function deleteSocialCommentFromNeon(commentId: string): Promise<void> {
+  if (!isNeonConfigured || !commentId) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(`DELETE FROM rodovar_social_comments WHERE id = $1`, [commentId]);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon deleteSocialCommentFromNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistSystemAssetToNeon(asset: {
+  id: string;
+  slot: string;
+  mimeType: string;
+  dataBase64: string;
+  width?: number;
+  height?: number;
+}): Promise<void> {
+  if (!isNeonConfigured || !asset.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+         ON CONFLICT (id) DO UPDATE SET
+           slot = EXCLUDED.slot,
+           mime_type = EXCLUDED.mime_type,
+           data_base64 = EXCLUDED.data_base64,
+           width = EXCLUDED.width,
+           height = EXCLUDED.height,
+           updated_at = CURRENT_TIMESTAMP`,
+        [asset.id, asset.slot, asset.mimeType, asset.dataBase64, asset.width || null, asset.height || null]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistSystemAssetToNeon error:', (err as Error).message);
+  }
+}
+
+export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: string; buffer: Buffer } | null> {
+  if (!isNeonConfigured || !id) return null;
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = $1 LIMIT 1`,
+        [id]
+      );
+      if (res.rows.length > 0 && res.rows[0].data_base64) {
+        return {
+          mimeType: res.rows[0].mime_type,
+          buffer: Buffer.from(res.rows[0].data_base64, 'base64'),
+        };
+      }
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon getSystemAssetFromNeon error:', (err as Error).message);
+  }
+  return null;
+}
+
+export async function persistSystemConfigToNeon(config: any): Promise<void> {
+  if (!isNeonConfigured || !config) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_state_store (key, payload, updated_at)
+         VALUES ('rodovar-system-config', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(config)]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistSystemConfigToNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadSystemConfigFromNeon(): Promise<any | null> {
+  if (!isNeonConfigured) return null;
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-system-config' LIMIT 1`
+      );
+      if (res.rows.length > 0 && res.rows[0].payload) {
+        return res.rows[0].payload;
+      }
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon loadSystemConfigFromNeon notice:', (err as Error).message);
+  }
+  return null;
+}
+
+
 

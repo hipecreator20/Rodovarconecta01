@@ -8,6 +8,7 @@ import {CollaboratorsPremium} from './CollaboratorsPremium';
 import {useNotificationRecord} from '../hooks/useNotificationRecord';
 import {MuralPremium} from './MuralPremium';
 import {ProfileSecurity} from './ProfileSecurity';
+import { SocialProfileView } from './SocialProfileView';
 import './ProfileView.css';
 import {RhRequestsWorkspace} from './RhRequestsWorkspace';
 import './PortalModernizacao.css';
@@ -6042,6 +6043,18 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   // 8. MEU PERFIL (FASE 6 COMPLETA — FOTO DE PERFIL LIBERADA PARA TODOS)
   // ============================================================================
   if (activeSection === 'perfil') {
+    return (
+      <SocialProfileView
+        currentUser={currentUser}
+        systemConfig={systemConfig}
+        onUpdateMyProfile={onUpdateMyProfile}
+        announcements={announcements}
+        events={events}
+        requests={requests}
+        onDownloadFunctionalSheet={handleDownloadEmployeeFunctionalSheetTxt}
+      />
+    );
+
     const effectiveAvatarSrc = resolveAvatarUrl(
       {
         ...currentUser,

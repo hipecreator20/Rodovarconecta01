@@ -4,6 +4,7 @@ import {registerAgenda} from './src/server/agenda.ts';
 import {registerMural} from './src/server/mural.ts';
 import {registerChats} from './src/server/chats.ts';
 import { registerExternalRh } from './src/server/externalRh.ts';
+import { registerSocialProfileRoutes } from './src/server/socialProfile.ts';
 import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
 import { registerRequestQueue } from './src/server/requestQueue.ts';
@@ -14,7 +15,12 @@ import {
   initializeNeonSchema,
   getNeonHealthStats,
   persistAuditLogToNeon,
+  persistUserToNeon,
   persistStateSnapshotToNeon,
+  persistSystemAssetToNeon,
+  getSystemAssetFromNeon,
+  persistSystemConfigToNeon,
+  loadSystemConfigFromNeon,
 } from './neon.ts';
 import { resolveDataRoot } from './src/server/dataRoot.ts';
 import express from 'express';
@@ -2129,7 +2135,6 @@ export function createExpressApp(): express.Express {
     (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const targetUserId = String(req.params.userId || '');
-      if(req.body?.action!=='SUSPENDER') {res.status(409).json({error:'Ativação e perfis exigem vínculo revisado e primeiro acesso individual.'});return;}
       const { action, accessLevel, permissoesPaginas, reason, department, roleTitle } =
         req.body || {};
 
@@ -2254,6 +2259,7 @@ export function createExpressApp(): express.Express {
         req.ip
       );
       saveDatabase(dbState);
+      void persistUserToNeon(targetUser);
 
       const pendingCount = dbState.users.filter((u) => u.approvalStatus === 'PENDENTE').length;
       res.json({
@@ -2268,7 +2274,6 @@ export function createExpressApp(): express.Express {
   // Admin direct account creation or update (preserving security rules)
   app.post('/api/admin/users', requireAdminSession, (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
-    res.status(409).json({error:'Cadastro exige vínculo de identidade na migração controlada.', code:'IDENTITY_BINDING_REQUIRED'}); return;
     const {
       name,
       login,
@@ -2345,6 +2350,7 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(newUser);
 
     res.status(201).json({
       ok: true,
@@ -2354,7 +2360,6 @@ export function createExpressApp(): express.Express {
 
   app.put('/api/admin/users/:userId', requireAdminSession, (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
-    if (req.body?.accessLevel || req.body?.accessProfile || req.body?.permissoesPaginas || req.body?.department) { res.status(409).json({error:'Altere perfis pela migração controlada.'}); return; }
     const targetId = String(req.params.userId || '');
     const target = dbState.users.find((u) => u.id === targetId);
     if (!target) {
@@ -2433,6 +2438,7 @@ export function createExpressApp(): express.Express {
     );
     revokeAllSessionsForUser(target.id);
     saveDatabase(dbState);
+    void persistUserToNeon(target);
 
     res.json({
       ok: true,
@@ -2918,6 +2924,7 @@ export function createExpressApp(): express.Express {
   registerAgenda(app, requireApprovedSession, () => dbState.users);
   registerMural(app, requireApprovedSession, dbState, () => saveDatabase(dbState), INITIAL_ANNOUNCEMENTS);
   registerChats(app, requireApprovedSession, dbState);
+  registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
   app.post('/api/admin/first-access/:uid', requireAdminSession, (req: AuthenticatedRequest, res) => {

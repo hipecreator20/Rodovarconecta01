@@ -109,17 +109,11 @@ export function SharedRequestsView({ currentUser, initialOpenRequestModal, onCle
       const url = URL.createObjectURL(await response.blob()), link = document.createElement('a'); link.href = url; link.download = attachment.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setError((e as Error).message); }
   }
-  function exportCsv() {
-    const escape = (v: string) => '"' + (/^[=+@\-\t\r]/.test(v) ? "'" + v : v).replaceAll('"', '""') + '"';
-    const csv = [['Protocolo', 'Assunto', 'Destino', 'Status', 'Prioridade', 'Solicitante', 'Responsável', 'Prazo'], ...filtered.map(r => [r.protocol, r.subject, r.targetDepartment, r.status, r.priority, r.requesterName, r.assignedToName || 'Disponível', date(r.currentDueAtIso)])].map(row => row.map(escape).join(';')).join('\r\n');
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })), link = document.createElement('a'); link.href = url; link.download = 'rodovar-solicitacoes.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
   return <section className="csi-premium space-y-5 text-[#15191D]">
     <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#FFD400]"><FileText className="h-6 w-6" /></div><div><p className="text-[10px] font-extrabold uppercase tracking-widest text-gray-400">Atendimento interno · CSI</p><h1 className="text-xl font-extrabold">{currentUser.accessProfile==='RH'?'Central de Atendimento — RH':currentUser.accessLevel==='ADMINISTRADOR'?'Central de Solicitações — Supervisão':'Minhas Solicitações'}</h1><p className="mt-1 text-xs text-gray-500">Protocolos, documentos e respostas em um só lugar. Prazo inicial de 48 horas.</p></div></div>
-        <div className="flex flex-wrap gap-2"><button type="button" className={secondary} onClick={() => load().catch(e => setError(e.message))} aria-label="Atualizar solicitações"><RefreshCw className="h-4 w-4" /></button><button type="button" className={secondary} onClick={exportCsv}><Download className="h-4 w-4" />Exportar CSV</button><button type="button" className={primary} onClick={() => { setCreating(true); setError(''); }}><Plus className="h-4 w-4" />Nova solicitação</button></div>
+        <div className="flex flex-wrap gap-2"><button type="button" className={secondary} onClick={() => load().catch(e => setError(e.message))} aria-label="Atualizar solicitações"><RefreshCw className="h-4 w-4" /></button><button type="button" className={primary} onClick={() => { setCreating(true); setError(''); }}><Plus className="h-4 w-4" />Nova solicitação</button></div>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3 text-[11px] text-gray-500"><ShieldCheck className="h-4 w-4 text-emerald-600" /><span>Você visualiza apenas os protocolos autorizados ao seu perfil.</span>{notices > 0 && <span className="rounded-full bg-yellow-100 px-2 py-1 font-bold text-yellow-900">{notices} novas atualizações</span>}</div>
     </div>

@@ -15,6 +15,9 @@ import {
   UnifiedFreightOccurrence,
   UnifiedFreightRecord,
   UserRole,
+  UserSocialProfile,
+  SocialPost,
+  SocialComment,
 } from '../types';
 
 export const DEFAULT_NEUTRAL_AVATAR_URL = '/assets/default-avatar.png';
@@ -1441,4 +1444,249 @@ export async function apiUploadDocumentAttachments(files: Array<{
     };
   }
 }
+
+// ============================================================================
+// SOCIAL PROFILE & MURAL CORPORATIVO API HELPERS
+// ============================================================================
+export async function apiFetchSocialProfile(userId?: string): Promise<{
+  ok: boolean;
+  profile?: UserSocialProfile;
+  user?: Partial<Employee>;
+  postsCount?: number;
+  photos?: string[];
+  error?: string;
+}> {
+  try {
+    const url = userId ? `/api/profile/social/${encodeURIComponent(userId)}` : '/api/profile/social';
+    const res = await fetch(url, {
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      profile: data.profile,
+      user: data.user,
+      postsCount: data.postsCount,
+      photos: data.photos || [],
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao consultar perfil social.' };
+  }
+}
+
+export async function apiUpdateSocialProfile(payload: {
+  bio?: string;
+  customDisplayName?: string;
+  phone?: string;
+  location?: string;
+  socialLinks?: any;
+  coverUrl?: string;
+}): Promise<{ ok: boolean; profile?: UserSocialProfile; error?: string }> {
+  try {
+    const res = await fetch('/api/profile/social', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      profile: data.profile,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao atualizar dados do perfil.' };
+  }
+}
+
+export async function apiUploadCoverPhoto(dataUrl: string): Promise<{
+  ok: boolean;
+  coverUrl?: string;
+  profile?: UserSocialProfile;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/profile/cover', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ dataUrl }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      coverUrl: data.coverUrl,
+      profile: data.profile,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao enviar foto de capa.' };
+  }
+}
+
+export async function apiFetchSocialPosts(authorId?: string): Promise<{
+  ok: boolean;
+  posts: SocialPost[];
+  error?: string;
+}> {
+  try {
+    const url = authorId ? `/api/profile/posts?authorId=${encodeURIComponent(authorId)}` : '/api/profile/posts';
+    const res = await fetch(url, {
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      posts: Array.isArray(data.posts) ? data.posts : [],
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, posts: [], error: err.message || 'Erro ao carregar publicações.' };
+  }
+}
+
+export async function apiCreateSocialPost(payload: {
+  content: string;
+  images?: string[];
+  audience?: string;
+}): Promise<{ ok: boolean; post?: SocialPost; error?: string }> {
+  try {
+    const res = await fetch('/api/profile/posts', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      post: data.post,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao publicar no perfil.' };
+  }
+}
+
+export async function apiUpdateSocialPost(
+  postId: string,
+  payload: { content?: string; images?: string[]; audience?: string }
+): Promise<{ ok: boolean; post?: SocialPost; error?: string }> {
+  try {
+    const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      post: data.post,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao atualizar publicação.' };
+  }
+}
+
+export async function apiDeleteSocialPost(postId: string): Promise<{
+  ok: boolean;
+  deletedPostId?: string;
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      deletedPostId: data.deletedPostId,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao excluir publicação.' };
+  }
+}
+
+export async function apiTogglePostLike(postId: string): Promise<{
+  ok: boolean;
+  isLiked?: boolean;
+  likesCount?: number;
+  likes?: string[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}/like`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      isLiked: data.isLiked,
+      likesCount: data.likesCount,
+      likes: data.likes || [],
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao curtir publicação.' };
+  }
+}
+
+export async function apiAddPostComment(
+  postId: string,
+  content: string
+): Promise<{ ok: boolean; comment?: SocialComment; commentsCount?: number; error?: string }> {
+  try {
+    const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}/comments`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      comment: data.comment,
+      commentsCount: data.commentsCount,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao enviar comentário.' };
+  }
+}
+
+export async function apiDeletePostComment(
+  postId: string,
+  commentId: string
+): Promise<{ ok: boolean; commentsCount?: number; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/profile/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`,
+      {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: getAuthHeaders(),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      commentsCount: data.commentsCount,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao excluir comentário.' };
+  }
+}
+
 
