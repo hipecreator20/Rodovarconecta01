@@ -2570,7 +2570,10 @@ export default function App() {
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             <img
               src={withRevisionParam(
-                systemConfig?.topHeader.imageUrl || '/assets/banner-rodovar-conecta-highway.png',
+                !systemConfig?.topHeader.imageUrl ||
+                  systemConfig.topHeader.imageUrl === '/assets/banner-rodovar-conecta-highway.png'
+                  ? '/assets/header-sunset.jpg'
+                  : systemConfig.topHeader.imageUrl,
                 systemConfig?.revision
               )}
               alt="Cabeçalho Institucional RODOVAR CONECTA"
@@ -2580,7 +2583,7 @@ export default function App() {
                 objectPosition: `${systemConfig?.topHeader.focusX ?? 50}% ${systemConfig?.topHeader.focusY ?? 50}%`,
               }}
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = '/assets/banner-rodovar-conecta-highway.png';
+                (e.currentTarget as HTMLImageElement).src = '/assets/header-sunset.jpg';
               }}
             />
             <div

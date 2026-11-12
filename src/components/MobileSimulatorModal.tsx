@@ -427,16 +427,18 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
             <div className="relative h-[78px] w-full overflow-hidden bg-[#080B0D]">
               <img
                 src={
-                  systemConfig
+                  systemConfig &&
+                  systemConfig.topHeader.imageUrl &&
+                  systemConfig.topHeader.imageUrl !== '/assets/banner-rodovar-conecta-highway.png'
                     ? withRevisionParam(systemConfig.topHeader.imageUrl, systemConfig.revision)
-                    : '/assets/banner-rodovar-conecta-highway.png'
+                    : '/assets/header-sunset.jpg'
                 }
                 alt="Cabeçalho Institucional RODOVAR CONECTA"
                 referrerPolicy="no-referrer"
                 onError={(e) => {
                   const img = e.currentTarget;
-                  if (!img.src.endsWith('/assets/banner-rodovar-conecta-highway.png')) {
-                    img.src = '/assets/banner-rodovar-conecta-highway.png';
+                  if (!img.src.endsWith('/assets/header-sunset.jpg')) {
+                    img.src = '/assets/header-sunset.jpg';
                   }
                 }}
                 style={

@@ -40,11 +40,11 @@ const DEFAULT_FALLBACK_CONFIG: SystemConfig = {
     height: 700,
   },
   topHeader: {
-    imageUrl: '/assets/banner-rodovar-conecta-highway.png',
+    imageUrl: '/assets/header-sunset.jpg',
     focusX: 50,
     focusY: 50,
-    width: 2172,
-    height: 724,
+    width: 1920,
+    height: 240,
   },
   welcomeBanner: {
     carouselEnabled: false,

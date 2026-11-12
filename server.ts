@@ -1001,11 +1001,11 @@ function getDefaultSystemConfig(): SystemConfig {
       height: 700,
     },
     topHeader: {
-      imageUrl: '/assets/banner-rodovar-conecta-highway.png',
+      imageUrl: '/assets/header-sunset.jpg',
       focusX: 50,
       focusY: 50,
-      width: 2172,
-      height: 724,
+      width: 1920,
+      height: 240,
     },
     welcomeBanner: {
       carouselEnabled: false,
@@ -1154,6 +1154,9 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
             typeof core.systemConfig.revision === 'number' &&
             core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
           ) {
+            if (core.systemConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+              core.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
+            }
             dbState.systemConfig = core.systemConfig;
           }
         }
@@ -1163,6 +1166,9 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
       if (shouldPull('rodovar-system-config')) {
         const neonCfg = await loadSystemConfigFromNeon();
         if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+          if (neonCfg.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+            neonCfg.topHeader.imageUrl = '/assets/header-sunset.jpg';
+          }
           dbState.systemConfig = neonCfg;
         }
         localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
@@ -2898,11 +2904,17 @@ export function createExpressApp(): express.Express {
     try {
       const neonConfig = await loadSystemConfigFromNeon();
       if (neonConfig && typeof neonConfig.revision === 'number') {
+        if (neonConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+          neonConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
+        }
         if (neonConfig.revision >= dbState.systemConfig.revision) {
           dbState.systemConfig = neonConfig;
         }
       }
     } catch {}
+    if (dbState.systemConfig?.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+      dbState.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
+    }
     res.json({
       systemConfig: dbState.systemConfig,
       defaults: getDefaultSystemConfig(),
@@ -2987,7 +2999,7 @@ export function createExpressApp(): express.Express {
 
       // 3. Graceful fallback for system images so they never show broken image icons
       if (fileName.includes('topHeader')) {
-        const fallback = path.join(PUBLIC_DIR, 'assets/banner-rodovar-conecta-highway.png');
+        const fallback = path.join(PUBLIC_DIR, 'assets/header-sunset.jpg');
         if (fs.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes('welcomeBanner')) {
         const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-frota-pesada-institucional.jpg');
