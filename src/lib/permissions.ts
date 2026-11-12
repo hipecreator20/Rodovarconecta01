@@ -1,4 +1,4 @@
-import { PROFILE_MODULES } from './accessPolicy.ts';
+import { PROFILE_MODULES, type AccessProfile } from './accessPolicy.ts';
 import type { Department, Employee, UserRole } from '../types/index.ts';
 
 export interface ModulePermissionOption {
@@ -109,10 +109,48 @@ export const AVAILABLE_MODULES: ModulePermissionOption[] = [
 
 export const ALL_MODULE_IDS = AVAILABLE_MODULES.map((m) => m.id);
 
+export function resolveAccessProfileFromSector(
+  dept?: Department | string,
+  accessLevel?: UserRole,
+  explicitProfile?: AccessProfile | string,
+  roleTitle?: string
+): AccessProfile | undefined {
+  if (accessLevel === 'ADMINISTRADOR') return undefined;
+  if (accessLevel === 'DIRETORIA') return 'DIRETORIA';
+  const validProfiles: AccessProfile[] = ['RH', 'DIRETORIA', 'MONITORAMENTO', 'COMERCIAL', 'EXPEDICAO', 'FINANCEIRO'];
+  if (explicitProfile && validProfiles.includes(explicitProfile as AccessProfile)) {
+    return explicitProfile as AccessProfile;
+  }
+  const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const d = norm(String(dept || ''));
+  const r = norm(String(roleTitle || ''));
+  if (d === 'comercial' || r.includes('comercial')) return 'COMERCIAL';
+  if (d === 'expedicao' || r.includes('expedicao')) return 'EXPEDICAO';
+  if (d === 'monitoramento' || r.includes('monitoramento')) return 'MONITORAMENTO';
+  if (d === 'financeiro' || r.includes('financeir')) return 'FINANCEIRO';
+  if (d === 'recursos humanos' || d === 'rh' || r.includes('recursos humanos') || r === 'rh') return 'RH';
+  if (d === 'diretoria' || r.includes('diretor')) return 'DIRETORIA';
+  return undefined;
+}
 
-export function getDefaultPermissionsForDepartment(dept?: Department | string, accessLevel?: UserRole): string[] {
+export function getDefaultPermissionsForDepartment(
+  dept?: Department | string,
+  accessLevel?: UserRole,
+  accessProfile?: AccessProfile | string
+): string[] {
   if (accessLevel === 'ADMINISTRADOR') return [...ALL_MODULE_IDS];
   if (accessLevel === 'DIRETORIA') return [...PROFILE_MODULES.DIRETORIA];
+  const resolved = resolveAccessProfileFromSector(dept, accessLevel, accessProfile);
+  if (resolved && PROFILE_MODULES[resolved]) {
+    return [...PROFILE_MODULES[resolved]];
+  }
+  const norm = String(dept || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  if (norm === 'logistica' || norm === 'operacional') {
+    return [...PROFILE_MODULES.MONITORAMENTO];
+  }
+  if (norm === 'administrativo' || norm === 'seguranca') {
+    return ['inicio', 'comunicados', 'solicitacoes', 'agenda', 'documentos', 'diretorio'];
+  }
   return [];
 }
 export function isLogisticsManager(u?:Employee|null):boolean {
@@ -125,7 +163,7 @@ export function hasPagePermission(employee: Employee | null | undefined, moduleI
   if (!employee || employee.active !== true || employee.approvalStatus !== 'APROVADO') return false;
   if (moduleId === 'perfil' || moduleId === 'ajuda') return true;
   if (employee.accessLevel === 'ADMINISTRADOR') return true;
-  if (moduleId === 'administracao') return false;
+  if (moduleId === 'administracao' || moduleId === 'fluxo_notificacoes') return false;
   if (moduleId === 'fretes_ativos' && isLogisticsManager(employee)) return true;
   if (moduleId === 'agenda') return !!employee.accessProfile || employee.accessLevel === 'DIRETORIA';
   const profile = employee.accessProfile || (employee.accessLevel === 'DIRETORIA' ? 'DIRETORIA' : undefined);

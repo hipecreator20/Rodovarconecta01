@@ -16,6 +16,7 @@ import {
   Printer,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Send,
   Share2,
@@ -1535,16 +1536,10 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         </div>
       </div>
 
-      {/* 4. MAIN WORKSPACE: OPERATIONAL LIST + RIGHT DETAIL PANEL OR KANBAN BOARD */}
+      {/* 4. MAIN WORKSPACE: OPERATIONAL LIST OR KANBAN BOARD */}
       {displayMode === 'LISTA' ? (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-          {/* LEFT: Operational Table */}
-          <div
-            className={`${
-              selectedFreight ? 'xl:col-span-7' : 'xl:col-span-12'
-            } bg-white rounded-2xl border border-gray-200/80 shadow-2xs overflow-hidden`}
-          >
-            <div className="overflow-x-auto">
+        <div className="bg-white rounded-2xl border border-gray-200/80 shadow-2xs overflow-hidden">
+          <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-[#F3F5F7] border-b border-gray-200 text-[11px] font-extrabold text-gray-500 uppercase tracking-wider">
@@ -1709,970 +1704,6 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                 </tbody>
               </table>
             </div>
-          </div>
-
-          {/* RIGHT: Preparation & Release Side Panel */}
-          {selectedFreight && (
-            <div className="xl:col-span-5 bg-white rounded-2xl border border-gray-200/90 shadow-lg overflow-hidden flex flex-col">
-              {/* Header */}
-              <div className="p-4 bg-[#080B0D] text-white flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="bg-[#FFD400] text-[#080B0D] text-xs font-black px-2.5 py-0.5 rounded-md">
-                      Frete {selectedFreight.protocol}
-                    </span>
-                    <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-white/10 text-[#FFD400]">
-                      {formatSituacaoOperacionalLabel(selectedFreight.situacaoOperacional)}
-                    </span>
-                    {selectedFreight.situacaoOperacional === 'LIBERADO_MONITORAMENTO' && (
-                      <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300">
-                        {formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}
-                      </span>
-                    )}
-                    {selectedFreight.situacaoOperacional === 'CANCELADO' && canReactivate && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTargetReactivateFreight(selectedFreight);
-                          setReactivateMotivo('');
-                          setShowReactivateModal(true);
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold text-[11px] rounded-md cursor-pointer"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                        <span>Reativar Frete</span>
-                      </button>
-                    )}
-                  </div>
-                  <h2 className="text-base font-black text-white mt-1.5">
-                    {selectedFreight.cliente}
-                  </h2>
-                  <p className="text-xs text-gray-300">
-                    {selectedFreight.origemCidadeUf} → {selectedFreight.destinoCidadeUf}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedFreight(null)}
-                  className="p-1 text-gray-400 hover:text-white cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Claim banner if in shared queue */}
-              {selectedFreight.situacaoOperacional === 'DISPONIVEL_FILA' && (
-                <div className="bg-purple-50 border-b border-purple-200 px-4 py-3 flex items-center justify-between gap-2">
-                  <div className="text-xs text-purple-950">
-                    <p className="font-extrabold">Frete disponível na fila compartilhada</p>
-                    <p className="text-[11px]">
-                      Assuma este frete para vincular à sua responsabilidade na Expedição.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={actionBusy}
-                    onClick={() => void handleClaimFreight(selectedFreight)}
-                    className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs shrink-0 cursor-pointer"
-                  >
-                    Assumir agora
-                  </button>
-                </div>
-              )}
-
-              {/* Tabs */}
-              <div className="px-4 pt-2 bg-[#F3F5F7] border-b border-gray-200 flex gap-1 overflow-x-auto">
-                {[
-                  { id: 'PREPARACAO', label: '1. Dados Operacionais' },
-                  {
-                    id: 'VERIFICACOES',
-                    label: `2. Verificações (${countCompletedVerifications(
-                      selectedFreight
-                    )}/5)`,
-                  },
-                  {
-                    id: 'ANEXOS',
-                    label: `Anexos (${detailAnexos.length})`,
-                  },
-                  {
-                    id: 'OCORRENCIAS',
-                    label: `Ocorrências (${selectedFreight.ocorrenciasAbertasCount})`,
-                  },
-                  {
-                    id: 'HISTORICO',
-                    label: 'Histórico',
-                  },
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setActiveDetailTab(tab.id as typeof activeDetailTab)}
-                    className={`px-3 py-2 text-xs font-extrabold rounded-t-xl border-b-2 transition cursor-pointer whitespace-nowrap ${
-                      activeDetailTab === tab.id
-                        ? 'bg-white text-[#080B0D] border-[#FFD400]'
-                        : 'text-gray-500 border-transparent hover:text-[#15191D]'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Body */}
-              <div className="p-4 space-y-4 max-h-[68vh] overflow-y-auto text-xs">
-                {/* TAB 1: PREPARAÇÃO OPERACIONAL */}
-                {activeDetailTab === 'PREPARACAO' && (
-                  <>
-                    {/* Responsáveis Atuais (1 Frete, 3 Responsáveis) */}
-                    <div className="bg-[#F8FAFC] rounded-xl p-3 border border-gray-200/80 grid grid-cols-3 gap-2">
-                      <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase">Comercial</p>
-                        <p className="font-extrabold text-[#15191D] truncate">
-                          {selectedFreight.comercialResponsavelNome}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase">Expedição</p>
-                        <p className="font-extrabold text-[#15191D] truncate">
-                          {selectedFreight.expedicaoResponsavelNome || 'Fila disponível'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase">
-                          Monitoramento
-                        </p>
-                        <p className="font-extrabold text-[#15191D] truncate">
-                          {selectedFreight.monitoramentoResponsavelNome || 'Selecionar p/ liberar'}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Endereços, Janelas e Instruções */}
-                    <div className="space-y-2.5">
-                      <p className="text-[11px] font-extrabold text-[#15191D] uppercase tracking-wider">
-                        Coleta, Entrega, Carga e Veículo
-                      </p>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Endereço de Coleta * ({selectedFreight.origemCidadeUf})
-                          </label>
-                          <input
-                            type="text"
-                            value={opEnderecoColeta}
-                            onChange={(e) => setOpEnderecoColeta(e.target.value)}
-                            placeholder="Rua, número, galpão, doca..."
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600"><strong>Endereço de entrega — Monitoramento</strong><p>{selectedFreight.enderecoEntrega || 'A confirmar e registrar pelo operador de Monitoramento.'}</p></div>
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Contato Local Coleta/Entrega
-                          </label>
-                          <input
-                            type="text"
-                            value={opClienteContato}
-                            onChange={(e) => setOpClienteContato(e.target.value)}
-                            placeholder="Nome e telefone"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <div>
-                            <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                              Janela Início
-                            </label>
-                            <input
-                              type="text"
-                              value={opJanelaColetaInicio}
-                              onChange={(e) => setOpJanelaColetaInicio(e.target.value)}
-                              placeholder="08:00"
-                              className="w-full px-2 py-1.5 rounded-lg border border-gray-300 text-xs"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                              Janela Fim
-                            </label>
-                            <input
-                              type="text"
-                              value={opJanelaColetaFim}
-                              onChange={(e) => setOpJanelaColetaFim(e.target.value)}
-                              placeholder="18:00"
-                              className="w-full px-2 py-1.5 rounded-lg border border-gray-300 text-xs"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Previsão de Entrega
-                          </label>
-                          <input
-                            type="date"
-                            value={opDataEntregaPrevistaIso}
-                            onChange={(e) => setOpDataEntregaPrevistaIso(e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Material / Carga *
-                          </label>
-                          <input
-                            type="text"
-                            value={opTipoCarga}
-                            onChange={(e) => setOpTipoCarga(e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Peso (kg)
-                          </label>
-                          <input
-                            type="number"
-                            value={opPesoKg}
-                            onChange={(e) => setOpPesoKg(e.target.value)}
-                            placeholder="Ex.: 28000"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Volumes
-                          </label>
-                          <input
-                            type="number"
-                            value={opVolumes}
-                            onChange={(e) => setOpVolumes(e.target.value)}
-                            placeholder="Ex.: 24"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Tipo de Veículo Exigido *
-                          </label>
-                          <input
-                            type="text"
-                            value={opVeiculoNecessario}
-                            onChange={(e) => setOpVeiculoNecessario(e.target.value)}
-                            placeholder="Ex.: Carreta Sider, Bitrem, Truck Baú..."
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Instruções de Coleta e Entrega (impressas na Ordem de Coleta)
-                          </label>
-                          <textarea
-                            rows={2}
-                            value={opInstrucoesColetaEntrega}
-                            onChange={(e) => setOpInstrucoesColetaEntrega(e.target.value)}
-                            placeholder="EPIs obrigatórios, doca de apresentação, contato na portaria..."
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Motorista, Transportadora e Placas */}
-                    <div className="space-y-2.5 pt-2 border-t border-gray-200">
-                      <p className="text-[11px] font-extrabold text-[#15191D] uppercase tracking-wider">
-                        Motorista, Transportadora e Placas
-                      </p>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Nome Completo do Motorista *
-                          </label>
-                          <input
-                            type="text"
-                            id="exp-driver-name" value={opMotoristaNome}
-                            onChange={(e) => setOpMotoristaNome(e.target.value)}
-                            placeholder="Ex.: José Carlos Pereira dos Santos"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            CPF do Motorista *
-                          </label>
-                          <input
-                            type="text"
-                            id="exp-driver-cpf" value={opMotoristaCpf}
-                            onChange={(e) => setOpMotoristaCpf(e.target.value)}
-                            placeholder="000.000.000-00"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Telefone / WhatsApp *
-                          </label>
-                          <input
-                            type="text"
-                            id="exp-driver-phone" value={opMotoristaTelefone}
-                            onChange={(e) => setOpMotoristaTelefone(e.target.value)}
-                            placeholder="(71) 9 8845-1290"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Transportadora / Proprietário
-                          </label>
-                          <input
-                            type="text"
-                            value={opTransportadorNome}
-                            onChange={(e) => setOpTransportadorNome(e.target.value)}
-                            placeholder="Razão social ou nome"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            CNPJ / CPF Proprietário
-                          </label>
-                          <input
-                            type="text"
-                            value={opTransportadorDoc}
-                            onChange={(e) => setOpTransportadorDoc(e.target.value)}
-                            placeholder="00.000.000/0001-00"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Placa do Cavalo / Veículo *
-                          </label>
-                          <input
-                            type="text"
-                            id="exp-vehicle-plate" value={opPlacaVeiculo}
-                            onChange={(e) => setOpPlacaVeiculo(e.target.value.toUpperCase())}
-                            placeholder="ABC-1D23"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs font-mono uppercase"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Placa Carreta / Implemento
-                          </label>
-                          <input
-                            type="text"
-                            value={opPlacaCarreta}
-                            onChange={(e) => setOpPlacaCarreta(e.target.value.toUpperCase())}
-                            placeholder="XYZ-9E87"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs font-mono uppercase"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Valor Contratado do Motorista e Dados Financeiros */}
-                    <div className="space-y-2.5 pt-2 border-t border-gray-200">
-                      <div className="flex items-center justify-between">
-                        <p className="text-[11px] font-extrabold text-[#15191D] uppercase tracking-wider">
-                          Valor do Motorista e Dados p/ Financeiro
-                        </p>
-                        {typeof selectedFreight.valorCobradoClienteCentavos === 'number' && (
-                          <span className="text-[10px] font-bold text-gray-500">
-                            Cliente:{' '}
-                            <strong className="text-[#15191D]">
-                              {formatCentavosToBrl(selectedFreight.valorCobradoClienteCentavos)}
-                            </strong>
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Valor Contratado Motorista (R$) *
-                          </label>
-                          <input
-                            type="text"
-                            id="exp-driver-value" value={opValorContratadoReais}
-                            onChange={(e) => setOpValorContratadoReais(e.target.value)}
-                            placeholder="Ex.: 6.000,00"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs font-bold"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Condições de Pagamento
-                          </label>
-                          <select id="exp-payment-mode" value={opCondicoesPagamento} onChange={e=>setOpCondicoesPagamento(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm bg-white">
-                            <option value="">Selecione a modalidade</option>
-                            {['70% Adiantamento / 30% Saldo na Entrega','80% Adiantamento / 20% Saldo na Entrega','Integral (100%)'].map(mode=><option key={mode} value={mode}>{mode}</option>)}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Favorecido Pagamento
-                          </label>
-                          <input
-                            type="text"
-                            value={opFavorecidoPagamento}
-                            onChange={(e) => setOpFavorecidoPagamento(e.target.value)}
-                            placeholder="Nome do favorecido"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Banco
-                          </label>
-                          <input
-                            type="text"
-                            value={opBancoPagamento}
-                            onChange={(e) => setOpBancoPagamento(e.target.value)}
-                            placeholder="Ex.: 260 - Nu Pagamentos"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Tipo Chave Pix
-                          </label>
-                          <select
-                            value={opTipoChavePix}
-                            onChange={(e) => setOpTipoChavePix(e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
-                          >
-                            <option value="CPF/CNPJ">CPF/CNPJ</option>
-                            <option value="Celular">Celular</option>
-                            <option value="E-mail">E-mail</option>
-                            <option value="Chave Aleatória">Chave Aleatória</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Chave Pix
-                          </label>
-                          <input
-                            type="text"
-                            value={opChavePix}
-                            onChange={(e) => setOpChavePix(e.target.value)}
-                            placeholder="Chave Pix do favorecido"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
-                          <label htmlFor="exp-operational-conditions" className="block text-sm font-semibold text-gray-700 mb-1">
-                            Condições operacionais *
-                          </label>
-                          <textarea id="exp-operational-conditions" rows={3} minLength={3} maxLength={1000}
-                            value={opCondicoesOperacionais} onChange={e=>setOpCondicoesOperacionais(e.target.value)}
-                            aria-describedby="exp-operational-conditions-help"
-                            placeholder="Informe as condições acordadas para a operação, exigências de coleta e orientações ao motorista."
-                            className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:border-yellow-500"/>
-                          <p id="exp-operational-conditions-help" className="text-xs text-gray-600 mt-1">Obrigatório para liberar ao Monitoramento. As condições de pagamento são informadas no campo específico acima.</p>
-                        </div>
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                            Observações Internas da Expedição (não saem na Ordem de Coleta)
-                          </label>
-                          <textarea
-                            rows={2}
-                            value={opObservacoes}
-                            onChange={(e) => setOpObservacoes(e.target.value)}
-                            placeholder="Anotações internas operacionais..."
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 pt-2">
-                        <button
-                          type="button"
-                          disabled={savingOp}
-                          onClick={() => void persistPreparationData()}
-                          className="flex-1 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold py-2.5 px-4 rounded-xl transition cursor-pointer"
-                        >
-                          {savingOp ? 'Salvando...' : 'Salvar Dados de Preparação'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setActiveDetailTab('VERIFICACOES')}
-                          className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold py-2.5 px-4 rounded-xl transition cursor-pointer"
-                        >
-                          Ir p/ Verificações e Liberação →
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* TAB 2: AS 5 VERIFICAÇÕES FUNCIONAIS, ORDEM DE COLETA E LIBERAÇÃO */}
-                {activeDetailTab === 'VERIFICACOES' && (
-                  <div className="space-y-3.5">
-                    <div className="bg-[#F8FAFC] rounded-xl p-3.5 border border-gray-200 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-[11px] font-extrabold text-[#15191D] uppercase tracking-wider">
-                            5 Verificações Obrigatórias da Expedição
-                          </p>
-                          <p className="text-[11px] text-gray-500">
-                            Cada marcação é persistida imediatamente no servidor.
-                          </p>
-                        </div>
-                        <span
-                          className={`text-xs font-black px-2.5 py-0.5 rounded-md ${
-                            countCompletedVerifications(selectedFreight) === 5
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-900'
-                          }`}
-                        >
-                          {countCompletedVerifications(selectedFreight)}/5
-                          concluídas
-                        </span>
-                      </div>
-
-                      {/* 1. Dados do motorista conferidos */}
-                      <label className="flex items-start gap-2.5 p-2.5 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
-                        <input
-                          type="checkbox"
-                          checked={chkMotorista}
-                            disabled={savingOp || actionBusy}
-                          onChange={(e) =>
-                            void handleToggleVerification('MOTORISTA', e.target.checked)
-                          }
-                          className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
-                        />
-                        <div className="flex-1">
-                          <span className="font-extrabold text-[#15191D] block">
-                            1. Dados do motorista conferidos
-                          </span>
-                          <span className="text-[11px] text-gray-500">
-                            Nome ({opMotoristaNome || 'pendente'}), CPF ({opMotoristaCpf || 'pendente'}) e telefone validados.
-                          </span>
-                        </div>
-                      </label>
-
-                      {/* 2. Veículo conferido */}
-                      <label className="flex items-start gap-2.5 p-2.5 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
-                        <input
-                          type="checkbox"
-                          checked={chkVeiculo}
-                            disabled={savingOp || actionBusy}
-                          onChange={(e) =>
-                            void handleToggleVerification('VEICULO', e.target.checked)
-                          }
-                          className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
-                        />
-                        <div className="flex-1">
-                          <span className="font-extrabold text-[#15191D] block">
-                            2. Veículo conferido
-                          </span>
-                          <span className="text-[11px] text-gray-500">
-                            Placa ({opPlacaVeiculo || 'pendente'}), implemento e tipo de veículo ({opVeiculoNecessario || 'pendente'}) compatíveis.
-                          </span>
-                        </div>
-                      </label>
-
-                      {/* 3. Condições e documentos conferidos */}
-                      <label className="flex items-start gap-2.5 p-2.5 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
-                        <input
-                          type="checkbox"
-                          checked={chkCondicoesEDocs}
-                            disabled={savingOp || actionBusy}
-                          onChange={(e) =>
-                            void handleToggleVerification('CONDICOES_DOCS', e.target.checked)
-                          }
-                          className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
-                        />
-                        <div className="flex-1">
-                          <span className="font-extrabold text-[#15191D] block">
-                            3. Condições e documentos conferidos
-                          </span>
-                          <span className="text-[11px] text-gray-500">
-                            CNH, CRLV, ANTT e condições de pagamento conferidos pela Expedição.
-                          </span>
-                        </div>
-                      </label>
-
-                      {/* 4. Videochamada realizada com o motorista */}
-                      <div className="p-2.5 rounded-xl bg-white border border-gray-200 space-y-2">
-                        <label className="flex items-start gap-2.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={chkVideochamada}
-                            disabled={savingOp || actionBusy}
-                            onChange={(e) =>
-                              void handleToggleVerification('VIDEOCHAMADA', e.target.checked)
-                            }
-                            className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
-                          />
-                          <div className="flex-1">
-                            <span className="font-extrabold text-[#15191D] flex items-center gap-1.5">
-                              <Video className="w-3.5 h-3.5 text-blue-600" />
-                              4. Videochamada realizada com o motorista
-                            </span>
-                            <span className="text-[11px] text-gray-500 block">
-                              A videochamada ocorre fora do sistema (WhatsApp/telefone). Registre aqui a realização e observações.
-                            </span>
-                            {selectedFreight.checklistFechamento?.videochamadaRealizadaPorNome && (
-                              <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
-                                Realizada por{' '}
-                                {selectedFreight.checklistFechamento.videochamadaRealizadaPorNome}{' '}
-                                em {selectedFreight.checklistFechamento.videochamadaRealizadaEm}
-                              </span>
-                            )}
-                          </div>
-                        </label>
-                        <div className="pl-6 flex gap-1.5">
-                          <input
-                            type="text"
-                            value={chkVideochamadaObs}
-                            onChange={(e) => setChkVideochamadaObs(e.target.value)}
-                            placeholder="Observações da videochamada (identidade, caminhão no pátio, EPIs)..."
-                            className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                          />
-                          <button
-                            type="button"
-                            disabled={savingOp}
-                            onClick={() =>
-                              void persistPreparationData({
-                                overrideChecklist: {
-                                  videochamadaRealizada: true,
-                                  videochamadaObservacoes: chkVideochamadaObs,
-                                },
-                              })
-                            }
-                            className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer shrink-0"
-                          >
-                            Registrar
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* 5. Ordem de coleta enviada ao motorista */}
-                      <div className="p-2.5 rounded-xl bg-white border border-gray-200 space-y-2">
-                        <label className="flex items-start gap-2.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={chkOrdemEnviada}
-                            disabled={savingOp || actionBusy}
-                            onChange={(e) =>
-                              void handleToggleVerification('ORDEM_ENVIADA', e.target.checked)
-                            }
-                            className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
-                          />
-                          <div className="flex-1">
-                            <span className="font-extrabold text-[#15191D] block">
-                              5. Ordem de coleta enviada ao motorista
-                            </span>
-                            <span className="text-[11px] text-gray-500 block">
-                              Gere o PDF oficial da Ordem de Coleta abaixo, envie ao motorista e confirme o envio.
-                            </span>
-                            {selectedFreight.checklistFechamento?.ordemColetaEnviadaPorNome && (
-                              <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
-                                Confirmado por{' '}
-                                {selectedFreight.checklistFechamento.ordemColetaEnviadaPorNome} em{' '}
-                                {selectedFreight.checklistFechamento.ordemColetaEnviadaEm}
-                              </span>
-                            )}
-                          </div>
-                        </label>
-
-                        <div className="pl-6 flex flex-wrap gap-1.5">
-                          <button
-                            type="button"
-                            disabled={actionBusy}
-                            onClick={handleEmitirOrdemColeta}
-                            className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            <span>
-                              {selectedFreight.ordemCarregamentoEmitidaEm
-                                ? 'Visualizar / Baixar Ordem de Coleta (PDF)'
-                                : 'Gerar Ordem de Coleta (PDF)'}
-                            </span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => void handleShareOrdemColeta(selectedFreight)}
-                            className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-bold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
-                          >
-                            <Share2 className="w-3.5 h-3.5" />
-                            <span>Compartilhar</span>
-                          </button>
-
-                          {!chkOrdemEnviada && (
-                            <button
-                              type="button"
-                              disabled={actionBusy}
-                              onClick={handleConfirmarEnvioOrdemAoMotorista}
-                              className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              <span>Confirmar envio ao motorista</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* AÇÃO PRINCIPAL: SELECIONAR OPERADOR E LIBERAR PARA MONITORAMENTO */}
-                    <div className="bg-[#FFFDF0] border-2 border-[#FFD400] rounded-2xl p-4 space-y-3">
-                      <div>
-                        <p className="text-xs font-black text-[#080B0D] uppercase">
-                          Liberação para Operador de Monitoramento
-                        </p>
-                        <p className="text-[11px] text-gray-600">
-                          Ao liberar, o mesmo registro ({selectedFreight.protocol}) entra automaticamente em{' '}
-                          <strong>Fretes Ativos</strong> na fila do Operador escolhido, que recebe a notificação imediata.
-                        </p>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-extrabold text-[#15191D] mb-1">
-                          Operador de Monitoramento Responsável *
-                        </label>
-                        <select
-                          value={opMonitoramentoResponsavelId}
-                          onChange={(e) => setOpMonitoramentoResponsavelId(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-gray-300 bg-white text-xs font-bold text-[#15191D]"
-                        >
-                          <option value="">Selecione o Operador de Monitoramento...</option>
-                          {monitoramentoOperators.map((op) => (
-                            <option key={op.id} value={op.id}>
-                              {op.name} ({op.roleTitle} • {op.department})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={actionBusy}
-                          onClick={handleLiberarParaMonitoramento}
-                          className="flex-1 inline-flex items-center justify-center gap-2 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-black py-3 px-4 rounded-xl shadow-md transition cursor-pointer text-xs"
-                        >
-                          <Send className="w-4 h-4" />
-                          <span>
-                            {selectedFreight.situacaoOperacional === 'LIBERADO_MONITORAMENTO'
-                              ? 'Atualizar Liberação no Monitoramento'
-                              : 'Liberar para Monitoramento'}
-                          </span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setShowReturnModal(true)}
-                          className="inline-flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-[#E5252A] font-extrabold py-2.5 px-3 rounded-xl border border-red-200 transition cursor-pointer text-xs"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Devolver ao Comercial</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Transferência de Responsabilidade (Supervisor/Admin) */}
-                    {isSupervisor && (
-                      <form
-                        onSubmit={handleTransferExpedicao}
-                        className="bg-[#F8FAFC] rounded-xl p-3 border border-gray-200 space-y-2"
-                      >
-                        <p className="text-[11px] font-extrabold text-[#15191D] uppercase">
-                          Transferir Responsabilidade na Expedição
-                        </p>
-                        <select
-                          value={transferTargetId}
-                          onChange={(e) => setTransferTargetId(e.target.value)}
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
-                        >
-                          <option value="">Selecione o novo responsável da Expedição...</option>
-                          {expedicaoOperators.map((op) => (
-                            <option key={op.id} value={op.id}>
-                              {op.name} ({op.roleTitle})
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="text"
-                          value={transferMotivo}
-                          onChange={(e) => setTransferMotivo(e.target.value)}
-                          placeholder="Motivo da transferência..."
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
-                        />
-                        <button
-                          type="submit"
-                          disabled={transferBusy || !transferTargetId || !transferMotivo.trim()}
-                          className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-xs cursor-pointer disabled:opacity-50"
-                        >
-                          Confirmar transferência
-                        </button>
-                      </form>
-                    )}
-                  </div>
-                )}
-
-                {/* TAB 3: ANEXOS */}
-                {activeDetailTab === 'ANEXOS' && (
-                  <FreightDocumentsManager
-                    freight={selectedFreight}
-                    currentUser={currentUser}
-                    savedAttachments={detailAnexos}
-                    canVerify={true}
-                    onAttachmentsUpdated={(attachments) => { setDetailAnexos(attachments); }}
-                  />
-                )}
-
-                {/* TAB 4: OCORRÊNCIAS */}
-                {activeDetailTab === 'OCORRENCIAS' && (
-                  <div className="space-y-3">
-                    <form
-                      onSubmit={handleCreateOccurrence}
-                      className="bg-[#F8FAFC] p-3 rounded-xl border border-gray-200 space-y-2"
-                    >
-                      <p className="font-extrabold text-[#15191D]">Registrar Ocorrência</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <input
-                          type="text"
-                          value={occTitulo}
-                          onChange={(e) => setOccTitulo(e.target.value)}
-                          placeholder="Título da ocorrência *"
-                          className="sm:col-span-2 px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
-                        />
-                        <select
-                          value={occSeveridade}
-                          onChange={(e) =>
-                            setOccSeveridade(
-                              e.target.value as 'BAIXA' | 'MEDIA' | 'IMPEDITIVA'
-                            )
-                          }
-                          className="px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white font-bold"
-                        >
-                          <option value="BAIXA">Informativa / Baixa</option>
-                          <option value="MEDIA">Atenção / Média</option>
-                          <option value="IMPEDITIVA">Impeditiva (Bloqueia)</option>
-                        </select>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={occDescricao}
-                        onChange={(e) => setOccDescricao(e.target.value)}
-                        placeholder="Detalhes da ocorrência..."
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
-                      />
-                      <button
-                        type="submit"
-                        disabled={occBusy || !occTitulo.trim()}
-                        className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3.5 py-1.5 rounded-lg text-xs cursor-pointer disabled:opacity-50"
-                      >
-                        Registrar Ocorrência
-                      </button>
-                    </form>
-
-                    {detailOcorrencias.length === 0 ? (
-                      <p className="text-center text-gray-400 py-6">
-                        Nenhuma ocorrência registrada neste frete.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {detailOcorrencias.map((occ) => (
-                          <div
-                            key={occ.id}
-                            className={`p-3 rounded-xl border ${
-                              !occ.resolved
-                                ? occ.severity === 'IMPEDITIVA'
-                                  ? 'bg-red-50 border-red-200'
-                                  : 'bg-amber-50 border-amber-200'
-                                : 'bg-gray-50 border-gray-200'
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-white border">
-                                    {occ.severity}
-                                  </span>
-                                  <span className="text-[10px] font-bold text-gray-500">
-                                    {occ.resolved ? 'RESOLVIDA' : 'ABERTA'}
-                                  </span>
-                                </div>
-                                <p className="font-extrabold text-[#15191D] mt-1">{occ.title}</p>
-                                {occ.description && (
-                                  <p className="text-gray-600 mt-0.5">{occ.description}</p>
-                                )}
-                                <p className="text-[10px] text-gray-400 mt-1">
-                                  Por {occ.createdByName} em {occ.createdAtFormatted}
-                                </p>
-                              </div>
-                              {!occ.resolved && (
-                                <button
-                                  type="button"
-                                  disabled={occBusy}
-                                  onClick={() => void handleResolveOccurrence(occ.id)}
-                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-lg cursor-pointer shrink-0"
-                                >
-                                  Resolver
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* TAB 5: HISTÓRICO */}
-                {activeDetailTab === 'HISTORICO' && (
-                  <div className="space-y-2">
-                    {detailHistorico.map((h) => (
-                      <div
-                        key={h.id}
-                        className="p-2.5 rounded-xl bg-[#F8FAFC] border border-gray-200"
-                      >
-                        <div className="flex items-center justify-between text-[10px] text-gray-400">
-                          <span className="font-bold text-gray-600">
-                            {h.actorName} ({h.actorSector})
-                          </span>
-                          <span>{h.timestampFormatted}</span>
-                        </div>
-                        <p className="font-bold text-[#15191D] mt-0.5">{h.summary}</p>
-                        {h.horarioRealEvento && (
-                          <p className="text-[11px] font-semibold text-blue-800 mt-0.5">
-                            Horário real do evento: {h.horarioRealEvento}
-                          </p>
-                        )}
-                        {h.reason && <p className="text-[11px] text-gray-600">{h.reason}</p>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         /* 4B. KANBAN BOARD VIEW FOR EXPEDIÇÃO (Recebidos → Em preparação → Liberados ao Monitoramento) */
@@ -2733,10 +1764,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                       return (
                         <div
                           key={f.id}
-                          onClick={() => {
-                            setDisplayMode('LISTA');
-                            handleSelectFreight(f);
-                          }}
+                          onClick={() => handleSelectFreight(f)}
                           className="bg-white rounded-xl p-3.5 border border-gray-200/90 shadow-2xs hover:shadow-md hover:border-[#FFD400] transition cursor-pointer space-y-2"
                         >
                           <div className="flex items-center justify-between">
@@ -2768,6 +1796,1086 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
             );
           })}
         </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: PREPARAÇÃO OPERACIONAL DO FRETE — EXPEDIÇÃO (CORPORATEMODAL)
+      ===================================================================== */}
+      {selectedFreight && (
+        <CorporateModal
+          isOpen={Boolean(selectedFreight)}
+          onClose={() => setSelectedFreight(null)}
+          title={`Frete ${selectedFreight.protocol} — ${selectedFreight.cliente}`}
+          subtitle={`Rota: ${selectedFreight.origemCidadeUf} → ${selectedFreight.destinoCidadeUf} • Comercial: ${selectedFreight.comercialResponsavelNome} • Expedição: ${selectedFreight.expedicaoResponsavelNome || currentUser.name}`}
+          maxWidth="2xl"
+          badge={
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span
+                className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md border ${getOperationalBadgeStyle(
+                  selectedFreight.situacaoOperacional
+                )}`}
+              >
+                {formatSituacaoOperacionalLabel(selectedFreight.situacaoOperacional)}
+              </span>
+              {selectedFreight.situacaoOperacional === 'LIBERADO_MONITORAMENTO' && (
+                <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}
+                </span>
+              )}
+              {selectedFreight.situacaoOperacional === 'CANCELADO' && canReactivate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTargetReactivateFreight(selectedFreight);
+                    setReactivateMotivo('');
+                    setShowReactivateModal(true);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold text-[11px] rounded-md cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reativar Frete</span>
+                </button>
+              )}
+            </div>
+          }
+          footer={
+            <div className="flex flex-wrap items-center justify-between w-full gap-3">
+              <div className="text-[11px] text-gray-500">
+                Campos marcados com <span className="text-[#E5252A] font-bold">*</span> são obrigatórios para liberação ao Monitoramento.
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFreight(null)}
+                  className="px-4 py-2 rounded-xl border border-gray-300 text-gray-700 font-bold text-xs hover:bg-gray-100 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={savingOp}
+                  onClick={() => void persistPreparationData()}
+                  className="px-4 py-2 rounded-xl border border-gray-900 bg-white hover:bg-gray-100 text-[#080B0D] font-extrabold text-xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {savingOp ? 'Salvando...' : 'Salvar Dados de Preparação'}
+                </button>
+                <button
+                  type="button"
+                  disabled={actionBusy || savingOp}
+                  onClick={handleLiberarParaMonitoramento}
+                  className="px-5 py-2 rounded-xl bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-black text-xs shadow-xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {selectedFreight.situacaoOperacional === 'LIBERADO_MONITORAMENTO'
+                    ? 'Atualizar Liberação no Monitoramento'
+                    : 'Confirmar e Liberar p/ Monitoramento'}
+                </button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-5 text-xs">
+            {/* Error & Missing Items Banner inside Modal */}
+            {errorMsg && (
+              <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs flex items-start justify-between gap-2">
+                <div className="space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-[#E5252A] shrink-0" />
+                    <span>{errorMsg}</span>
+                  </div>
+                  {validationMissingItems.length > 0 && (
+                    <ul className="list-disc list-inside text-[11px] text-red-800 space-y-0.5 pl-1">
+                      {validationMissingItems.map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorMsg(null);
+                    setValidationMissingItems([]);
+                  }}
+                  className="text-red-700 hover:text-red-950 font-black cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Claim banner if in shared queue */}
+            {selectedFreight.situacaoOperacional === 'DISPONIVEL_FILA' && (
+              <div className="bg-purple-50 border border-purple-200 rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="text-xs text-purple-950">
+                  <p className="font-extrabold">Frete disponível na fila compartilhada</p>
+                  <p className="text-[11px]">
+                    Assuma este frete para vincular à sua responsabilidade na Expedição.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={actionBusy}
+                  onClick={() => void handleClaimFreight(selectedFreight)}
+                  className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-4 py-2 rounded-xl shadow-xs shrink-0 cursor-pointer"
+                >
+                  Assumir agora
+                </button>
+              </div>
+            )}
+
+            {/* Modal Sub-navigation Tabs */}
+            <div className="flex flex-wrap gap-1.5 bg-[#F3F5F7] p-1.5 rounded-xl border border-gray-200">
+              {[
+                { id: 'PREPARACAO', label: '1. Dados Operacionais' },
+                {
+                  id: 'VERIFICACOES',
+                  label: `2. Verificações (${countCompletedVerifications(selectedFreight)}/5)`,
+                },
+                {
+                  id: 'ANEXOS',
+                  label: `Anexos (${detailAnexos.length})`,
+                },
+                {
+                  id: 'OCORRENCIAS',
+                  label: `Ocorrências (${selectedFreight.ocorrenciasAbertasCount})`,
+                },
+                {
+                  id: 'HISTORICO',
+                  label: 'Histórico',
+                },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveDetailTab(tab.id as typeof activeDetailTab)}
+                  className={`px-3.5 py-2 text-xs font-extrabold rounded-lg transition cursor-pointer whitespace-nowrap ${
+                    activeDetailTab === tab.id
+                      ? 'bg-[#080B0D] text-[#FFD400] shadow-xs'
+                      : 'text-gray-600 hover:text-[#15191D] hover:bg-white/60'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* TAB 1: PREPARAÇÃO OPERACIONAL (CARDS 1 A 4 IGUAIS AO COMERCIAL) */}
+            {activeDetailTab === 'PREPARACAO' && (
+              <div className="space-y-4">
+                {/* CARD 1: ROTA, COLETA, ENTREGA E CARGA */}
+                <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-lg bg-[#FFD400] text-[#080B0D] font-black flex items-center justify-center text-xs">
+                        1
+                      </div>
+                      <h3 className="font-black text-sm text-[#080B0D] uppercase tracking-wide">
+                        Coleta, Entrega, Carga e Veículo
+                      </h3>
+                    </div>
+                    <span className="text-[11px] font-bold text-gray-500">
+                      {selectedFreight.origemCidadeUf} → {selectedFreight.destinoCidadeUf}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Endereço de Coleta ({selectedFreight.origemCidadeUf}){' '}
+                        <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={opEnderecoColeta}
+                        onChange={(e) => setOpEnderecoColeta(e.target.value)}
+                        placeholder="Rua, número, galpão, doca..."
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 rounded-xl border border-gray-200 bg-white p-3 text-xs text-gray-600">
+                      <strong className="text-[#080B0D]">Endereço de entrega — Monitoramento:</strong>{' '}
+                      <span>
+                        {selectedFreight.enderecoEntrega ||
+                          'A confirmar e registrar pelo operador de Monitoramento.'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Contato Local Coleta/Entrega
+                      </label>
+                      <input
+                        type="text"
+                        value={opClienteContato}
+                        onChange={(e) => setOpClienteContato(e.target.value)}
+                        placeholder="Nome e telefone"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                          Janela Início
+                        </label>
+                        <input
+                          type="text"
+                          value={opJanelaColetaInicio}
+                          onChange={(e) => setOpJanelaColetaInicio(e.target.value)}
+                          placeholder="08:00"
+                          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-[#FFD400]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                          Janela Fim
+                        </label>
+                        <input
+                          type="text"
+                          value={opJanelaColetaFim}
+                          onChange={(e) => setOpJanelaColetaFim(e.target.value)}
+                          placeholder="18:00"
+                          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-[#FFD400]"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Previsão de Entrega
+                      </label>
+                      <input
+                        type="date"
+                        value={opDataEntregaPrevistaIso}
+                        onChange={(e) => setOpDataEntregaPrevistaIso(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-semibold focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Material / Descrição da Carga <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={opTipoCarga}
+                        onChange={(e) => setOpTipoCarga(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Peso Estimado (kg) <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        value={opPesoKg}
+                        onChange={(e) => setOpPesoKg(e.target.value)}
+                        placeholder="Ex.: 28000"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Volumes / Paletes
+                      </label>
+                      <input
+                        type="number"
+                        value={opVolumes}
+                        onChange={(e) => setOpVolumes(e.target.value)}
+                        placeholder="Ex.: 24"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Tipo de Veículo Exigido <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={opVeiculoNecessario}
+                        onChange={(e) => setOpVeiculoNecessario(e.target.value)}
+                        placeholder="Ex.: Carreta Sider, Bitrem, Truck Baú..."
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Instruções de Coleta e Entrega (impressas na Ordem de Coleta)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={opInstrucoesColetaEntrega}
+                        onChange={(e) => setOpInstrucoesColetaEntrega(e.target.value)}
+                        placeholder="EPIs obrigatórios, doca de apresentação, contato na portaria..."
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* CARD 2: MOTORISTA, TRANSPORTADORA E PLACAS */}
+                <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center gap-2 pb-2 border-b border-gray-200">
+                    <div className="w-6 h-6 rounded-lg bg-[#FFD400] text-[#080B0D] font-black flex items-center justify-center text-xs">
+                      2
+                    </div>
+                    <h3 className="font-black text-sm text-[#080B0D] uppercase tracking-wide">
+                      Motorista, Transportadora e Placas
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-1">
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Nome Completo do Motorista <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="exp-driver-name"
+                        value={opMotoristaNome}
+                        onChange={(e) => setOpMotoristaNome(e.target.value)}
+                        placeholder="Ex.: José Carlos Pereira"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-bold text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        CPF do Motorista <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="exp-driver-cpf"
+                        value={opMotoristaCpf}
+                        onChange={(e) => setOpMotoristaCpf(e.target.value)}
+                        placeholder="000.000.000-00"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-mono text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Telefone / WhatsApp <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="exp-driver-phone"
+                        value={opMotoristaTelefone}
+                        onChange={(e) => setOpMotoristaTelefone(e.target.value)}
+                        placeholder="(71) 9 8845-1290"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Transportadora / Proprietário
+                      </label>
+                      <input
+                        type="text"
+                        value={opTransportadorNome}
+                        onChange={(e) => setOpTransportadorNome(e.target.value)}
+                        placeholder="Razão social ou nome"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        CNPJ / CPF Proprietário
+                      </label>
+                      <input
+                        type="text"
+                        value={opTransportadorDoc}
+                        onChange={(e) => setOpTransportadorDoc(e.target.value)}
+                        placeholder="00.000.000/0001-00"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-mono text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                          Placa Veículo <span className="text-[#E5252A]">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          id="exp-vehicle-plate"
+                          value={opPlacaVeiculo}
+                          onChange={(e) => setOpPlacaVeiculo(e.target.value.toUpperCase())}
+                          placeholder="ABC-1D23"
+                          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-mono uppercase font-bold focus:outline-none focus:border-[#FFD400]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                          Placa Carreta
+                        </label>
+                        <input
+                          type="text"
+                          value={opPlacaCarreta}
+                          onChange={(e) => setOpPlacaCarreta(e.target.value.toUpperCase())}
+                          placeholder="XYZ-9E87"
+                          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-mono uppercase focus:outline-none focus:border-[#FFD400]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* CARD 3: VALORES DO MOTORISTA, DADOS P/ FINANCEIRO E CONDIÇÕES */}
+                <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-lg bg-[#FFD400] text-[#080B0D] font-black flex items-center justify-center text-xs">
+                        3
+                      </div>
+                      <h3 className="font-black text-sm text-[#080B0D] uppercase tracking-wide">
+                        Valor do Motorista, Condições e Dados p/ Financeiro
+                      </h3>
+                    </div>
+                    {typeof selectedFreight.valorCobradoClienteCentavos === 'number' && (
+                      <span className="text-[11px] font-bold text-gray-600 bg-white px-2.5 py-1 rounded-lg border border-gray-200">
+                        Cliente:{' '}
+                        <strong className="text-[#080B0D]">
+                          {formatCentavosToBrl(selectedFreight.valorCobradoClienteCentavos)}
+                        </strong>
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Valor Contratado Motorista (R$) <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-2.5 text-xs font-bold text-gray-400">
+                          R$
+                        </span>
+                        <input
+                          type="text"
+                          id="exp-driver-value"
+                          value={opValorContratadoReais}
+                          onChange={(e) => setOpValorContratadoReais(e.target.value)}
+                          placeholder="6.000,00"
+                          className="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-xl font-black text-sm text-[#080B0D] focus:outline-none focus:border-[#FFD400]"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Condições de Pagamento <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <select
+                        id="exp-payment-mode"
+                        value={opCondicoesPagamento}
+                        onChange={(e) => setOpCondicoesPagamento(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs font-bold bg-white text-[#080B0D] focus:outline-none focus:border-[#FFD400]"
+                      >
+                        <option value="">Selecione a modalidade</option>
+                        {[
+                          '70% Adiantamento / 30% Saldo na Entrega',
+                          '80% Adiantamento / 20% Saldo na Entrega',
+                          'Integral (100%)',
+                        ].map((mode) => (
+                          <option key={mode} value={mode}>
+                            {mode}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Favorecido Pagamento
+                      </label>
+                      <input
+                        type="text"
+                        value={opFavorecidoPagamento}
+                        onChange={(e) => setOpFavorecidoPagamento(e.target.value)}
+                        placeholder="Nome do favorecido"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Banco
+                      </label>
+                      <input
+                        type="text"
+                        value={opBancoPagamento}
+                        onChange={(e) => setOpBancoPagamento(e.target.value)}
+                        placeholder="Ex.: 260 - Nu Pagamentos"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Tipo Chave Pix
+                      </label>
+                      <select
+                        value={opTipoChavePix}
+                        onChange={(e) => setOpTipoChavePix(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-bold text-[#080B0D] focus:outline-none focus:border-[#FFD400]"
+                      >
+                        <option value="CPF/CNPJ">CPF/CNPJ</option>
+                        <option value="Celular">Celular</option>
+                        <option value="E-mail">E-mail</option>
+                        <option value="Chave Aleatória">Chave Aleatória</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Chave Pix
+                      </label>
+                      <input
+                        type="text"
+                        value={opChavePix}
+                        onChange={(e) => setOpChavePix(e.target.value)}
+                        placeholder="Chave Pix do favorecido"
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label
+                        htmlFor="exp-operational-conditions"
+                        className="block text-[11px] font-bold text-gray-700 mb-1"
+                      >
+                        Condições Operacionais <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <textarea
+                        id="exp-operational-conditions"
+                        rows={2}
+                        minLength={3}
+                        maxLength={1000}
+                        value={opCondicoesOperacionais}
+                        onChange={(e) => setOpCondicoesOperacionais(e.target.value)}
+                        aria-describedby="exp-operational-conditions-help"
+                        placeholder="Informe as condições acordadas para a operação, exigências de coleta e orientações ao motorista."
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                      <p
+                        id="exp-operational-conditions-help"
+                        className="text-[11px] text-gray-500 mt-1"
+                      >
+                        Obrigatório para liberar ao Monitoramento. As condições de pagamento são informadas no campo específico acima.
+                      </p>
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                        Observações Internas da Expedição (não saem na Ordem de Coleta)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={opObservacoes}
+                        onChange={(e) => setOpObservacoes(e.target.value)}
+                        placeholder="Anotações internas operacionais..."
+                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-[#FFD400]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* CARD 4: ENCAMINHAMENTO AO MONITORAMENTO E CONFERÊNCIA */}
+                <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center gap-2 pb-2 border-b border-gray-200">
+                    <div className="w-6 h-6 rounded-lg bg-[#FFD400] text-[#080B0D] font-black flex items-center justify-center text-xs">
+                      4
+                    </div>
+                    <h3 className="font-black text-sm text-[#080B0D] uppercase tracking-wide">
+                      Encaminhamento ao Monitoramento & Verificações
+                    </h3>
+                  </div>
+
+                  <div className="p-3.5 bg-white border border-gray-200 rounded-xl grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                    <div>
+                      <label className="block text-[11px] font-extrabold text-[#080B0D] mb-1">
+                        Operador de Monitoramento Responsável <span className="text-[#E5252A]">*</span>
+                      </label>
+                      <select
+                        value={opMonitoramentoResponsavelId}
+                        onChange={(e) => setOpMonitoramentoResponsavelId(e.target.value)}
+                        className="w-full px-3 py-2 bg-[#F8FAFC] border border-gray-300 rounded-lg text-xs font-bold text-[#080B0D]"
+                      >
+                        <option value="">Selecione o Operador de Monitoramento...</option>
+                        {monitoramentoOperators.map((op) => (
+                          <option key={op.id} value={op.id}>
+                            {op.name} ({op.roleTitle} • {op.department})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[11px] font-extrabold text-[#080B0D]">
+                        Status das 5 Verificações Obrigatórias: ({countCompletedVerifications(selectedFreight)}/5)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveDetailTab('VERIFICACOES')}
+                        className="bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold py-2 px-3 rounded-xl transition cursor-pointer text-xs text-center"
+                      >
+                        Abrir Aba 2: Verificações e Ordem de Coleta →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: AS 5 VERIFICAÇÕES FUNCIONAIS, ORDEM DE COLETA E LIBERAÇÃO */}
+            {activeDetailTab === 'VERIFICACOES' && (
+              <div className="space-y-3.5">
+                <div className="bg-[#F8FAFC] rounded-2xl p-4 border border-gray-200 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-black text-[#15191D] uppercase tracking-wider">
+                        5 Verificações Obrigatórias da Expedição
+                      </p>
+                      <p className="text-[11px] text-gray-500">
+                        Cada marcação é persistida imediatamente no servidor.
+                      </p>
+                    </div>
+                    <span
+                      className={`text-xs font-black px-2.5 py-0.5 rounded-md ${
+                        countCompletedVerifications(selectedFreight) === 5
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-100 text-amber-900'
+                      }`}
+                    >
+                      {countCompletedVerifications(selectedFreight)}/5 concluídas
+                    </span>
+                  </div>
+
+                  {/* 1. Dados do motorista conferidos */}
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
+                    <input
+                      type="checkbox"
+                      checked={chkMotorista}
+                      disabled={savingOp || actionBusy}
+                      onChange={(e) => void handleToggleVerification('MOTORISTA', e.target.checked)}
+                      className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
+                    />
+                    <div className="flex-1">
+                      <span className="font-extrabold text-[#15191D] block">
+                        1. Dados do motorista conferidos
+                      </span>
+                      <span className="text-[11px] text-gray-500">
+                        Nome ({opMotoristaNome || 'pendente'}), CPF ({opMotoristaCpf || 'pendente'}) e telefone validados.
+                      </span>
+                    </div>
+                  </label>
+
+                  {/* 2. Veículo conferido */}
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
+                    <input
+                      type="checkbox"
+                      checked={chkVeiculo}
+                      disabled={savingOp || actionBusy}
+                      onChange={(e) => void handleToggleVerification('VEICULO', e.target.checked)}
+                      className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
+                    />
+                    <div className="flex-1">
+                      <span className="font-extrabold text-[#15191D] block">
+                        2. Veículo conferido
+                      </span>
+                      <span className="text-[11px] text-gray-500">
+                        Placa ({opPlacaVeiculo || 'pendente'}), implemento e tipo de veículo ({opVeiculoNecessario || 'pendente'}) compatíveis.
+                      </span>
+                    </div>
+                  </label>
+
+                  {/* 3. Condições e documentos conferidos */}
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-gray-200 cursor-pointer hover:border-[#FFD400]">
+                    <input
+                      type="checkbox"
+                      checked={chkCondicoesEDocs}
+                      disabled={savingOp || actionBusy}
+                      onChange={(e) =>
+                        void handleToggleVerification('CONDICOES_DOCS', e.target.checked)
+                      }
+                      className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
+                    />
+                    <div className="flex-1">
+                      <span className="font-extrabold text-[#15191D] block">
+                        3. Condições e documentos conferidos
+                      </span>
+                      <span className="text-[11px] text-gray-500">
+                        CNH, CRLV, ANTT e condições de pagamento conferidos pela Expedição.
+                      </span>
+                    </div>
+                  </label>
+
+                  {/* 4. Videochamada realizada com o motorista */}
+                  <div className="p-3 rounded-xl bg-white border border-gray-200 space-y-2">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={chkVideochamada}
+                        disabled={savingOp || actionBusy}
+                        onChange={(e) =>
+                          void handleToggleVerification('VIDEOCHAMADA', e.target.checked)
+                        }
+                        className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
+                      />
+                      <div className="flex-1">
+                        <span className="font-extrabold text-[#15191D] flex items-center gap-1.5">
+                          <Video className="w-3.5 h-3.5 text-blue-600" />
+                          4. Videochamada realizada com o motorista
+                        </span>
+                        <span className="text-[11px] text-gray-500 block">
+                          A videochamada ocorre fora do sistema (WhatsApp/telefone). Registre aqui a realização e observações.
+                        </span>
+                        {selectedFreight.checklistFechamento?.videochamadaRealizadaPorNome && (
+                          <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
+                            Realizada por{' '}
+                            {selectedFreight.checklistFechamento.videochamadaRealizadaPorNome} em{' '}
+                            {selectedFreight.checklistFechamento.videochamadaRealizadaEm}
+                          </span>
+                        )}
+                      </div>
+                    </label>
+                    <div className="pl-6 flex gap-1.5">
+                      <input
+                        type="text"
+                        value={chkVideochamadaObs}
+                        onChange={(e) => setChkVideochamadaObs(e.target.value)}
+                        placeholder="Observações da videochamada (identidade, caminhão no pátio, EPIs)..."
+                        className="flex-1 px-3 py-1.5 rounded-lg border border-gray-300 text-xs"
+                      />
+                      <button
+                        type="button"
+                        disabled={savingOp}
+                        onClick={() =>
+                          void persistPreparationData({
+                            overrideChecklist: {
+                              videochamadaRealizada: true,
+                              videochamadaObservacoes: chkVideochamadaObs,
+                            },
+                          })
+                        }
+                        className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer shrink-0"
+                      >
+                        Registrar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 5. Ordem de coleta enviada ao motorista */}
+                  <div className="p-3 rounded-xl bg-white border border-gray-200 space-y-2">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={chkOrdemEnviada}
+                        disabled={savingOp || actionBusy}
+                        onChange={(e) =>
+                          void handleToggleVerification('ORDEM_ENVIADA', e.target.checked)
+                        }
+                        className="mt-0.5 rounded text-[#080B0D] focus:ring-[#FFD400]"
+                      />
+                      <div className="flex-1">
+                        <span className="font-extrabold text-[#15191D] block">
+                          5. Ordem de coleta enviada ao motorista
+                        </span>
+                        <span className="text-[11px] text-gray-500 block">
+                          Gere o PDF oficial da Ordem de Coleta abaixo, envie ao motorista e confirme o envio.
+                        </span>
+                        {selectedFreight.checklistFechamento?.ordemColetaEnviadaPorNome && (
+                          <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
+                            Confirmado por{' '}
+                            {selectedFreight.checklistFechamento.ordemColetaEnviadaPorNome} em{' '}
+                            {selectedFreight.checklistFechamento.ordemColetaEnviadaEm}
+                          </span>
+                        )}
+                      </div>
+                    </label>
+
+                    <div className="pl-6 flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={handleEmitirOrdemColeta}
+                        className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>
+                          {selectedFreight.ordemCarregamentoEmitidaEm
+                            ? 'Visualizar / Baixar Ordem de Coleta (PDF)'
+                            : 'Gerar Ordem de Coleta (PDF)'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleShareOrdemColeta(selectedFreight)}
+                        className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-bold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>Compartilhar</span>
+                      </button>
+
+                      {!chkOrdemEnviada && (
+                        <button
+                          type="button"
+                          disabled={actionBusy}
+                          onClick={handleConfirmarEnvioOrdemAoMotorista}
+                          className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Confirmar envio ao motorista</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* AÇÃO PRINCIPAL: SELECIONAR OPERADOR E LIBERAR PARA MONITORAMENTO */}
+                <div className="bg-[#FFFDF0] border-2 border-[#FFD400] rounded-2xl p-4 space-y-3">
+                  <div>
+                    <p className="text-xs font-black text-[#080B0D] uppercase">
+                      Liberação para Operador de Monitoramento
+                    </p>
+                    <p className="text-[11px] text-gray-600">
+                      Ao liberar, o mesmo registro ({selectedFreight.protocol}) entra automaticamente em{' '}
+                      <strong>Fretes Ativos</strong> na fila do Operador escolhido, que recebe a notificação imediata.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-extrabold text-[#15191D] mb-1">
+                      Operador de Monitoramento Responsável *
+                    </label>
+                    <select
+                      value={opMonitoramentoResponsavelId}
+                      onChange={(e) => setOpMonitoramentoResponsavelId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-300 bg-white text-xs font-bold text-[#15191D]"
+                    >
+                      <option value="">Selecione o Operador de Monitoramento...</option>
+                      {monitoramentoOperators.map((op) => (
+                        <option key={op.id} value={op.id}>
+                          {op.name} ({op.roleTitle} • {op.department})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={handleLiberarParaMonitoramento}
+                      className="flex-1 inline-flex items-center justify-center gap-2 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-black py-3 px-4 rounded-xl shadow-md transition cursor-pointer text-xs"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>
+                        {selectedFreight.situacaoOperacional === 'LIBERADO_MONITORAMENTO'
+                          ? 'Atualizar Liberação no Monitoramento'
+                          : 'Liberar para Monitoramento'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowReturnModal(true)}
+                      className="inline-flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-[#E5252A] font-extrabold py-2.5 px-3 rounded-xl border border-red-200 transition cursor-pointer text-xs"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Devolver ao Comercial</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Transferência de Responsabilidade (Supervisor/Admin) */}
+                {isSupervisor && (
+                  <form
+                    onSubmit={handleTransferExpedicao}
+                    className="bg-[#F8FAFC] rounded-xl p-3 border border-gray-200 space-y-2"
+                  >
+                    <p className="text-[11px] font-extrabold text-[#15191D] uppercase">
+                      Transferir Responsabilidade na Expedição
+                    </p>
+                    <select
+                      value={transferTargetId}
+                      onChange={(e) => setTransferTargetId(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
+                    >
+                      <option value="">Selecione o novo responsável da Expedição...</option>
+                      {expedicaoOperators.map((op) => (
+                        <option key={op.id} value={op.id}>
+                          {op.name} ({op.roleTitle})
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={transferMotivo}
+                      onChange={(e) => setTransferMotivo(e.target.value)}
+                      placeholder="Motivo da transferência..."
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs"
+                    />
+                    <button
+                      type="submit"
+                      disabled={transferBusy || !transferTargetId || !transferMotivo.trim()}
+                      className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-xs cursor-pointer disabled:opacity-50"
+                    >
+                      Confirmar transferência
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* TAB 3: ANEXOS */}
+            {activeDetailTab === 'ANEXOS' && (
+              <FreightDocumentsManager
+                freight={selectedFreight}
+                currentUser={currentUser}
+                savedAttachments={detailAnexos}
+                canVerify={true}
+                onAttachmentsUpdated={(attachments) => {
+                  setDetailAnexos(attachments);
+                }}
+              />
+            )}
+
+            {/* TAB 4: OCORRÊNCIAS */}
+            {activeDetailTab === 'OCORRENCIAS' && (
+              <div className="space-y-3">
+                <form
+                  onSubmit={handleCreateOccurrence}
+                  className="bg-[#F8FAFC] p-4 rounded-2xl border border-gray-200 space-y-2.5"
+                >
+                  <p className="font-extrabold text-[#15191D]">Registrar Ocorrência</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <input
+                      type="text"
+                      value={occTitulo}
+                      onChange={(e) => setOccTitulo(e.target.value)}
+                      placeholder="Título da ocorrência *"
+                      className="sm:col-span-2 px-3 py-2 rounded-xl border border-gray-300 text-xs bg-white"
+                    />
+                    <select
+                      value={occSeveridade}
+                      onChange={(e) =>
+                        setOccSeveridade(e.target.value as 'BAIXA' | 'MEDIA' | 'IMPEDITIVA')
+                      }
+                      className="px-3 py-2 rounded-xl border border-gray-300 text-xs bg-white font-bold"
+                    >
+                      <option value="BAIXA">Informativa / Baixa</option>
+                      <option value="MEDIA">Atenção / Média</option>
+                      <option value="IMPEDITIVA">Impeditiva (Bloqueia)</option>
+                    </select>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={occDescricao}
+                    onChange={(e) => setOccDescricao(e.target.value)}
+                    placeholder="Detalhes da ocorrência..."
+                    className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-white"
+                  />
+                  <button
+                    type="submit"
+                    disabled={occBusy || !occTitulo.trim()}
+                    className="bg-[#080B0D] text-[#FFD400] font-extrabold px-4 py-2 rounded-xl text-xs cursor-pointer disabled:opacity-50"
+                  >
+                    Registrar Ocorrência
+                  </button>
+                </form>
+
+                {detailOcorrencias.length === 0 ? (
+                  <p className="text-center text-gray-400 py-6">
+                    Nenhuma ocorrência registrada neste frete.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {detailOcorrencias.map((occ) => (
+                      <div
+                        key={occ.id}
+                        className={`p-3 rounded-xl border ${
+                          !occ.resolved
+                            ? occ.severity === 'IMPEDITIVA'
+                              ? 'bg-red-50 border-red-200'
+                              : 'bg-amber-50 border-amber-200'
+                            : 'bg-gray-50 border-gray-200'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-white border">
+                                {occ.severity}
+                              </span>
+                              <span className="text-[10px] font-bold text-gray-500">
+                                {occ.resolved ? 'RESOLVIDA' : 'ABERTA'}
+                              </span>
+                            </div>
+                            <p className="font-extrabold text-[#15191D] mt-1">{occ.title}</p>
+                            {occ.description && (
+                              <p className="text-gray-600 mt-0.5">{occ.description}</p>
+                            )}
+                            <p className="text-[10px] text-gray-400 mt-1">
+                              Por {occ.createdByName} em {occ.createdAtFormatted}
+                            </p>
+                          </div>
+                          {!occ.resolved && (
+                            <button
+                              type="button"
+                              disabled={occBusy}
+                              onClick={() => void handleResolveOccurrence(occ.id)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-lg cursor-pointer shrink-0"
+                            >
+                              Resolver
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 5: HISTÓRICO */}
+            {activeDetailTab === 'HISTORICO' && (
+              <div className="space-y-2">
+                {detailHistorico.map((h) => (
+                  <div
+                    key={h.id}
+                    className="p-3 rounded-xl bg-[#F8FAFC] border border-gray-200"
+                  >
+                    <div className="flex items-center justify-between text-[10px] text-gray-400">
+                      <span className="font-bold text-gray-600">
+                        {h.actorName} ({h.actorSector})
+                      </span>
+                      <span>{h.timestampFormatted}</span>
+                    </div>
+                    <p className="font-bold text-[#15191D] mt-0.5">{h.summary}</p>
+                    {h.horarioRealEvento && (
+                      <p className="text-[11px] font-semibold text-blue-800 mt-0.5">
+                        Horário real do evento: {h.horarioRealEvento}
+                      </p>
+                    )}
+                    {h.reason && <p className="text-[11px] text-gray-600">{h.reason}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CorporateModal>
       )}
 
       {/* =====================================================================

@@ -26,7 +26,9 @@ import {
   AVAILABLE_MODULES,
   ALL_MODULE_IDS,
   getDefaultPermissionsForDepartment,
+  resolveAccessProfileFromSector,
 } from '../lib/permissions';
+import { resolveEmployeeSectorLabel } from '../lib/adminMetrics';
 import {
   apiFetchAdminAccessRequests,
   apiSubmitAdminDecision,
@@ -136,17 +138,18 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
   ) => {
     setFeedbackBanner(null);
     const defaultRole: UserRole = target.accessLevel || 'FUNCIONARIO';
+    const resolvedSector = resolveEmployeeSectorLabel(target) as Department;
     const defaultPerms =
       target.permissoesPaginas && target.permissoesPaginas.length > 0 && target.approvalStatus === 'APROVADO'
         ? [...target.permissoesPaginas]
-        : getDefaultPermissionsForDepartment(target.department, defaultRole);
+        : getDefaultPermissionsForDepartment(resolvedSector, defaultRole, target.accessProfile);
 
     setDecisionModal({
       target,
       action,
       accessLevel: defaultRole,
-      department: target.department,
-      roleTitle: target.roleTitle || `Colaborador (${target.department})`,
+      department: resolvedSector,
+      roleTitle: target.roleTitle || `Colaborador (${resolvedSector})`,
       permissoesPaginas: defaultPerms,
       reason: '',
     });
@@ -162,6 +165,12 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
       const res = await apiSubmitAdminDecision(decisionModal.target.id, {
         action: decisionModal.action,
         accessLevel: decisionModal.accessLevel,
+        accessProfile: resolveAccessProfileFromSector(
+          decisionModal.department,
+          decisionModal.accessLevel,
+          undefined,
+          decisionModal.roleTitle
+        ),
         department: decisionModal.department,
         roleTitle: decisionModal.roleTitle,
         permissoesPaginas: decisionModal.permissoesPaginas,
@@ -197,10 +206,12 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
     if (statusFilter !== 'TODOS' && status !== statusFilter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
+      const sectorLabel = resolveEmployeeSectorLabel(acc).toLowerCase();
       return (
         acc.name.toLowerCase().includes(q) ||
         (acc.login || acc.email).toLowerCase().includes(q) ||
-        acc.department.toLowerCase().includes(q)
+        acc.department.toLowerCase().includes(q) ||
+        sectorLabel.includes(q)
       );
     }
     return true;
@@ -475,10 +486,17 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                       </td>
 
                       <td className="py-3.5 px-3">
-                        <p className="font-bold text-[#15191D]">{acc.department}</p>
-                        <span className="inline-block mt-0.5 font-mono text-[10px] font-extrabold bg-[#080B0D] text-[#FFD400] px-1.5 py-0.5 rounded">
-                          {acc.accessLevel}
-                        </span>
+                        <p className="font-bold text-[#15191D]">{resolveEmployeeSectorLabel(acc)}</p>
+                        <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                          <span className="inline-block font-mono text-[10px] font-extrabold bg-[#080B0D] text-[#FFD400] px-1.5 py-0.5 rounded">
+                            {acc.accessLevel}
+                          </span>
+                          {acc.accessProfile && acc.accessProfile !== acc.accessLevel && (
+                            <span className="inline-block font-mono text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded">
+                              {acc.accessProfile}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="py-3.5 px-3 font-mono text-[11px] text-gray-600">
@@ -652,211 +670,37 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
 
       {/* Modal: Explicit Profile, Permissions & Decision Confirmation */}
       {decisionModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <form
-            onSubmit={handleConfirmDecision}
-            className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl max-h-[92vh] flex flex-col text-xs"
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-gray-200 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-[#080B0D] text-[#FFD400] flex items-center justify-center">
-                  <ShieldAlert className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-extrabold text-[#15191D]">
-                    {decisionModal.action === 'APROVAR'
-                      ? 'Permitir Acesso e Definir Permissões'
-                      : decisionModal.action === 'RECUSAR'
-                      ? 'Recusar Solicitação de Acesso'
-                      : decisionModal.action === 'SUSPENDER'
-                      ? 'Suspender Acesso e Revogar Sessões'
-                      : 'Atualizar Perfil e Permissões'}
-                  </h3>
-                  <p className="text-gray-500">
-                    Conta: <strong>{decisionModal.target.name}</strong> (
-                    {decisionModal.target.login || decisionModal.target.email})
-                  </p>
-                </div>
-              </div>
+        <CorporateModal
+          isOpen={Boolean(decisionModal)}
+          onClose={() => setDecisionModal(null)}
+          maxWidth="2xl"
+          icon={<ShieldAlert className="w-5 h-5" />}
+          title={
+            decisionModal.action === 'APROVAR'
+              ? 'Permitir Acesso e Definir Permissões'
+              : decisionModal.action === 'RECUSAR'
+              ? 'Recusar Solicitação de Acesso'
+              : decisionModal.action === 'SUSPENDER'
+              ? 'Suspender Acesso e Revogar Sessões'
+              : 'Atualizar Perfil e Permissões'
+          }
+          subtitle={`Conta: ${decisionModal.target.name} (${
+            decisionModal.target.login || decisionModal.target.email
+          })`}
+          footer={
+            <div className="flex items-center justify-end gap-2 w-full">
               <button
                 type="button"
                 onClick={() => setDecisionModal(null)}
-                className="text-gray-400 hover:text-gray-700 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="py-4 space-y-3.5 overflow-y-auto flex-1 pr-1">
-              {(decisionModal.action === 'APROVAR' ||
-                decisionModal.action === 'ALTERAR_PERMISSOES') && (
-                <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-extrabold text-[#15191D] mb-1">
-                        Perfil de Acesso (RBAC) *
-                      </label>
-                      <select
-                        value={decisionModal.accessLevel}
-                        onChange={(e) => {
-                          const nextRole = e.target.value as UserRole;
-                          setDecisionModal({
-                            ...decisionModal,
-                            accessLevel: nextRole,
-                            permissoesPaginas: getDefaultPermissionsForDepartment(
-                              decisionModal.department,
-                              nextRole
-                            ),
-                          });
-                        }}
-                        className="w-full px-3 py-2 rounded-lg border border-gray-300 font-bold"
-                      >
-                        <option value="FUNCIONARIO">FUNCIONÁRIO (Padrão)</option>
-                        <option value="DIRETORIA">DIRETORIA</option>
-                        <option value="ADMINISTRADOR">ADMINISTRADOR</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block font-extrabold text-[#15191D] mb-1">
-                        Setor Corporativo *
-                      </label>
-                      <select
-                        value={decisionModal.department}
-                        onChange={(e) => {
-                          const nextDept = e.target.value as Department;
-                          setDecisionModal({
-                            ...decisionModal,
-                            department: nextDept,
-                            permissoesPaginas: getDefaultPermissionsForDepartment(
-                              nextDept,
-                              decisionModal.accessLevel
-                            ),
-                          });
-                        }}
-                        className="w-full px-3 py-2 rounded-lg border border-gray-300 font-bold"
-                      >
-                        <option value="Operacional">Operacional</option>
-                        <option value="Logística">Logística</option>
-                        <option value="Administrativo">Administrativo</option>
-                        <option value="Financeiro">Financeiro</option>
-                        <option value="Recursos Humanos">Recursos Humanos</option>
-                        <option value="Segurança">Segurança</option>
-                        <option value="Diretoria">Diretoria</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block font-extrabold text-[#15191D] mb-1">
-                      Cargo / Função
-                    </label>
-                    <input
-                      type="text"
-                      value={decisionModal.roleTitle}
-                      onChange={(e) =>
-                        setDecisionModal({ ...decisionModal, roleTitle: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-gray-300 font-semibold"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="font-extrabold text-[#15191D]">
-                        Permissões Explícitas de Páginas e Módulos
-                      </label>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDecisionModal({
-                              ...decisionModal,
-                              permissoesPaginas: [...ALL_MODULE_IDS],
-                            })
-                          }
-                          className="text-[10px] font-bold bg-[#FFD400]/40 hover:bg-[#FFD400] text-[#080B0D] px-2 py-0.5 rounded cursor-pointer"
-                        >
-                          Marcar Todos
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDecisionModal({
-                              ...decisionModal,
-                              permissoesPaginas: ['inicio'],
-                            })
-                          }
-                          className="text-[10px] font-bold bg-gray-100 hover:bg-gray-200 text-gray-600 px-2 py-0.5 rounded cursor-pointer"
-                        >
-                          Mínimo (Início)
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[#F8FAFC] border border-gray-200 p-2.5 rounded-xl max-h-48 overflow-y-auto">
-                      {AVAILABLE_MODULES.map((mod) => {
-                        const checked = decisionModal.permissoesPaginas.includes(mod.id);
-                        return (
-                          <label
-                            key={mod.id}
-                            className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer ${
-                              checked
-                                ? 'bg-amber-50 border-[#FFD400] font-bold text-[#15191D]'
-                                : 'bg-white border-gray-200 text-gray-600'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                const next = e.target.checked
-                                  ? [...decisionModal.permissoesPaginas, mod.id]
-                                  : decisionModal.permissoesPaginas.filter((id) => id !== mod.id);
-                                setDecisionModal({
-                                  ...decisionModal,
-                                  permissoesPaginas: next.length > 0 ? next : ['inicio'],
-                                });
-                              }}
-                              className="mt-0.5 rounded text-[#080B0D]"
-                            />
-                            <span>{mod.label}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <div>
-                <label className="block font-extrabold text-[#15191D] mb-1">
-                  Motivo / Observação da Decisão Administrativa
-                </label>
-                <textarea
-                  rows={2}
-                  value={decisionModal.reason}
-                  onChange={(e) =>
-                    setDecisionModal({ ...decisionModal, reason: e.target.value })
-                  }
-                  placeholder="Informe o motivo ou justificativa para registro na auditoria..."
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300"
-                />
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-gray-200 flex items-center justify-end gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => setDecisionModal(null)}
-                className="px-4 py-2 rounded-lg font-bold text-gray-600 hover:bg-gray-100 cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
+                form="admin-decision-form"
                 disabled={isSubmittingDecision}
-                className={`px-4 py-2 rounded-lg font-extrabold cursor-pointer ${
+                className={`px-4 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
                   decisionModal.action === 'RECUSAR' || decisionModal.action === 'SUSPENDER'
                     ? 'bg-[#E5252A] hover:bg-red-700 text-white'
                     : 'bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D]'
@@ -873,8 +717,173 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                   : 'Salvar Permissões'}
               </button>
             </div>
+          }
+        >
+          <form
+            id="admin-decision-form"
+            onSubmit={handleConfirmDecision}
+            className="space-y-4 text-xs"
+          >
+            {(decisionModal.action === 'APROVAR' ||
+              decisionModal.action === 'ALTERAR_PERMISSOES') && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-extrabold text-[#15191D] mb-1">
+                      Perfil de Acesso (RBAC) *
+                    </label>
+                    <select
+                      value={decisionModal.accessLevel}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as UserRole;
+                        setDecisionModal({
+                          ...decisionModal,
+                          accessLevel: nextRole,
+                          permissoesPaginas: getDefaultPermissionsForDepartment(
+                            decisionModal.department,
+                            nextRole
+                          ),
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white font-bold"
+                    >
+                      <option value="FUNCIONARIO">FUNCIONÁRIO (Padrão)</option>
+                      <option value="DIRETORIA">DIRETORIA</option>
+                      <option value="ADMINISTRADOR">ADMINISTRADOR</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-extrabold text-[#15191D] mb-1">
+                      Setor Corporativo *
+                    </label>
+                    <select
+                      value={decisionModal.department}
+                      onChange={(e) => {
+                        const nextDept = e.target.value as Department;
+                        setDecisionModal({
+                          ...decisionModal,
+                          department: nextDept,
+                          permissoesPaginas: getDefaultPermissionsForDepartment(
+                            nextDept,
+                            decisionModal.accessLevel
+                          ),
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white font-bold"
+                    >
+                      <option value="Comercial">Comercial</option>
+                      <option value="Expedição">Expedição</option>
+                      <option value="Monitoramento">Monitoramento</option>
+                      <option value="Financeiro">Financeiro</option>
+                      <option value="Recursos Humanos">Recursos Humanos</option>
+                      <option value="Diretoria">Diretoria</option>
+                      <option value="Administrativo">Administrativo</option>
+                      <option value="Logística">Logística</option>
+                      <option value="Operacional">Operacional</option>
+                      <option value="Segurança">Segurança</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-extrabold text-[#15191D] mb-1">
+                    Cargo / Função
+                  </label>
+                  <input
+                    type="text"
+                    value={decisionModal.roleTitle}
+                    onChange={(e) =>
+                      setDecisionModal({ ...decisionModal, roleTitle: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white font-semibold"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="font-extrabold text-[#15191D]">
+                      Permissões Explícitas de Páginas e Módulos
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDecisionModal({
+                            ...decisionModal,
+                            permissoesPaginas: [...ALL_MODULE_IDS],
+                          })
+                        }
+                        className="text-[10px] font-bold bg-[#FFD400]/40 hover:bg-[#FFD400] text-[#080B0D] px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        Marcar Todos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDecisionModal({
+                            ...decisionModal,
+                            permissoesPaginas: ['inicio'],
+                          })
+                        }
+                        className="text-[10px] font-bold bg-gray-100 hover:bg-gray-200 text-gray-600 px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        Mínimo (Início)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[#F8FAFC] border border-gray-200 p-2.5 rounded-xl max-h-52 overflow-y-auto">
+                    {AVAILABLE_MODULES.map((mod) => {
+                      const checked = decisionModal.permissoesPaginas.includes(mod.id);
+                      return (
+                        <label
+                          key={mod.id}
+                          className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer ${
+                            checked
+                              ? 'bg-amber-50 border-[#FFD400] font-bold text-[#15191D]'
+                              : 'bg-white border-gray-200 text-gray-600'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...decisionModal.permissoesPaginas, mod.id]
+                                : decisionModal.permissoesPaginas.filter((id) => id !== mod.id);
+                              setDecisionModal({
+                                ...decisionModal,
+                                permissoesPaginas: next.length > 0 ? next : ['inicio'],
+                              });
+                            }}
+                            className="mt-0.5 rounded text-[#080B0D]"
+                          />
+                          <span>{mod.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div>
+              <label className="block font-extrabold text-[#15191D] mb-1">
+                Motivo / Observação da Decisão Administrativa
+              </label>
+              <textarea
+                rows={2}
+                value={decisionModal.reason}
+                onChange={(e) =>
+                  setDecisionModal({ ...decisionModal, reason: e.target.value })
+                }
+                placeholder="Informe o motivo ou justificativa para registro na auditoria..."
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white"
+              />
+            </div>
           </form>
-        </div>
+        </CorporateModal>
       )}
     </div>
   );

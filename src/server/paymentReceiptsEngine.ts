@@ -24,6 +24,12 @@ import {
   canViewPendingPaymentsCount,
 } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
+import {
+  persistStateSnapshotToNeon,
+  persistPaymentReceiptToNeon,
+  persistSystemAssetToNeon,
+  getSystemAssetFromNeon,
+} from '../../neon.ts';
 
 const ROOT_DIR = resolveDataRoot();
 const PAYMENT_STORE_DIR = path.join(ROOT_DIR, 'data', 'payment-store');
@@ -213,6 +219,25 @@ export function validatePaymentReceiptBinary(
   };
 }
 
+export function hydratePaymentReceiptsFromPayload(payload: any): void {
+  if (!payload || typeof payload !== 'object') return;
+  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+    paymentStoreState.freights = payload.freights;
+  }
+  if (Array.isArray(payload.intents)) {
+    paymentStoreState.intents = payload.intents;
+  }
+  if (Array.isArray(payload.receipts)) {
+    paymentStoreState.receipts = payload.receipts;
+  }
+  if (Array.isArray(payload.history)) {
+    paymentStoreState.history = payload.history;
+  }
+  if (Array.isArray(payload.stagedShares)) {
+    paymentStoreState.stagedShares = payload.stagedShares;
+  }
+}
+
 function savePaymentStore(): void {
   ensureDirectories();
   fs.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), 'utf8');
@@ -220,6 +245,7 @@ function savePaymentStore(): void {
   fs.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), 'utf8');
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), 'utf8');
   fs.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), 'utf8');
+  void persistStateSnapshotToNeon('rodovar-payments-state', paymentStoreState);
 }
 
 function enrichFreightWithReceipts(freight: FreightRecord): FreightRecord {
@@ -1260,6 +1286,12 @@ export function registerPaymentReceiptRoutes(
       const absStoragePath = path.join(PAYMENT_RECEIPTS_DIR, safeStorageName);
 
       fs.writeFileSync(absStoragePath, fileBuffer);
+      void persistSystemAssetToNeon({
+        id: safeStorageName,
+        slot: 'paymentReceipt',
+        mimeType: validation.mimeType || 'application/octet-stream',
+        dataBase64: fileBuffer.toString('base64'),
+      });
 
       const spNow = formatSaoPauloDateTime();
       const expectedAmountBRL =
@@ -1373,6 +1405,7 @@ export function registerPaymentReceiptRoutes(
       );
 
       savePaymentStore();
+      void persistPaymentReceiptToNeon(receiptRecord);
 
       res.status(201).json({
         ok: true,
@@ -1408,7 +1441,7 @@ export function registerPaymentReceiptRoutes(
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
 
-      if (!canConfirmFreightPayment(user)) {
+      if (!canConfirmFreightPayment(user) && user.accessLevel !== 'ADMINISTRADOR') {
         res.status(403).json({
           error:
             'Acesso negado. Apenas usuários com permissão de "Confirmar Liquidação de Pagamentos" (Coordenador Financeiro, Diretoria ou Administrador) podem confirmar a liquidação bancária.',
@@ -1523,6 +1556,7 @@ export function registerPaymentReceiptRoutes(
       );
 
       savePaymentStore();
+      void persistPaymentReceiptToNeon(receipt);
 
       res.json({
         ok: true,
@@ -1540,7 +1574,7 @@ export function registerPaymentReceiptRoutes(
   app.get(
     '/api/pagamentos/comprovantes/:receiptId/download',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
 
@@ -1554,8 +1588,24 @@ export function registerPaymentReceiptRoutes(
         return;
       }
 
-      const absPath = path.join(PAYMENT_RECEIPTS_DIR, path.basename(receipt.storageFileName));
+      const safeFile = path.basename(receipt.storageFileName);
+      const absPath = path.join(PAYMENT_RECEIPTS_DIR, safeFile);
       if (!fs.existsSync(absPath)) {
+        const neonAsset = await getSystemAssetFromNeon(safeFile);
+        if (neonAsset && neonAsset.buffer) {
+          try {
+            ensureDirectories();
+            fs.writeFileSync(absPath, neonAsset.buffer);
+          } catch {}
+          res.setHeader('Content-Type', receipt.mimeType || neonAsset.mimeType);
+          res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+          res.setHeader(
+            'Content-Disposition',
+            `inline; filename="${encodeURIComponent(receipt.originalFileName)}"`
+          );
+          res.send(neonAsset.buffer);
+          return;
+        }
         res.status(404).json({
           error: 'Arquivo binário do comprovante não encontrado no armazenamento privado.',
           code: 'BINARY_NOT_FOUND',

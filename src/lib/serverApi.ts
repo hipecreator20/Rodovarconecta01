@@ -100,6 +100,38 @@ function createTimeoutSignal(timeoutMs = 10000): { signal: AbortSignal; clear: (
   };
 }
 
+export function sanitizeApiErrorMessage(
+  err: unknown,
+  fallback = 'Falha de comunicação com o servidor. Tente novamente em instantes.'
+): string {
+  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  if (
+    !raw ||
+    raw.includes('Unexpected token') ||
+    raw.includes('is not valid JSON') ||
+    raw.includes('<html') ||
+    raw.includes('<!DOCTYPE')
+  ) {
+    return fallback;
+  }
+  return raw;
+}
+
+async function safeParseJson(res: Response): Promise<any> {
+  try {
+    const text = await res.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: res.ok
+        ? 'Resposta inválida do servidor.'
+        : `Servidor temporariamente indisponível (HTTP ${res.status}). Tente novamente.`,
+    };
+  }
+}
+
 export async function apiFetchSession(): Promise<{
   authenticated: boolean;
   user?: Employee;
@@ -227,7 +259,7 @@ export async function apiRequestAccess(payload: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     status: res.status,
@@ -260,7 +292,7 @@ export async function apiRequestPasswordReset(identifier: string): Promise<{
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     message: data.message,
@@ -283,7 +315,7 @@ export async function apiResetPasswordWithToken(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, newPassword }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     message: data.message,
@@ -303,7 +335,7 @@ export async function apiFetchAdminAccessRequests(): Promise<{
     credentials: 'include',
     headers: getAuthHeaders(),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: res.ok,
     pendingCount: data.pendingCount ?? 0,
@@ -320,6 +352,7 @@ export async function apiSubmitAdminDecision(
     accessLevel: UserRole;
     permissoesPaginas: string[];
     department?: Department;
+    accessProfile?: string;
     roleTitle?: string;
     reason?: string;
   }
@@ -336,7 +369,7 @@ export async function apiSubmitAdminDecision(
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     pendingCount: data.pendingCount,
@@ -361,7 +394,7 @@ export async function apiUploadProfileAvatar(
     headers: getAuthHeaders(),
     body: JSON.stringify({ dataUrl, targetUserId }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     avatarUrl: data.avatarUrl,
@@ -381,7 +414,7 @@ export async function apiRestoreDefaultAvatar(targetUserId?: string): Promise<{
     headers: getAuthHeaders(),
     body: JSON.stringify({ targetUserId }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     user: data.user,
@@ -405,7 +438,7 @@ export async function apiUpdateProfile(payload: {
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     user: data.user,
@@ -415,7 +448,7 @@ export async function apiUpdateProfile(payload: {
 
 export async function apiDeleteUser(userId: string): Promise<{ok: boolean; error?: string}> {
   const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', credentials: 'include', headers: getAuthHeaders() });
-  const data = await response.json();
+  const data = await safeParseJson(response);
   return {ok: response.ok && data.ok === true, error: data.error};
 }
 
@@ -461,7 +494,7 @@ export async function apiUploadSystemConfigImage(
     headers: getAuthHeaders(),
     body: JSON.stringify({ slot, dataUrl }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -488,7 +521,7 @@ export async function apiPublishSystemConfig(payload: {
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ok: Boolean(res.ok && data.ok),
     status: res.status,
@@ -762,7 +795,7 @@ export async function apiCreateCommercialFreight(
     headers,
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   if(data.code==='DRIVER_BLOCKED'&&typeof window!=='undefined')window.dispatchEvent(new CustomEvent('rodovar:driver-blocked',{detail:data.driver}));
   return {
     ...data,
@@ -790,7 +823,7 @@ export async function apiUpdateCommercialFreight(
     }),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   if(data.code==='DRIVER_BLOCKED'&&typeof window!=='undefined')window.dispatchEvent(new CustomEvent('rodovar:driver-blocked',{detail:data.driver}));
   return {
     ...data,
@@ -827,7 +860,7 @@ export async function apiCommercialTransition(
       body: JSON.stringify(payload),
     }
   );
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -852,7 +885,7 @@ export async function apiClaimFreightFromQueue(
     headers,
     body: JSON.stringify({ idempotencyKey }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -928,7 +961,7 @@ export async function apiUpdateOperationalData(
     headers: getAuthHeaders({'X-Idempotency-Key': expeditionRequestKey(freightId, 'operational', payload)}),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   if(data.code==='DRIVER_BLOCKED'&&typeof window!=='undefined')window.dispatchEvent(new CustomEvent('rodovar:driver-blocked',{detail:data.driver}));
   return {
     ...data,
@@ -980,7 +1013,7 @@ export async function apiExpedicaoAction(
     headers,
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1031,7 +1064,7 @@ export async function apiMonitoramentoAction(
       body: JSON.stringify(payload),
     }
   );
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1066,7 +1099,7 @@ export async function apiRegisterFreightOccurrence(
     headers,
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1094,7 +1127,7 @@ export async function apiResolveFreightOccurrence(
       headers: getAuthHeaders(),
     }
   );
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1120,7 +1153,7 @@ export async function apiAddFreightComment(
     headers,
     body: JSON.stringify({ text, idempotencyKey }),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1153,7 +1186,7 @@ export async function apiUploadFreightAttachment(
     headers: getAuthHeaders({'X-Idempotency-Key':payload.idempotencyKey||newRequestKey()}),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1183,7 +1216,7 @@ export async function apiVerifyFreightAttachment(
       body: JSON.stringify({ conferido }),
     }
   );
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1211,7 +1244,7 @@ export async function apiDownloadFreightAttachment(
   if (!res.ok) {
     let errMsg = 'Não foi possível baixar o anexo.';
     try {
-      const json = await res.json();
+      const json = await safeParseJson(res);
       if (json.error) errMsg = json.error;
     } catch {
       // ignore
@@ -1251,7 +1284,7 @@ export async function apiTransferFreightResponsibility(
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1277,7 +1310,7 @@ export async function apiCancelFreight(
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  const data = await safeParseJson(res);
   return {
     ...data,
     ok: Boolean(res.ok && data.ok),
@@ -1406,6 +1439,55 @@ export async function apiMarkFreightNotificationRead(notifId: string): Promise<v
   } catch {
     // ignore
   }
+}
+
+export async function apiMarkAllFreightNotificationsRead(): Promise<void> {
+  try {
+    await fetch('/api/meus-fretes/notifications/read-all', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export async function apiFetchEconomicMode(): Promise<{ economicMode: boolean }> {
+  try {
+    const res = await fetch('/api/economic-mode', {
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { economicMode: data.economicMode !== false };
+    }
+  } catch {
+    // fallback
+  }
+  return { economicMode: true };
+}
+
+export async function apiUpdateEconomicMode(enabled: boolean): Promise<boolean> {
+  try {
+    const res = await fetch('/api/economic-mode', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return !!data.ok;
+    }
+  } catch {
+    // fallback
+  }
+  return false;
 }
 
 export async function apiUploadDocumentAttachments(files: Array<{

@@ -8,12 +8,18 @@ import {
   Download,
   FileText,
   Folder,
+  HelpCircle,
   Home,
   LogOut,
   Megaphone,
   Menu,
   Search,
+  Shield,
   Signal,
+  Truck,
+  User,
+  Users,
+  Wallet,
   Wifi,
   BatteryFull,
   X,
@@ -46,6 +52,7 @@ interface MobileSimulatorProps {
   onSwitchUserRole?: (role: UserRole) => void;
   onOpenSearch?: () => void;
   onOpenNotificationsCenter?: () => void;
+  onAccessNotification?: (n: CorporateNotification) => void;
   onOpenInstallModal?: () => void;
   isInstalled?: boolean;
   canPromptInstall?: boolean;
@@ -59,17 +66,18 @@ const SECTION_LABELS: Record<MenuSection, string> = {
   comunicados: 'Mural de Comunicados',
   fretes_comercial: 'Meus Fretes — Comercial',
   fretes_expedicao: 'Meus Fretes — Expedição',
-  fretes_ativos: 'Fretes Ativos',
+  fretes_ativos: 'Fretes Ativos — Monitoramento',
   mensagens: 'Mensagens Diretas',
   grupos: 'Grupos Corporativos',
-  solicitacoes: 'Minhas Solicitações (Prazo 48h)',
-  financeiro: 'Financeiro - Fretes',
+  solicitacoes: 'Minhas Solicitações',
+  financeiro: 'Financeiro — Fretes',
   agenda: 'Agenda Corporativa',
   documentos: 'Central de Documentos POP',
-  diretorio: 'Diretório de Funcionários',
+  diretorio: 'Colaboradores',
   perfil: 'Meu Perfil & Crachá',
-  administracao: 'Painel Administrativo & Diretoria',
+  administracao: 'Painel Administrativo',
   ajuda: 'Central de Ajuda & Suporte',
+  fluxo_notificacoes: 'Fluxo de Notificações entre Setores',
 };
 
 export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
@@ -87,6 +95,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
   onSwitchUserRole,
   onOpenSearch,
   onOpenNotificationsCenter,
+  onAccessNotification,
   onOpenInstallModal,
   isInstalled = false,
   canPromptInstall = false,
@@ -96,10 +105,72 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const canAccessAdmin =
-    !currentUser ||
-    currentUser.accessLevel === 'ADMINISTRADOR' ||
-    currentUser.accessLevel === 'DIRETORIA';
+  const canAccessAdmin = !currentUser || hasPagePermission(currentUser, 'administracao');
+
+  const preferredFreightSection: MenuSection | null = hasPagePermission(
+    currentUser,
+    'fretes_ativos'
+  )
+    ? 'fretes_ativos'
+    : hasPagePermission(currentUser, 'fretes_expedicao')
+      ? 'fretes_expedicao'
+      : hasPagePermission(currentUser, 'fretes_comercial')
+        ? 'fretes_comercial'
+        : null;
+
+  const isFreightSectionActive =
+    activeSection === 'fretes_comercial' ||
+    activeSection === 'fretes_expedicao' ||
+    activeSection === 'fretes_ativos';
+
+  const quickModules: Array<{
+    id: MenuSection;
+    shortLabel: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
+    highlight?: boolean;
+  }> = [
+    {
+      id: 'comunicados' as MenuSection,
+      shortLabel: 'Mural',
+      icon: Megaphone,
+      badge: unreadAnnouncementsCount,
+      highlight: true,
+    },
+    ...(hasPagePermission(currentUser, 'fretes_comercial')
+      ? [{ id: 'fretes_comercial' as MenuSection, shortLabel: 'Comercial', icon: Truck }]
+      : []),
+    ...(hasPagePermission(currentUser, 'fretes_expedicao')
+      ? [{ id: 'fretes_expedicao' as MenuSection, shortLabel: 'Expedição', icon: Truck }]
+      : []),
+    ...(hasPagePermission(currentUser, 'fretes_ativos')
+      ? [{ id: 'fretes_ativos' as MenuSection, shortLabel: 'Monitoramento', icon: Truck }]
+      : []),
+    ...(hasPagePermission(currentUser, 'financeiro')
+      ? [{ id: 'financeiro' as MenuSection, shortLabel: 'Financeiro', icon: Wallet }]
+      : []),
+    ...(hasPagePermission(currentUser, 'solicitacoes')
+      ? [
+          {
+            id: 'solicitacoes' as MenuSection,
+            shortLabel: 'Solicitações',
+            icon: FileText,
+            badge: openRequestsCount,
+          },
+        ]
+      : []),
+    ...(hasPagePermission(currentUser, 'agenda')
+      ? [{ id: 'agenda' as MenuSection, shortLabel: 'Agenda', icon: Calendar }]
+      : []),
+    ...(hasPagePermission(currentUser, 'diretorio')
+      ? [{ id: 'diretorio' as MenuSection, shortLabel: 'Colaboradores', icon: Users }]
+      : []),
+    { id: 'perfil' as MenuSection, shortLabel: 'Meu Perfil', icon: User },
+    ...(canAccessAdmin
+      ? [{ id: 'administracao' as MenuSection, shortLabel: 'Admin', icon: Shield }]
+      : []),
+    { id: 'ajuda' as MenuSection, shortLabel: 'Ajuda', icon: HelpCircle },
+  ];
 
   return (
     <div
@@ -123,18 +194,24 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
       )}
 
       {/* Mobile Top Header */}
-      <div className="bg-[#080B0D] px-4 py-2.5 flex items-center justify-between relative z-30 border-b border-white/5">
+      <div className="bg-[#080B0D] px-3.5 py-2.5 flex items-center justify-between relative z-30 border-b border-white/10">
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           className="p-1.5 text-white/90 hover:text-[#FFD400] transition-colors rounded-lg cursor-pointer"
           aria-label="Abrir menu"
         >
-          <Menu className="w-5 h-5" />
+          {mobileMenuOpen ? <X className="w-5 h-5 text-[#FFD400]" /> : <Menu className="w-5 h-5" />}
         </button>
 
-        <RodovarLogo size="sm" onClick={() => onNavigate('inicio')} />
+        <RodovarLogo
+          size="sm"
+          onClick={() => {
+            setMobileMenuOpen(false);
+            onNavigate('inicio');
+          }}
+        />
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {!isInstalled && onOpenInstallModal && (
             <button
               type="button"
@@ -157,6 +234,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
           )}
           <button
             onClick={() => {
+              setMobileMenuOpen(false);
               if (onOpenNotificationsCenter) {
                 onOpenNotificationsCenter();
               } else {
@@ -169,7 +247,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
             <Bell className="w-5 h-5 fill-white" />
             {unreadNotificationsCount > 0 && (
               <span className="absolute -top-0.5 -right-0.5 bg-[#E5252A] text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center shadow">
-                {unreadNotificationsCount}
+                {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
               </span>
             )}
           </button>
@@ -183,7 +261,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
 
       {/* Collapsible Mobile Drawer */}
       {mobileMenuOpen && (
-        <div className="fixed inset-0 top-[54px] z-40 bg-[#0B0E11]/98 backdrop-blur-md p-4 flex flex-col justify-between overflow-y-auto">
+        <div className="fixed inset-0 top-[52px] z-40 bg-[#0B0E11]/98 backdrop-blur-md p-4 pb-24 flex flex-col justify-between overflow-y-auto">
           <div className="space-y-3">
             {/* User Identity Card in Mobile Drawer */}
             {currentUser && (
@@ -212,48 +290,49 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
               {[
                 { id: 'inicio', label: 'Início' },
                 { id: 'comunicados', label: 'Mural de Comunicados', badge: unreadAnnouncementsCount },
-                { id: 'fretes_comercial', label: 'Meus Fretes — Comercial' },
-                { id: 'fretes_expedicao', label: 'Meus Fretes — Expedição' },
-                { id: 'fretes_ativos', label: 'Fretes Ativos' },
+                { id: 'fretes_comercial', label: 'Fretes Comercial' },
+                { id: 'fretes_expedicao', label: 'Fretes Expedição' },
+                { id: 'fretes_ativos', label: 'Fretes Ativos — Monitoramento' },
                 { id: 'solicitacoes', label: 'Minhas Solicitações', badge: openRequestsCount },
                 { id: 'financeiro', label: 'Financeiro' },
-                { id: 'mensagens', label: 'Mensagens' },
-                { id: 'grupos', label: 'Grupos' },
                 { id: 'agenda', label: 'Agenda Corporativa' },
-                { id: 'diretorio', label: 'Diretório de Funcionários' },
+                { id: 'diretorio', label: 'Colaboradores' },
                 { id: 'perfil', label: 'Meu Perfil' },
                 ...(canAccessAdmin
-                  ? [{ id: 'administracao', label: 'Painel Administrativo' }]
+                  ? [{ id: 'administracao', label: 'Administração' }]
                   : []),
                 { id: 'ajuda', label: 'Ajuda' },
               ]
                 .filter((item) => {
-                  if (item.id === 'perfil' || item.id === 'ajuda' || item.id === 'administracao') {
+                  if (item.id === 'perfil' || item.id === 'ajuda') {
                     return true;
+                  }
+                  if (item.id === 'administracao') {
+                    return canAccessAdmin;
                   }
                   return hasPagePermission(currentUser, item.id);
                 })
                 .map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    onNavigate(item.id as MenuSection);
-                    setMobileMenuOpen(false);
-                  }}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                    activeSection === item.id
-                      ? 'bg-[#FFD400] text-[#080B0D] font-bold'
-                      : 'text-gray-200 hover:bg-white/10'
-                  }`}
-                >
-                  <span>{item.label}</span>
-                  {item.badge ? (
-                    <span className="bg-[#E5252A] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                      {item.badge}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      onNavigate(item.id as MenuSection);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activeSection === item.id
+                        ? 'bg-[#FFD400] text-[#080B0D] font-bold'
+                        : 'text-gray-200 hover:bg-white/10'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {item.badge ? (
+                      <span className="bg-[#E5252A] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                        {item.badge}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
             </div>
 
             {/* Mobile RBAC Switcher */}
@@ -322,14 +401,14 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
       )}
 
       {/* Scrollable Mobile Content */}
-      <div className="flex-1 overflow-y-auto bg-[#F3F5F7] pb-20">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden bg-[#F3F5F7] pb-24">
         {!isEmbedded && activeSection !== 'inicio' && children ? (
-          <div className="p-3 space-y-3">
+          <div className="p-2.5 sm:p-3.5 space-y-3">
             {/* Mobile Contextual Breadcrumb Bar */}
             <div className="bg-[#080B0D] text-white rounded-xl px-3.5 py-2.5 flex items-center justify-between gap-2 shadow-xs">
               <button
                 onClick={() => onNavigate('inicio')}
-                className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#FFD400] hover:underline cursor-pointer"
+                className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#FFD400] hover:underline cursor-pointer shrink-0"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span>Início</span>
@@ -340,7 +419,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
             </div>
 
             {/* Active Module Content */}
-            {children}
+            <div className="min-w-0 max-w-full overflow-x-hidden">{children}</div>
           </div>
         ) : (
           <>
@@ -354,6 +433,12 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
                 }
                 alt="Cabeçalho Institucional RODOVAR CONECTA"
                 referrerPolicy="no-referrer"
+                onError={(e) => {
+                  const img = e.currentTarget;
+                  if (!img.src.endsWith('/assets/banner-rodovar-conecta-highway.png')) {
+                    img.src = '/assets/banner-rodovar-conecta-highway.png';
+                  }
+                }}
                 style={
                   systemConfig
                     ? {
@@ -379,246 +464,323 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
 
             {/* Main White Rounded Container overlapping sunset strip */}
             <div className="relative -mt-2.5 bg-[#F3F5F7] rounded-t-2xl px-2.5 pt-2.5 space-y-2.5">
-              {/* Welcome Truck Banner / Carousel */}
-              {systemConfig ? (
-                <WelcomeBannerCarousel
-                  systemConfig={systemConfig}
-                  userAccessLevel={currentUser?.accessLevel || 'FUNCIONARIO'}
-                  onViewAnnouncements={() => onNavigate('comunicados')}
-                  compactMobile
-                />
-              ) : (
-                <div className="relative rounded-xl overflow-hidden bg-[#0B0E11] h-[132px] shadow-sm">
-                  <img
-                    src="/assets/banner-rodovar-conecta-highway.png"
-                    alt="Frota RODOVAR CONECTA"
-                    referrerPolicy="no-referrer"
-                    className="absolute inset-0 w-full h-full object-cover object-center"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-r from-[#080B0D] via-[#080B0D]/80 to-transparent w-[78%]" />
-                  <div className="relative z-10 p-3 flex flex-col justify-between h-full max-w-[72%]">
-                    <div>
-                      <h2 className="text-[13px] font-extrabold text-white leading-tight uppercase">
-                        BEM-VINDO AO
-                      </h2>
-                      <h3 className="text-[14px] font-extrabold text-[#FFD400] leading-tight uppercase">
-                        RODOVAR CONECTA!
-                      </h3>
-                      <p className="text-[10px] text-gray-200 mt-1 leading-snug line-clamp-2">
-                        Sua carga em primeiro lugar! Informações oficiais da nossa empresa.
-                      </p>
-                    </div>
+              {/* Quick Operational Navigation Grid for all permitted modules */}
+              <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5">
+                {quickModules.map((mod) => {
+                  const Icon = mod.icon;
+                  return (
                     <button
-                      onClick={() => onNavigate('comunicados')}
-                      className="self-start bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-[10px] font-bold px-2.5 py-1 rounded-md inline-flex items-center gap-1 shadow cursor-pointer"
+                      key={mod.id}
+                      type="button"
+                      onClick={() => onNavigate(mod.id)}
+                      className={`relative rounded-xl p-2 flex flex-col items-center justify-center gap-1 shadow-xs transition cursor-pointer ${
+                        mod.highlight
+                          ? 'bg-[#FFD400] text-[#080B0D]'
+                          : 'bg-white text-[#15191D] border border-gray-200/80 active:bg-gray-50'
+                      }`}
                     >
-                      <span>Ver comunicados</span>
-                      <ChevronRight className="w-3 h-3 stroke-[2.5]" />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 4 Mobile Shortcut Cards */}
-              <div className="grid grid-cols-4 gap-1.5">
-                <button
-                  onClick={() => onNavigate('comunicados')}
-                  className="relative bg-[#FFD400] text-[#080B0D] rounded-lg p-2 flex flex-col items-center justify-center gap-1 shadow-xs cursor-pointer"
-                >
-                  {unreadAnnouncementsCount > 0 && (
-                    <span className="absolute top-1 right-1 bg-[#E5252A] text-white text-[9px] font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center">
-                      {unreadAnnouncementsCount}
-                    </span>
-                  )}
-                  <Megaphone className="w-4 h-4 stroke-[2.2]" />
-                  <span className="text-[9px] font-bold leading-none truncate w-full text-center">
-                    Comunicados
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => onNavigate('solicitacoes')}
-                  className="relative bg-white text-[#15191D] rounded-lg p-2 flex flex-col items-center justify-center gap-1 shadow-xs border border-gray-200/70 cursor-pointer"
-                >
-                  {openRequestsCount > 0 && (
-                    <span className="absolute top-1 right-1 bg-[#E5252A] text-white text-[9px] font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center">
-                      {openRequestsCount}
-                    </span>
-                  )}
-                  <FileText className="w-4 h-4 text-[#15191D]" />
-                  <span className="text-[9px] font-semibold leading-none truncate w-full text-center">
-                    Solicitações
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => onNavigate('agenda')}
-                  className="bg-white text-[#15191D] rounded-lg p-2 flex flex-col items-center justify-center gap-1 shadow-xs border border-gray-200/70 cursor-pointer"
-                >
-                  <Calendar className="w-4 h-4 text-[#15191D]" />
-                  <span className="text-[9px] font-semibold leading-none truncate w-full text-center">
-                    Agenda
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => onNavigate('comunicados')}
-                  className="bg-white text-[#15191D] rounded-lg p-2 flex flex-col items-center justify-center gap-1 shadow-xs border border-gray-200/70 cursor-pointer"
-                >
-                  <Folder className="w-4 h-4 text-[#15191D]" />
-                  <span className="text-[9px] font-semibold leading-none truncate w-full text-center">
-                    Documentos
-                  </span>
-                </button>
-              </div>
-
-              {/* Mobile Comunicado em Destaque */}
-              <div className="bg-white rounded-xl p-2.5 shadow-xs border border-gray-200/80">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1.5">
-                    <Megaphone className="w-3.5 h-3.5 text-[#15191D]" />
-                    <span className="text-[11px] font-bold text-[#15191D]">
-                      Comunicado em Destaque
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => onNavigate('comunicados')}
-                    className="text-gray-400 hover:text-[#15191D] cursor-pointer"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <div className="relative rounded-lg border border-gray-100 bg-white overflow-hidden p-2">
-                  <div className="relative z-10 max-w-[68%]">
-                    <div className="flex items-start gap-2">
-                      <div className="w-7 h-7 rounded-md bg-[#FFD400] flex items-center justify-center shrink-0">
-                        <Calendar className="w-4 h-4 text-[#080B0D]" />
-                      </div>
-                      <div>
-                        <h4 className="text-[10.5px] font-extrabold text-[#15191D] uppercase leading-tight">
-                          {featuredAnnouncement.title}
-                        </h4>
-                        <p className="text-[9px] text-gray-500 mt-0.5">
-                          {featuredAnnouncement.dateFormatted} • {featuredAnnouncement.department}
-                        </p>
-                      </div>
-                    </div>
-                    <p className="text-[9.5px] text-gray-600 mt-1.5 leading-snug line-clamp-3">
-                      {featuredAnnouncement.summary}
-                    </p>
-                    <button
-                      onClick={() => onOpenAnnouncement(featuredAnnouncement)}
-                      className="mt-2 bg-[#FFD400] text-[#080B0D] text-[9.5px] font-bold px-2.5 py-1 rounded shadow-2xs cursor-pointer"
-                    >
-                      Ler comunicado
-                    </button>
-                  </div>
-                  <div className="absolute right-0 bottom-0 top-0 w-[42%] pointer-events-none">
-                    <img
-                      src={featuredAnnouncement.coverImage || '/assets/banner-rodovar-conecta-highway.png'}
-                      alt="Destaque RODOVAR"
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover object-center"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-r from-white via-white/35 to-transparent" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Mobile Minhas Notificações */}
-              <div className="bg-white rounded-xl p-2.5 shadow-xs border border-gray-200/80">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1.5">
-                    <Bell className="w-3.5 h-3.5 text-[#15191D] fill-[#15191D]" />
-                    <span className="text-[11px] font-bold text-[#15191D]">
-                      Minhas Notificações
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      if (onOpenNotificationsCenter) {
-                        onOpenNotificationsCenter();
-                      } else {
-                        onNavigate('comunicados');
-                      }
-                    }}
-                    className="text-[9.5px] font-semibold text-gray-500 flex items-center gap-0.5 cursor-pointer"
-                  >
-                    <span>Ver todas</span>
-                    <ChevronRight className="w-3 h-3" />
-                  </button>
-                </div>
-                <div className="divide-y divide-gray-100">
-                  {notifications.slice(0, 3).map((n) => (
-                    <button
-                      key={n.id}
-                      onClick={() => onNavigate(n.targetSection)}
-                      className="w-full py-1.5 flex items-start justify-between text-left gap-2 cursor-pointer"
-                    >
-                      <div className="flex items-start gap-2 min-w-0">
-                        <span
-                          className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
-                            n.dotColor === 'red' ? 'bg-[#E5252A]' : 'bg-[#2563EB]'
-                          }`}
-                        />
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-bold text-[#15191D] truncate">{n.title}</p>
-                          <p className="text-[9px] text-gray-500 truncate">{n.subtitle}</p>
-                        </div>
-                      </div>
-                      <span className="text-[9px] text-gray-400 tabular-nums shrink-0">
-                        {n.timeLabel}
+                      {mod.badge && mod.badge > 0 ? (
+                        <span className="absolute top-1 right-1 bg-[#E5252A] text-white text-[9px] font-bold min-w-[14px] h-3.5 px-1 rounded-full flex items-center justify-center">
+                          {mod.badge}
+                        </span>
+                      ) : null}
+                      <Icon className="w-4 h-4 stroke-[2.2]" />
+                      <span className="text-[9.5px] font-bold leading-none truncate w-full text-center">
+                        {mod.shortLabel}
                       </span>
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
+
+              {/* Render full HomePremium on real mobile viewport if provided, otherwise simulator preview */}
+              {!isEmbedded && children ? (
+                <div className="min-w-0 max-w-full overflow-x-hidden">{children}</div>
+              ) : (
+                <>
+                  {/* Welcome Truck Banner / Carousel */}
+                  {systemConfig ? (
+                    <WelcomeBannerCarousel
+                      systemConfig={systemConfig}
+                      userAccessLevel={currentUser?.accessLevel || 'FUNCIONARIO'}
+                      onViewAnnouncements={() => onNavigate('comunicados')}
+                      compactMobile
+                    />
+                  ) : (
+                    <div className="relative rounded-xl overflow-hidden bg-[#0B0E11] h-[132px] shadow-sm">
+                      <img
+                        src="/assets/banner-rodovar-conecta-highway.png"
+                        alt="Frota RODOVAR CONECTA"
+                        referrerPolicy="no-referrer"
+                        className="absolute inset-0 w-full h-full object-cover object-center"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-r from-[#080B0D] via-[#080B0D]/80 to-transparent w-[78%]" />
+                      <div className="relative z-10 p-3 flex flex-col justify-between h-full max-w-[72%]">
+                        <div>
+                          <h2 className="text-[13px] font-extrabold text-white leading-tight uppercase">
+                            BEM-VINDO AO
+                          </h2>
+                          <h3 className="text-[14px] font-extrabold text-[#FFD400] leading-tight uppercase">
+                            RODOVAR CONECTA!
+                          </h3>
+                          <p className="text-[10px] text-gray-200 mt-1 leading-snug line-clamp-2">
+                            Sua carga em primeiro lugar! Informações oficiais da nossa empresa.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => onNavigate('comunicados')}
+                          className="self-start bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-[10px] font-bold px-2.5 py-1 rounded-md inline-flex items-center gap-1 shadow cursor-pointer"
+                        >
+                          <span>Ver comunicados</span>
+                          <ChevronRight className="w-3 h-3 stroke-[2.5]" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mobile Comunicado em Destaque */}
+                  <div className="bg-white rounded-xl p-2.5 shadow-xs border border-gray-200/80">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Megaphone className="w-3.5 h-3.5 text-[#15191D]" />
+                        <span className="text-[11px] font-bold text-[#15191D]">
+                          Comunicado em Destaque
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => onNavigate('comunicados')}
+                        className="text-gray-400 hover:text-[#15191D] cursor-pointer"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="relative rounded-lg border border-gray-100 bg-white overflow-hidden p-2">
+                      <div className="relative z-10 max-w-[68%]">
+                        <div className="flex items-start gap-2">
+                          <div className="w-7 h-7 rounded-md bg-[#FFD400] flex items-center justify-center shrink-0">
+                            <Calendar className="w-4 h-4 text-[#080B0D]" />
+                          </div>
+                          <div>
+                            <h4 className="text-[10.5px] font-extrabold text-[#15191D] uppercase leading-tight">
+                              {featuredAnnouncement.title}
+                            </h4>
+                            <p className="text-[9px] text-gray-500 mt-0.5">
+                              {featuredAnnouncement.dateFormatted} • {featuredAnnouncement.department}
+                            </p>
+                          </div>
+                        </div>
+                        <p className="text-[9.5px] text-gray-600 mt-1.5 leading-snug line-clamp-3">
+                          {featuredAnnouncement.summary}
+                        </p>
+                        <button
+                          onClick={() => onOpenAnnouncement(featuredAnnouncement)}
+                          className="mt-2 bg-[#FFD400] text-[#080B0D] text-[9.5px] font-bold px-2.5 py-1 rounded shadow-2xs cursor-pointer"
+                        >
+                          Ler comunicado
+                        </button>
+                      </div>
+                      <div className="absolute right-0 bottom-0 top-0 w-[42%] pointer-events-none">
+                        <img
+                          src={
+                            featuredAnnouncement.coverImage ||
+                            '/assets/banner-rodovar-conecta-highway.png'
+                          }
+                          alt="Destaque RODOVAR"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover object-center"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-r from-white via-white/35 to-transparent" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Mobile Minhas Notificações */}
+                  <div className="bg-white rounded-xl p-2.5 shadow-xs border border-gray-200/80">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Bell className="w-3.5 h-3.5 text-[#15191D] fill-[#15191D]" />
+                        <span className="text-[11px] font-bold text-[#15191D]">
+                          Minhas Notificações
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (onOpenNotificationsCenter) {
+                            onOpenNotificationsCenter();
+                          } else {
+                            onNavigate('comunicados');
+                          }
+                        }}
+                        className="text-[9.5px] font-semibold text-gray-500 flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <span>Ver todas</span>
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <div className="divide-y divide-gray-100">
+                      {notifications.slice(0, 3).map((n) => (
+                        <button
+                          key={n.id}
+                          onClick={() => {
+                            if (onAccessNotification) {
+                              onAccessNotification(n);
+                            } else {
+                              onNavigate(n.targetSection);
+                            }
+                          }}
+                          className="w-full py-1.5 flex items-start justify-between text-left gap-2 cursor-pointer"
+                        >
+                          <div className="flex items-start gap-2 min-w-0">
+                            <span
+                              className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
+                                n.dotColor === 'red' ? 'bg-[#E5252A]' : 'bg-[#2563EB]'
+                              }`}
+                            />
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold text-[#15191D] truncate">
+                                {n.title}
+                              </p>
+                              <p className="text-[9px] text-gray-500 truncate">{n.subtitle}</p>
+                            </div>
+                          </div>
+                          <span className="text-[9px] text-gray-400 tabular-nums shrink-0">
+                            {n.timeLabel}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </>
         )}
       </div>
 
-      {/* Bottom Navigation Bar */}
-      <div className="bg-[#0B0E11] border-t border-white/10 px-3 py-2 grid grid-cols-4 gap-1 fixed bottom-0 left-0 right-0 z-30">
+      {/* Adaptive 5-Tab Bottom Navigation Bar */}
+      <div
+        className={`bg-[#0B0E11] border-t border-white/10 px-2 py-2 grid grid-cols-5 gap-1 z-30 ${
+          isEmbedded ? 'mt-auto' : 'fixed bottom-0 left-0 right-0'
+        }`}
+      >
         <button
-          onClick={() => onNavigate('inicio')}
+          onClick={() => {
+            setMobileMenuOpen(false);
+            onNavigate('inicio');
+          }}
           className={`flex flex-col items-center gap-0.5 cursor-pointer ${
-            activeSection === 'inicio' ? 'text-[#FFD400]' : 'text-gray-400 hover:text-white'
+            activeSection === 'inicio' && !mobileMenuOpen
+              ? 'text-[#FFD400]'
+              : 'text-gray-400 hover:text-white'
           }`}
         >
           <Home className="w-4 h-4" />
-          <span className="text-[9px] font-bold">Início</span>
+          <span className="text-[9.5px] font-bold">Início</span>
         </button>
+
         <button
-          onClick={() => onNavigate('solicitacoes')}
-          className={`flex flex-col items-center gap-0.5 cursor-pointer ${
-            activeSection === 'solicitacoes' ? 'text-[#FFD400]' : 'text-gray-400 hover:text-white'
+          onClick={() => {
+            setMobileMenuOpen(false);
+            onNavigate('comunicados');
+          }}
+          className={`relative flex flex-col items-center gap-0.5 cursor-pointer ${
+            activeSection === 'comunicados' && !mobileMenuOpen
+              ? 'text-[#FFD400]'
+              : 'text-gray-400 hover:text-white'
           }`}
         >
-          <FileText className="w-4 h-4" />
-          <span className="text-[9px] font-medium">Solicitações</span>
+          {unreadAnnouncementsCount > 0 && (
+            <span className="absolute -top-1 right-3 bg-[#E5252A] text-white text-[8px] font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center">
+              {unreadAnnouncementsCount}
+            </span>
+          )}
+          <Megaphone className="w-4 h-4" />
+          <span className="text-[9.5px] font-medium">Mural</span>
         </button>
+
+        {preferredFreightSection ? (
+          <button
+            onClick={() => {
+              setMobileMenuOpen(false);
+              onNavigate(preferredFreightSection);
+            }}
+            className={`flex flex-col items-center gap-0.5 cursor-pointer ${
+              isFreightSectionActive && !mobileMenuOpen
+                ? 'text-[#FFD400]'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Truck className="w-4 h-4" />
+            <span className="text-[9.5px] font-medium">Fretes</span>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setMobileMenuOpen(false);
+              onNavigate('agenda');
+            }}
+            className={`flex flex-col items-center gap-0.5 cursor-pointer ${
+              activeSection === 'agenda' && !mobileMenuOpen
+                ? 'text-[#FFD400]'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Calendar className="w-4 h-4" />
+            <span className="text-[9.5px] font-medium">Agenda</span>
+          </button>
+        )}
+
+        {hasPagePermission(currentUser, 'financeiro') &&
+        currentUser?.accessProfile === 'FINANCEIRO' ? (
+          <button
+            onClick={() => {
+              setMobileMenuOpen(false);
+              onNavigate('financeiro');
+            }}
+            className={`flex flex-col items-center gap-0.5 cursor-pointer ${
+              activeSection === 'financeiro' && !mobileMenuOpen
+                ? 'text-[#FFD400]'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Wallet className="w-4 h-4" />
+            <span className="text-[9.5px] font-medium">Financeiro</span>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setMobileMenuOpen(false);
+              onNavigate('solicitacoes');
+            }}
+            className={`relative flex flex-col items-center gap-0.5 cursor-pointer ${
+              activeSection === 'solicitacoes' && !mobileMenuOpen
+                ? 'text-[#FFD400]'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            {openRequestsCount > 0 && (
+              <span className="absolute -top-1 right-3 bg-[#E5252A] text-white text-[8px] font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center">
+                {openRequestsCount}
+              </span>
+            )}
+            <FileText className="w-4 h-4" />
+            <span className="text-[9.5px] font-medium">Solicitações</span>
+          </button>
+        )}
+
         <button
-          onClick={() => onNavigate('agenda')}
+          onClick={() => setMobileMenuOpen((prev) => !prev)}
           className={`flex flex-col items-center gap-0.5 cursor-pointer ${
-            activeSection === 'agenda' ? 'text-[#FFD400]' : 'text-gray-400 hover:text-white'
+            mobileMenuOpen ? 'text-[#FFD400]' : 'text-gray-400 hover:text-white'
           }`}
         >
-          <Calendar className="w-4 h-4" />
-          <span className="text-[9px] font-medium">Agenda</span>
-        </button>
-        <button
-          onClick={() => onNavigate('comunicados')}
-          className={`flex flex-col items-center gap-0.5 cursor-pointer ${
-            activeSection === 'comunicados' ? 'text-[#FFD400]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <Folder className="w-4 h-4" />
-          <span className="text-[9px] font-medium">Mural</span>
+          <Menu className="w-4 h-4" />
+          <span className="text-[9.5px] font-medium">Menu</span>
         </button>
       </div>
     </div>
   );
 };
+
 

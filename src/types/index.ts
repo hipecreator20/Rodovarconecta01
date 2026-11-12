@@ -9,7 +9,10 @@ export type Department =
   | 'Financeiro'
   | 'Segurança'
   | 'Diretoria'
-  | 'Logística';
+  | 'Logística'
+  | 'Comercial'
+  | 'Expedição'
+  | 'Monitoramento';
 
 export type MenuSection =
   | 'inicio'
@@ -26,7 +29,8 @@ export type MenuSection =
   | 'diretorio'
   | 'perfil'
   | 'administracao'
-  | 'ajuda';
+  | 'ajuda'
+  | 'fluxo_notificacoes';
 
 export interface Employee {
   accessProfile?: import('../lib/accessPolicy').AccessProfile;

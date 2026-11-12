@@ -10,12 +10,24 @@ import {
   persistSocialCommentToNeon,
   deleteSocialCommentFromNeon,
   persistStateSnapshotToNeon,
+  persistSystemAssetToNeon,
 } from '../../neon.ts';
 import type { SocialPost, SocialComment, UserSocialProfile, SocialLinks } from '../types/index.ts';
 
 interface SocialStoreState {
   profiles: Record<string, UserSocialProfile>;
   posts: SocialPost[];
+}
+
+let activeSocialState: SocialStoreState | null = null;
+export function hydrateSocialProfileFromPayload(payload: any): void {
+  if (!activeSocialState || !payload || typeof payload !== 'object') return;
+  if (payload.profiles && typeof payload.profiles === 'object') {
+    activeSocialState.profiles = payload.profiles;
+  }
+  if (Array.isArray(payload.posts)) {
+    activeSocialState.posts = payload.posts;
+  }
 }
 
 const DEFAULT_COVER = '/assets/banner-rodovar-conecta-highway.png';
@@ -111,14 +123,15 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
       console.warn('Failed to parse social-store.json:', (e as Error).message);
     }
   }
+  activeSocialState = state;
 
   const persistState = () => {
     try {
       fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(socialStoreFile, JSON.stringify(state, null, 2), 'utf8');
       void persistStateSnapshotToNeon('rodovar-social', {
-        profilesCount: Object.keys(state.profiles).length,
-        postsCount: state.posts.length,
+        profiles: state.profiles,
+        posts: state.posts,
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
@@ -278,7 +291,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
   });
 
   // 3. POST /api/profile/cover - Upload cover image
-  app.post('/api/profile/cover', guard, (req: any, res) => {
+  app.post('/api/profile/cover', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { dataUrl, imageUrl } = req.body || {};
 
@@ -291,18 +304,24 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
         if (!matches) {
           return res.status(400).json({ error: 'Formato de imagem inválido.' });
         }
-        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const mimeType = `image/${matches[1]}`;
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1].replace(/[^a-z0-9]/gi, '');
         const buffer = Buffer.from(matches[2], 'base64');
         if (buffer.length > 5 * 1024 * 1024) {
           return res.status(400).json({ error: 'A foto de capa excede o limite de 5 MB.' });
         }
 
-        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext}`;
+        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext || 'jpg'}`;
         const filePath = path.join(uploadsDir, fileName);
         fs.writeFileSync(filePath, buffer);
+        await persistSystemAssetToNeon({
+          id: fileName,
+          slot: 'social-cover',
+          mimeType,
+          dataBase64: matches[2],
+        });
         targetCoverUrl = `/uploads/${fileName}`;
-      } catch (err) {
-        // Fallback: save dataUrl directly for 100% Vercel persistence
+      } catch {
         targetCoverUrl = dataUrl;
       }
     }
@@ -340,7 +359,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
   });
 
   // 5. POST /api/profile/posts - Create new post
-  app.post('/api/profile/posts', guard, (req: any, res) => {
+  app.post('/api/profile/posts', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { content, images, audience } = req.body || {};
 
@@ -359,10 +378,17 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
               fs.mkdirSync(uploadsDir, { recursive: true });
               const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
               if (matches) {
-                const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+                const mimeType = `image/${matches[1]}`;
+                const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1].replace(/[^a-z0-9]/gi, '');
                 const buffer = Buffer.from(matches[2], 'base64');
-                const fileName = `post-img-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+                const fileName = `post-img-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${ext || 'jpg'}`;
                 fs.writeFileSync(path.join(uploadsDir, fileName), buffer);
+                await persistSystemAssetToNeon({
+                  id: fileName,
+                  slot: 'social-post',
+                  mimeType,
+                  dataBase64: matches[2],
+                });
                 validImages.push(`/uploads/${fileName}`);
                 continue;
               }

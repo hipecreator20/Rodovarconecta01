@@ -70,7 +70,7 @@
 .fa-surface .fa-card-grid{gap:16px;align-items:stretch;grid-template-columns:minmax(0,1fr)}
 @container freight-cards (min-width:660px){.fa-surface .fa-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @container freight-cards (min-width:1080px){.fa-surface .fa-card-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.fa-surface .fa-freight-card{border-color:#dce1e6;border-radius:16px;background:#fff;box-shadow:0 3px 14px #13233306;transition:border-color .15s,box-shadow .15s}
+.fa-surface .fa-freight-card{border-color:#dce1e6;border-radius:16px;background:#fff;box-shadow:0 3px 14px #13233306;transition:border-color .15s,box-shadow .15s;cursor:pointer}
 .fa-surface .fa-freight-card:hover{transform:none;border-color:#c2cbd5;box-shadow:0 8px 22px #13233310}
 .fa-surface .fa-freight-card[data-selected=true]{border-color:#b99300;outline-color:#ffd400}
 .fa-card-image{height:104px;position:relative;overflow:hidden;background:#171c21;border-bottom:3px solid #ffd400;flex-shrink:0}

@@ -50,6 +50,7 @@ import {
   apiVerifyFreightAttachment,
   formatCentavosToBrl,
   FreightOperatorOption,
+  sanitizeApiErrorMessage,
 } from '../lib/serverApi';
 import {
   canAccessExpedicaoFreights,
@@ -61,9 +62,8 @@ import {
   formatSituacaoMonitoramentoLabel,
 } from './MeusFretesComercialView';
 import { printIsolatedOrdemColeta } from './MeusFretesExpedicaoView';
+import { CorporateModal } from './ui/CorporateModal';
 import './FretesAtivosView.css';
-import './FretesAtivosPremiumPanel.css';
-import './FreightDetailsModal.css';
 
 export type ActiveFreightStage =
   | 'Aguardando Liberação'
@@ -232,17 +232,150 @@ function FreightCard({ freight: f, selected, onOpen }: { freight: UnifiedFreight
 }
 
 function FreightOverview({ freight: f }: { freight: UnifiedFreightRecord }) {
-  return <div className="space-y-3">
-    <section className="fa-overview-block"><h3 className="fa-overview-title">Informações principais</h3><div className="fa-overview-grid">
-      <div className="fa-data-item"><span className="fa-icon-tile"><Truck size={16} /></span><div><span className="fa-label">Protocolo</span><strong>{f.protocol}</strong></div></div>
-      <div className="fa-data-item"><span className="fa-icon-tile"><Building2 size={16} /></span><div className="min-w-0"><span className="fa-label">Cliente</span><strong>{f.cliente}</strong></div></div>
-      <div className="fa-data-item col-span-2"><span className="fa-icon-tile"><MapPin size={16} /></span><div className="min-w-0"><span className="fa-label">Rota</span><strong>{f.origemCidadeUf} → {f.destinoCidadeUf}</strong></div></div>
-      <div className="fa-data-item"><span className="fa-icon-tile"><Calendar size={16} /></span><div><span className="fa-label">Coleta</span><strong>{formatIsoDateBr(f.dataColetaIso)}</strong></div></div>
-      <div className="fa-data-item"><span className="fa-icon-tile" style={{color:'#e11d48',background:'#fff1f2'}}><Flag size={16} /></span><div><span className="fa-label">Previsão de entrega</span><strong>{formatIsoDateBr(f.dataEntregaPrevistaIso)}</strong></div></div>
-    </div></section>
-    <section className="fa-overview-block"><h3 className="fa-overview-title">Motorista e veículo</h3><div className="fa-overview-grid"><div className="fa-data-item"><span className="fa-driver-avatar"><User size={16} /></span><div className="min-w-0"><span className="fa-label">Motorista</span><strong>{f.motoristaNome || 'Não informado'}</strong>{f.motoristaTelefone && <a className="fa-card-phone" href={`tel:${f.motoristaTelefone.replace(/\D/g,'')}`}><Phone size={11} />{f.motoristaTelefone}</a>}</div></div><div className="fa-data-item"><span className="fa-icon-tile"><Truck size={16} /></span><div className="min-w-0"><span className="fa-label">Veículo / Placas</span><strong className="font-mono">{f.placaVeiculo || 'Não informada'}{f.placaCarreta && <><br />{f.placaCarreta}</>}</strong></div></div></div></section>
-    <section className="fa-overview-block"><h3 className="fa-overview-title">Localização e acompanhamento</h3><div className="flex gap-2"><MapPin size={18} className="shrink-0 text-red-500" /><div className="min-w-0"><p className="text-xs font-semibold text-slate-700 break-words">{f.ultimaLocalizacaoInformada || 'Localização ainda não informada'}</p>{f.ultimaLocalizacaoAtualizadaEm && <p className="mt-1 text-[10px] text-slate-400">{f.ultimaLocalizacaoAtualizadaEm}</p>}</div></div><dl className="mt-3 space-y-2 border-t border-slate-100 pt-3">{[['Comercial',f.comercialResponsavelNome],['Expedição',f.expedicaoResponsavelNome],['Operador',f.monitoramentoResponsavelNome]].map(([label,name]) => <div key={label} className="flex items-start justify-between gap-3"><dt className="text-[10px] text-slate-500">{label}</dt><dd className="text-right text-[11px] font-bold text-slate-700">{name || 'Não atribuído'}</dd></div>)}</dl></section>
-  </div>;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <section className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <h3 className="text-sm font-extrabold text-[#15191D]">Informações principais</h3>
+          <span className="text-xs font-bold text-slate-500">
+            Financeiro: {formatSituacaoFinanceiraLabel(f.situacaoFinanceira)}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
+              <Truck size={16} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-xs text-slate-500 font-medium">Protocolo</span>
+              <strong className="text-sm font-bold text-[#15191D]">{f.protocol}</strong>
+            </div>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
+              <Building2 size={16} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-xs text-slate-500 font-medium">Cliente</span>
+              <strong className="text-sm font-bold text-[#15191D] break-words">{f.cliente}</strong>
+            </div>
+          </div>
+          <div className="flex items-start gap-2.5 sm:col-span-2">
+            <span className="w-8 h-8 rounded-lg bg-amber-50 text-amber-700 border border-amber-200/60 flex items-center justify-center shrink-0">
+              <MapPin size={16} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-xs text-slate-500 font-medium">Rota da Operação</span>
+              <strong className="text-sm font-bold text-[#15191D] break-words">
+                {f.origemCidadeUf} → {f.destinoCidadeUf}
+              </strong>
+            </div>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
+              <Calendar size={16} />
+            </span>
+            <div>
+              <span className="block text-xs text-slate-500 font-medium">Data da Coleta</span>
+              <strong className="text-sm font-bold text-[#15191D]">
+                {formatIsoDateBr(f.dataColetaIso)}
+              </strong>
+            </div>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+              <Flag size={16} />
+            </span>
+            <div>
+              <span className="block text-xs text-slate-500 font-medium">Previsão de Entrega</span>
+              <strong className="text-sm font-bold text-[#15191D]">
+                {formatIsoDateBr(f.dataEntregaPrevistaIso)}
+              </strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <h3 className="text-sm font-extrabold text-[#15191D]">Motorista, veículo e responsáveis</h3>
+          {f.empresaMarca && CARRIER_BRANDS.includes(f.empresaMarca) && (
+            <CarrierBrandLogo brand={f.empresaMarca} size="sm" />
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-full bg-amber-50 border border-amber-300 text-slate-800 flex items-center justify-center shrink-0">
+              <User size={16} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-xs text-slate-500 font-medium">Motorista</span>
+              <strong className="text-sm font-bold text-[#15191D] block break-words">
+                {f.motoristaNome || 'Não informado'}
+              </strong>
+              {f.motoristaTelefone && (
+                <a
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline mt-0.5"
+                  href={`tel:${f.motoristaTelefone.replace(/\D/g, '')}`}
+                >
+                  <Phone size={11} />
+                  {f.motoristaTelefone}
+                </a>
+              )}
+            </div>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
+              <Truck size={16} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-xs text-slate-500 font-medium">Veículo / Placas</span>
+              <strong className="text-sm font-bold text-[#15191D] font-mono block">
+                {f.placaVeiculo || 'Não informada'}
+                {f.placaCarreta ? ` / ${f.placaCarreta}` : ''}
+              </strong>
+              {f.veiculoNecessario && (
+                <span className="text-xs text-slate-500">{f.veiculoNecessario}</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-t border-slate-100 pt-3">
+          {[
+            ['Comercial', f.comercialResponsavelNome],
+            ['Expedição', f.expedicaoResponsavelNome],
+            ['Monitoramento', f.monitoramentoResponsavelNome],
+          ].map(([label, name]) => (
+            <div key={label} className="bg-slate-50 rounded-xl px-3 py-2 border border-slate-200/70">
+              <dt className="text-[11px] text-slate-500 font-medium">{label}</dt>
+              <dd className="text-xs font-bold text-slate-800 truncate mt-0.5">
+                {name || 'Não atribuído'}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <section className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs md:col-span-2">
+        <h3 className="text-sm font-extrabold text-[#15191D] mb-2.5">
+          Localização e acompanhamento
+        </h3>
+        <div className="flex items-start gap-3 bg-slate-50 rounded-xl p-3.5 border border-slate-200/80">
+          <MapPin size={18} className="shrink-0 text-red-500 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-slate-800 break-words">
+              {f.ultimaLocalizacaoInformada || 'Localização ainda não informada'}
+            </p>
+            {f.ultimaLocalizacaoAtualizadaEm && (
+              <p className="mt-1 text-xs text-slate-500">
+                Atualizado em: {f.ultimaLocalizacaoAtualizadaEm}
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 interface FretesAtivosViewProps {
@@ -411,7 +544,12 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok) {
-        setErrorMsg(res.error || 'Falha ao carregar fila de Fretes Ativos (Monitoramento).');
+        setErrorMsg(
+          sanitizeApiErrorMessage(
+            res.error,
+            'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
+          )
+        );
         return;
       }
 
@@ -423,9 +561,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
     } catch (err) {
       setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
+        sanitizeApiErrorMessage(
+          err,
+          'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
+        )
       );
     } finally {
       setLoading(false);
@@ -554,7 +693,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao avançar etapa do monitoramento.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao avançar etapa do monitoramento.'));
         return;
       }
 
@@ -569,7 +708,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         )}"!`
       );
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao avançar etapa do monitoramento.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao avançar etapa do monitoramento.'));
     } finally {
       setActionBusy(false);
     }
@@ -592,7 +731,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao registrar localização/orientação.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao registrar localização/orientação.'));
         return;
       }
 
@@ -603,7 +742,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       if (res.historico) setDetailHistorico(res.historico);
       showToast(`Localização informada e orientações salvas no frete ${updated.protocol}.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao registrar localização/orientação.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao registrar localização/orientação.'));
     } finally {
       setActionBusy(false);
     }
@@ -625,7 +764,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         baseRevision: selectedFreight.revision,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao devolver à Expedição.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao devolver à Expedição.'));
         return;
       }
       const updated = res.freight;
@@ -635,7 +774,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       setReturnExpedicaoReason('');
       showToast(`Frete ${updated.protocol} devolvido à Expedição para correção.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao devolver à Expedição.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao devolver à Expedição.'));
     } finally {
       setActionBusy(false);
     }
@@ -652,7 +791,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         severity: occSeveridade,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao registrar ocorrência.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao registrar ocorrência.'));
         return;
       }
       const updated = res.freight;
@@ -664,7 +803,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       setOccDescricao('');
       showToast('Ocorrência de monitoramento registrada.');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao registrar ocorrência.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao registrar ocorrência.'));
     } finally {
       setOccBusy(false);
     }
@@ -676,7 +815,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     try {
       const res = await apiResolveFreightOccurrence(selectedFreight.id, occId);
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao resolver ocorrência.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao resolver ocorrência.'));
         return;
       }
       const updated = res.freight;
@@ -686,7 +825,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       if (res.historico) setDetailHistorico(res.historico);
       showToast('Ocorrência marcada como resolvida.');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao resolver ocorrência.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao resolver ocorrência.'));
     } finally {
       setOccBusy(false);
     }
@@ -717,7 +856,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao enviar anexo.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao enviar anexo.'));
         return;
       }
 
@@ -728,7 +867,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       if (res.historico) setDetailHistorico(res.historico);
       showToast(`Comprovante/anexo "${file.name}" enviado.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao enviar anexo.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao enviar anexo.'));
     } finally {
       setAttBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -741,7 +880,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     try {
       const res = await apiVerifyFreightAttachment(selectedFreight.id, attId, true);
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao conferir comprovante.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao conferir comprovante.'));
         return;
       }
       const updated = res.freight;
@@ -751,7 +890,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       if (res.historico) setDetailHistorico(res.historico);
       showToast('Comprovante conferido e validado.');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao conferir comprovante.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao conferir comprovante.'));
     } finally {
       setAttBusy(false);
     }
@@ -769,7 +908,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         baseRevision: selectedFreight.revision,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(res.error || 'Erro ao transferir responsabilidade.');
+        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao transferir responsabilidade.'));
         return;
       }
       const updated = res.freight;
@@ -780,7 +919,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       setTransferMotivo('');
       showToast('Responsabilidade de monitoramento transferida.');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao transferir responsabilidade.');
+      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao transferir responsabilidade.'));
     } finally {
       setTransferBusy(false);
     }
@@ -1009,8 +1148,8 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         </button>
       </div>
 
-      {/* 4. CARDS E PAINEL LATERAL — mesmas consultas e ações existentes */}
-      <div className={`fa-workspace ${selectedFreight ? 'fa-workspace--open' : ''}`}>
+      {/* 4. CARDS E JANELA MODAL CLARA DE DETALHES DO FRETE */}
+      <div className="fa-workspace">
         <div className="fa-card-region">
           <div className="fa-list-meta"><span>{filteredFreights.length} frete(s) nos filtros atuais</span><span>Monitoramento operacional</span></div>
           {loading && filteredFreights.length === 0 ? (
@@ -1022,66 +1161,222 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           )}
         </div>
 
-        {/* RIGHT: Monitoring Operational Side Panel */}
         {selectedFreight && (
-          <div className="fa-drawer-shell">
-            {!isDetailDocked && <div className="fa-drawer-backdrop" aria-hidden="true" onClick={() => setSelectedFreight(null)} />}
-            <aside id="active-freight-detail" ref={detailPanelRef} className="fa-detail-panel" role="dialog" aria-modal="true" aria-labelledby="active-freight-title">
-            <div className="fa-detail-heading"><div className="fa-detail-banner" aria-hidden="true"><span>RODOVAR CONECTA</span><strong>Detalhes do Frete</strong><p>Acompanhe o andamento, documentos e histórico da operação.</p></div><div className="fa-carrier-identity"><span>Transportadora</span>{selectedFreight.empresaMarca&&CARRIER_BRANDS.includes(selectedFreight.empresaMarca)?<CarrierBrandLogo brand={selectedFreight.empresaMarca} size="lg"/>:<strong>Não informada no cadastro</strong>}</div>
-              <div className="flex items-center justify-between gap-3"><h2 id="active-freight-title" className="text-base font-black tracking-tight text-[#15191D]">Detalhes do frete</h2><button type="button" data-detail-close onClick={() => setSelectedFreight(null)} className="fa-detail-close" aria-label="Fechar detalhes do frete"><X size={19} /></button></div>
-              <div className="mt-4 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-2 text-sm font-black text-[#15191D]"><span className="rounded-lg bg-amber-50 p-1.5 text-amber-700"><Truck size={16} /></span>{selectedFreight.protocol}</span><span className={`rounded-lg border px-2 py-1 text-[10px] font-extrabold ${getMonitoringBadgeStyle(selectedFreight.situacaoMonitoramento)}`}>{formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}</span></div>
-              <p className="mt-3 text-xs font-extrabold text-slate-800">{selectedFreight.cliente}</p><p className="mt-1 text-[11px] leading-relaxed text-slate-500">{selectedFreight.origemCidadeUf} → {selectedFreight.destinoCidadeUf}</p>
-              <p className="mt-2 text-[10px] font-medium text-slate-400">Financeiro: {formatSituacaoFinanceiraLabel(selectedFreight.situacaoFinanceira)}</p>
-            </div>
-
-            <div className="fa-modal-facts">
-              <div><Calendar size={19}/><span>Data da Coleta<strong>{formatIsoDateBr(selectedFreight.dataColetaIso)}</strong></span></div>
-              <div><Flag size={19}/><span>Previsão de Entrega<strong>{formatIsoDateBr(selectedFreight.dataEntregaPrevistaIso)}</strong></span></div>
-              <div><Truck size={19}/><span>Veículo<strong>{selectedFreight.placaVeiculo||'Não informado'}</strong></span></div>
-              <div><User size={19}/><span>Motorista<strong>{selectedFreight.motoristaNome||'Não informado'}</strong></span></div>
-            </div>
-
-            {/* Tabs */}
-            <div className="fa-detail-tabs" role="group" aria-label="Seções dos detalhes do frete">
-              {[
-                { id: 'RESUMO', label: 'Resumo' },
-                { id: 'DADOS_ORDEM', label: 'Motorista e Veículo' },
-                { id: 'ACOMPANHAMENTO', label: 'Monitoramento' },
-                { id: 'ANEXOS', label: `Documentos (${detailAnexos.length})` },
-                { id: 'HISTORICO', label: 'Histórico' },
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  aria-pressed={activeTab === tab.id}
-                  aria-controls="active-freight-content"
-                  onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                  className={`px-3 py-2 text-xs font-extrabold rounded-t-xl border-b-2 transition cursor-pointer whitespace-nowrap ${
-                    activeTab === tab.id
-                      ? 'bg-[#080B0D] text-[#FFD400] border-[#FFD400]'
-                      : 'text-gray-500 border-transparent hover:text-[#15191D]'
-                  }`}
+          <CorporateModal
+            isOpen={Boolean(selectedFreight)}
+            onClose={() => setSelectedFreight(null)}
+            maxWidth="5xl"
+            icon={<Truck className="w-5 h-5" />}
+            title={`Detalhes do Frete — ${selectedFreight.protocol}`}
+            badge={
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-lg border px-2.5 py-0.5 text-xs font-extrabold ${getMonitoringBadgeStyle(
+                    selectedFreight.situacaoMonitoramento
+                  )}`}
                 >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+                  {formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}
+                </span>
+                {selectedFreight.empresaMarca &&
+                  CARRIER_BRANDS.includes(selectedFreight.empresaMarca) && (
+                    <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5">
+                      <CarrierBrandLogo brand={selectedFreight.empresaMarca} size="sm" />
+                    </span>
+                  )}
+              </div>
+            }
+            subtitle={`${selectedFreight.cliente} • ${selectedFreight.origemCidadeUf} → ${selectedFreight.destinoCidadeUf} • Financeiro: ${formatSituacaoFinanceiraLabel(
+              selectedFreight.situacaoFinanceira
+            )}`}
+            headerRight={
+              <button
+                type="button"
+                onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                className="hidden sm:inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-3 py-1.5 rounded-xl text-xs cursor-pointer shadow-2xs"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Ordem de Coleta</span>
+              </button>
+            }
+            footer={
+              <div className="flex flex-wrap items-center justify-between gap-2 w-full">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                    className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-100 text-[#15191D] border border-slate-300 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Ordem de Coleta (PDF)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowReturnExpedicaoModal(true)}
+                    className="inline-flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-[#E5252A] border border-red-200 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Devolver à Expedição</span>
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  {activeTab !== 'ACOMPANHAMENTO' && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('ACOMPANHAMENTO')}
+                      className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-4 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
+                    >
+                      <Navigation className="w-3.5 h-3.5" />
+                      <span>Atualizar Etapa / Monitorar</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-detail-close
+                    onClick={() => setSelectedFreight(null)}
+                    className="px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            }
+          >
+            <div id="active-freight-content" className="space-y-3.5">
+              {/* 4 Indicadores Rápidos no Topo */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 text-slate-700 flex items-center justify-center shrink-0">
+                    <Calendar size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="block text-[11px] font-medium text-slate-500">Data da Coleta</span>
+                    <strong className="block text-xs sm:text-sm font-extrabold text-[#15191D] truncate">
+                      {formatIsoDateBr(selectedFreight.dataColetaIso)}
+                    </strong>
+                  </div>
+                </div>
 
-            {/* Body */}
-            <div id="active-freight-content" className="fa-detail-body space-y-4">
-              <section className="fa-stage-progress" aria-label="Etapas do monitoramento">
-                <p>Etapas do monitoramento</p>
-                <ol className="fa-stage-timeline">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 text-rose-600 flex items-center justify-center shrink-0">
+                    <Flag size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="block text-[11px] font-medium text-slate-500">Previsão de Entrega</span>
+                    <strong className="block text-xs sm:text-sm font-extrabold text-[#15191D] truncate">
+                      {formatIsoDateBr(selectedFreight.dataEntregaPrevistaIso)}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 text-slate-700 flex items-center justify-center shrink-0">
+                    <Truck size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="block text-[11px] font-medium text-slate-500">Veículo</span>
+                    <strong className="block text-xs sm:text-sm font-extrabold text-[#15191D] font-mono truncate">
+                      {selectedFreight.placaVeiculo || 'Não informado'}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 text-slate-700 flex items-center justify-center shrink-0">
+                    <User size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="block text-[11px] font-medium text-slate-500">Motorista</span>
+                    <strong className="block text-xs sm:text-sm font-extrabold text-[#15191D] truncate">
+                      {selectedFreight.motoristaNome || 'Não informado'}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Barra de Abas Clara */}
+              <div
+                className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200"
+                role="group"
+                aria-label="Seções dos detalhes do frete"
+              >
+                {[
+                  { id: 'RESUMO', label: 'Resumo' },
+                  { id: 'DADOS_ORDEM', label: 'Motorista e Veículo' },
+                  { id: 'ACOMPANHAMENTO', label: 'Monitoramento' },
+                  { id: 'ANEXOS', label: `Documentos (${detailAnexos.length})` },
+                  { id: 'OCORRENCIAS', label: `Ocorrências (${detailOcorrencias.length})` },
+                  { id: 'HISTORICO', label: 'Histórico' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-pressed={activeTab === tab.id}
+                    aria-controls="active-freight-content"
+                    onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                    className={`flex-1 min-w-[110px] px-3 py-2 text-xs font-extrabold rounded-lg transition cursor-pointer text-center ${
+                      activeTab === tab.id
+                        ? 'bg-[#080B0D] text-[#FFD400] shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-200/80 hover:bg-slate-50 hover:text-[#080B0D]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Etapas do Monitoramento — Visão Clara e Compacta */}
+              <section
+                className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs"
+                aria-label="Etapas do monitoramento"
+              >
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <p className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wide">
+                    Etapas do monitoramento
+                  </p>
+                  <span className="text-xs font-semibold text-slate-500">
+                    Etapa atual: <strong className="text-[#15191D]">{formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}</strong>
+                  </span>
+                </div>
+                <ol className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5">
                   {MONITORING_STAGES_ORDER.map((st, idx) => {
-                    const currentIdx = MONITORING_STAGES_ORDER.findIndex(s => s.id === selectedFreight.situacaoMonitoramento);
+                    const currentIdx = MONITORING_STAGES_ORDER.findIndex(
+                      (s) => s.id === selectedFreight.situacaoMonitoramento
+                    );
                     const isCurrent = st.id === selectedFreight.situacaoMonitoramento;
                     const isDone = currentIdx > idx;
-                    return <li key={st.id} data-state={isCurrent ? 'current' : isDone ? 'done' : 'pending'} aria-current={isCurrent ? 'step' : undefined}><span className="fa-stage-number" aria-hidden="true">{isDone ? <Check size={14}/> : idx + 1}</span><span>{st.label}</span></li>;
+                    return (
+                      <li
+                        key={st.id}
+                        data-state={isCurrent ? 'current' : isDone ? 'done' : 'pending'}
+                        aria-current={isCurrent ? 'step' : undefined}
+                        className={`flex items-center gap-2 p-2 rounded-xl border text-[11px] transition ${
+                          isCurrent
+                            ? 'bg-[#FFFBEB] border-[#FFD400] text-[#080B0D] font-bold shadow-2xs'
+                            : isDone
+                            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-semibold'
+                            : 'bg-slate-50 border-slate-200/80 text-slate-600 font-medium'
+                        }`}
+                      >
+                        <span
+                          className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold shrink-0 ${
+                            isCurrent
+                              ? 'bg-[#FFD400] text-[#080B0D]'
+                              : isDone
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-white border border-slate-300 text-slate-600'
+                          }`}
+                          aria-hidden="true"
+                        >
+                          {isDone ? <Check size={11} /> : idx + 1}
+                        </span>
+                        <span className="leading-tight">{st.shortLabel}</span>
+                      </li>
+                    );
                   })}
                 </ol>
               </section>
 
-              {activeTab==='RESUMO'&&<FreightOverview freight={selectedFreight}/>}
+              {activeTab === 'RESUMO' && <FreightOverview freight={selectedFreight} />}
               {/* TAB 1: ACOMPANHAMENTO E AVANÇO DE ETAPA */}
               {activeTab === 'ACOMPANHAMENTO' && (
                 <div className="space-y-3.5">
@@ -1629,8 +1924,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                 </div>
               )}
             </div>
-            </aside>
-          </div>
+          </CorporateModal>
         )}
       </div>
 

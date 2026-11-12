@@ -1,26 +1,32 @@
-import {registerCustomerCovers} from './src/server/customerCovers.ts';
-import {registerDrivers} from './src/server/drivers.ts';
-import {registerAgenda} from './src/server/agenda.ts';
-import {registerMural} from './src/server/mural.ts';
-import {registerChats} from './src/server/chats.ts';
+import { registerCustomerCovers } from './src/server/customerCovers.ts';
+import { registerDrivers } from './src/server/drivers.ts';
+import { registerAgenda, hydrateAgendaFromPayload } from './src/server/agenda.ts';
+import { registerMural } from './src/server/mural.ts';
+import { registerChats } from './src/server/chats.ts';
 import { registerExternalRh } from './src/server/externalRh.ts';
-import { registerSocialProfileRoutes } from './src/server/socialProfile.ts';
-import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment } from './src/lib/permissions.ts';
+import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
+import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
-import { registerRequestQueue } from './src/server/requestQueue.ts';
+import { registerRequestQueue, hydrateRequestQueueFromPayload } from './src/server/requestQueue.ts';
 import { registerAccountDeletionRoutes } from './src/server/accountLifecycle.ts';
 import { INITIAL_REQUESTS, INITIAL_ANNOUNCEMENTS } from './src/data/initialData.ts';
 import {
+  isNeonConfigured,
+  isIsolatedTestEnv,
   testNeonConnection,
   initializeNeonSchema,
   getNeonHealthStats,
   persistAuditLogToNeon,
   persistUserToNeon,
   persistStateSnapshotToNeon,
+  loadStateSnapshotFromNeon,
+  fetchNeonStateTimestamps,
   persistSystemAssetToNeon,
   getSystemAssetFromNeon,
   persistSystemConfigToNeon,
   loadSystemConfigFromNeon,
+  persistEconomicModeToNeon,
+  loadEconomicModeFromNeon,
 } from './neon.ts';
 import { resolveDataRoot } from './src/server/dataRoot.ts';
 import express from 'express';
@@ -30,8 +36,8 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 
-import { registerUnifiedFreightRoutes } from './src/server/unifiedFreightEngine.ts';
-import { registerPaymentReceiptRoutes } from './src/server/paymentReceiptsEngine.ts';
+import { registerUnifiedFreightRoutes, hydrateUnifiedFreightsFromPayload } from './src/server/unifiedFreightEngine.ts';
+import { registerPaymentReceiptRoutes, hydratePaymentReceiptsFromPayload } from './src/server/paymentReceiptsEngine.ts';
 import type {
   AccountApprovalStatus,
   AccessDecisionRecord,
@@ -1086,7 +1092,20 @@ function saveDatabase(db: ServerDatabase): void {
   fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
   fs.renameSync(tmpFile, DB_FILE_PATH);
 
-  // Asynchronous replication to Neon PostgreSQL
+  // Asynchronous replication of full operational core state to Neon PostgreSQL
+  const rawDb = db as any;
+  void persistStateSnapshotToNeon('rodovar-core-state', {
+    users: db.users,
+    accessPolicy: db.accessPolicy,
+    archivedUsers: db.archivedUsers,
+    accessDecisions: db.accessDecisions,
+    mural: rawDb.mural,
+    drivers: rawDb.drivers,
+    driverAudit: rawDb.driverAudit,
+    customerCovers: rawDb.customerCovers,
+    systemConfig: db.systemConfig,
+    updatedAtIso: new Date().toISOString(),
+  });
   void persistStateSnapshotToNeon('rodovar-server-db', {
     systemConfig: db.systemConfig,
     accessPolicy: db.accessPolicy,
@@ -1096,6 +1115,97 @@ function saveDatabase(db: ServerDatabase): void {
 }
 
 let dbState: ServerDatabase = loadOrInitDatabase();
+
+const localNeonTimestamps: Record<string, number> = {};
+let lastNeonSyncCheckMs = 0;
+let activeNeonSyncPromise: Promise<void> | null = null;
+
+async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+  const now = Date.now();
+  if (!force && now - lastNeonSyncCheckMs < 1500) return;
+  if (activeNeonSyncPromise) return activeNeonSyncPromise;
+
+  activeNeonSyncPromise = (async () => {
+    try {
+      lastNeonSyncCheckMs = Date.now();
+      const remoteTs = await fetchNeonStateTimestamps();
+      if (!remoteTs || Object.keys(remoteTs).length === 0) return;
+
+      const shouldPull = (key: string) =>
+        Boolean(remoteTs[key] && (force || localNeonTimestamps[key] !== remoteTs[key]));
+
+      if (shouldPull('rodovar-core-state')) {
+        const coreSnap = await loadStateSnapshotFromNeon<any>('rodovar-core-state');
+        const core = coreSnap?.payload;
+        if (core && typeof core === 'object') {
+          if (Array.isArray(core.users) && core.users.length > 0) dbState.users = core.users;
+          if (core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
+          if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
+          if (Array.isArray(core.accessDecisions)) dbState.accessDecisions = core.accessDecisions;
+          if (Array.isArray(core.mural)) (dbState as any).mural = core.mural;
+          if (Array.isArray(core.drivers)) (dbState as any).drivers = core.drivers;
+          if (Array.isArray(core.driverAudit)) (dbState as any).driverAudit = core.driverAudit;
+          if (core.customerCovers && typeof core.customerCovers === 'object') {
+            (dbState as any).customerCovers = core.customerCovers;
+          }
+          if (
+            core.systemConfig &&
+            typeof core.systemConfig.revision === 'number' &&
+            core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
+          ) {
+            dbState.systemConfig = core.systemConfig;
+          }
+        }
+        localNeonTimestamps['rodovar-core-state'] = remoteTs['rodovar-core-state'];
+      }
+
+      if (shouldPull('rodovar-system-config')) {
+        const neonCfg = await loadSystemConfigFromNeon();
+        if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+          dbState.systemConfig = neonCfg;
+        }
+        localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
+      }
+
+      if (shouldPull('rodovar-freights-state')) {
+        const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
+        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+        localNeonTimestamps['rodovar-freights-state'] = remoteTs['rodovar-freights-state'];
+      }
+
+      if (shouldPull('rodovar-payments-state')) {
+        const paymentsSnap = await loadStateSnapshotFromNeon<any>('rodovar-payments-state');
+        if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
+        localNeonTimestamps['rodovar-payments-state'] = remoteTs['rodovar-payments-state'];
+      }
+
+      if (shouldPull('rodovar-requests-state')) {
+        const requestsSnap = await loadStateSnapshotFromNeon<any>('rodovar-requests-state');
+        if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
+        localNeonTimestamps['rodovar-requests-state'] = remoteTs['rodovar-requests-state'];
+      }
+
+      if (shouldPull('rodovar-agenda')) {
+        const agendaSnap = await loadStateSnapshotFromNeon<any>('rodovar-agenda');
+        if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
+        localNeonTimestamps['rodovar-agenda'] = remoteTs['rodovar-agenda'];
+      }
+
+      if (shouldPull('rodovar-social')) {
+        const socialSnap = await loadStateSnapshotFromNeon<any>('rodovar-social');
+        if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+        localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
+      }
+    } catch {
+      // Non-blocking fallback to in-memory state
+    } finally {
+      activeNeonSyncPromise = null;
+    }
+  })();
+
+  return activeNeonSyncPromise;
+}
 
 function resolveUserAvatarUrl(user: ServerUserRecord, config: SystemConfig): string {
   const rev = config.revision || 1;
@@ -1462,7 +1572,8 @@ export function createExpressApp(): express.Express {
   }
 
   const app = express();
-  app.use('/api', (req, res, next) => {
+  app.use('/api', async (req, res, next) => {
+    await syncAllModulesFromNeonIfNeeded(false);
     if (
       req.path.startsWith('/auth') ||
       req.path.startsWith('/profile') ||
@@ -1479,7 +1590,7 @@ export function createExpressApp(): express.Express {
     requireApprovedSession(req, res, () => {
       const user = (req as AuthenticatedRequest).sessionUser!;
       if (user.mustChangePassword) { res.status(403).json({error:'Troque sua senha antes de continuar.', code:'PASSWORD_CHANGE_REQUIRED'}); return; }
-      if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method) && user.accessProfile !== 'FINANCEIRO') {
+      if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method) && user.accessProfile !== 'FINANCEIRO' && user.accessLevel !== 'ADMINISTRADOR') {
         res.status(403).json({error:'Ação exclusiva do Financeiro.'}); return;
       }
       if(req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
@@ -1510,13 +1621,7 @@ export function createExpressApp(): express.Express {
 
   // Neon Postgres initialization & health check
   initializeNeonSchema().then(async () => {
-    try {
-      const neonConfig = await loadSystemConfigFromNeon();
-      if (neonConfig && typeof neonConfig.revision === 'number' && neonConfig.revision >= dbState.systemConfig.revision) {
-        dbState.systemConfig = neonConfig;
-        console.log(`[Neon] Hydrated System Config revision #${neonConfig.revision}`);
-      }
-    } catch {}
+    await syncAllModulesFromNeonIfNeeded(true);
   }).catch(() => {});
   app.get(['/api/neon/health', '/api/health'], async (_req, res) => {
     const stats = await getNeonHealthStats();
@@ -2214,7 +2319,7 @@ export function createExpressApp(): express.Express {
     (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const targetUserId = String(req.params.userId || '');
-      const { action, accessLevel, permissoesPaginas, reason, department, roleTitle } =
+      const { action, accessLevel, permissoesPaginas, reason, department, roleTitle, accessProfile } =
         req.body || {};
 
       const targetUser = dbState.users.find((u) => u.id === targetUserId);
@@ -2277,13 +2382,24 @@ export function createExpressApp(): express.Express {
         targetUser.accessLevel = nextRole;
         if (department) targetUser.department = department;
         if (roleTitle) targetUser.roleTitle = String(roleTitle).trim();
+        const resolvedProfile = resolveAccessProfileFromSector(
+          targetUser.department,
+          nextRole,
+          accessProfile,
+          targetUser.roleTitle
+        );
+        if (resolvedProfile) targetUser.accessProfile = resolvedProfile;
         targetUser.permissoesPaginas =
           Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0
             ? permissoesPaginas
-            : getDefaultPermissionsForDepartment(targetUser.department, nextRole);
+            : getDefaultPermissionsForDepartment(targetUser.department, nextRole, targetUser.accessProfile);
         targetUser.approvedBy = `${admin.name} (${admin.login})`;
         targetUser.approvedAt = nowIso;
         targetUser.statusReason = cleanReason || 'Acesso permitido pelo administrador.';
+        const policy = (dbState as any).accessPolicy;
+        if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(targetUser.id) && targetUser.id !== policy.protectedAdminUid) {
+          policy.authorizedUids.push(targetUser.id);
+        }
       } else if (action === 'RECUSAR') {
         newStatus = 'RECUSADO';
         targetUser.approvalStatus = 'RECUSADO';
@@ -2304,8 +2420,21 @@ export function createExpressApp(): express.Express {
         targetUser.accessLevel = nextRole;
         if (department) targetUser.department = department;
         if (roleTitle) targetUser.roleTitle = String(roleTitle).trim();
+        const resolvedProfile = resolveAccessProfileFromSector(
+          targetUser.department,
+          nextRole,
+          accessProfile,
+          targetUser.roleTitle
+        );
+        if (resolvedProfile) targetUser.accessProfile = resolvedProfile;
         if (Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0) {
           targetUser.permissoesPaginas = permissoesPaginas;
+        } else {
+          targetUser.permissoesPaginas = getDefaultPermissionsForDepartment(
+            targetUser.department,
+            nextRole,
+            targetUser.accessProfile
+          );
         }
         targetUser.approvedBy = `${admin.name} (${admin.login})`;
         targetUser.approvedAt = nowIso;
@@ -2390,6 +2519,13 @@ export function createExpressApp(): express.Express {
       ? accessLevel
       : 'FUNCIONARIO';
     const dept: Department = department || 'Operacional';
+    const cleanRoleTitle = String(roleTitle || 'Colaborador Corporativo').trim();
+    const resolvedProfile = resolveAccessProfileFromSector(
+      dept,
+      role,
+      req.body?.accessProfile,
+      cleanRoleTitle
+    );
 
     const newUser: ServerUserRecord = {
       id: `emp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
@@ -2399,9 +2535,10 @@ export function createExpressApp(): express.Express {
       passwordHash: hash,
       passwordSalt: salt,
       mustChangePassword: Boolean(mustChangePassword),
-      roleTitle: String(roleTitle || 'Colaborador Corporativo').trim(),
+      roleTitle: cleanRoleTitle,
       department: dept,
       accessLevel: role,
+      ...(resolvedProfile ? { accessProfile: resolvedProfile } : {}),
       avatar: '',
       hasCustomAvatar: false,
       approvalStatus: 'APROVADO',
@@ -2416,9 +2553,13 @@ export function createExpressApp(): express.Express {
       permissoesPaginas:
         Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0
           ? permissoesPaginas
-          : getDefaultPermissionsForDepartment(dept, role),
+          : getDefaultPermissionsForDepartment(dept, role, resolvedProfile),
     };
 
+    const policy = (dbState as any).accessPolicy;
+    if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(newUser.id)) {
+      policy.authorizedUids.push(newUser.id);
+    }
     dbState.users.unshift(newUser);
     appendAuditLog(
       admin.id,
@@ -2454,6 +2595,7 @@ export function createExpressApp(): express.Express {
       department,
       roleTitle,
       accessLevel,
+      accessProfile,
       phoneExt,
       permissoesPaginas,
       mustChangePassword,
@@ -2484,6 +2626,15 @@ export function createExpressApp(): express.Express {
     if (roleTitle) target.roleTitle = String(roleTitle).trim();
     if (accessLevel && ['FUNCIONARIO', 'ADMINISTRADOR', 'DIRETORIA'].includes(accessLevel)) {
       target.accessLevel = accessLevel;
+    }
+    const resolvedProfile = resolveAccessProfileFromSector(
+      target.department,
+      target.accessLevel,
+      accessProfile,
+      target.roleTitle
+    );
+    if (resolvedProfile) {
+      target.accessProfile = resolvedProfile;
     }
     if (phoneExt !== undefined) {
       target.phoneExt = String(phoneExt).trim();
@@ -2583,6 +2734,14 @@ export function createExpressApp(): express.Express {
     const fileName = `avatar-${crypto.randomUUID()}.${validation.extension}`;
     const filePath = path.join(UPLOADS_DIR, fileName);
     fs.writeFileSync(filePath, validation.sanitizedBuffer);
+    void persistSystemAssetToNeon({
+      id: fileName,
+      slot: 'userAvatar',
+      mimeType: validation.mimeType || 'image/jpeg',
+      dataBase64: validation.sanitizedBuffer.toString('base64'),
+      width: validation.width,
+      height: validation.height,
+    });
 
     // Delete old custom uploaded avatar file if it was in /uploads/avatar-
     if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith('/uploads/avatar-')) {
@@ -2609,6 +2768,7 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(targetUser);
 
     res.json({
       ok: true,
@@ -2757,49 +2917,92 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  // Dedicated asset serving route with Neon fallback and permanent caching
-  app.get(['/api/system-config/assets/:assetId', '/uploads/:fileName'], async (req, res, next) => {
-    const rawId = req.params.assetId || req.params.fileName;
-    if (!rawId) return next();
-
-    const fileName = path.basename(rawId);
-    const diskPath = path.join(UPLOADS_DIR, fileName);
-
-    // 1. Serve directly from disk if available
-    if (fs.existsSync(diskPath)) {
-      res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
-      return res.sendFile(diskPath);
-    }
-
-    // 2. Query Neon PostgreSQL for permanent serverless storage
-    const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
-    const asset = (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
-    if (asset && asset.buffer) {
-      try {
-        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-        fs.writeFileSync(diskPath, asset.buffer);
-      } catch {}
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      return res.type(asset.mimeType || 'image/jpeg').send(asset.buffer);
-    }
-
-    // 3. Graceful fallback for system images so they never show broken image icons
-    if (fileName.includes('topHeader')) {
-      const fallback = path.join(PUBLIC_DIR, 'assets/banner-rodovar-conecta-highway.png');
-      if (fs.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes('welcomeBanner')) {
-      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-frota-pesada-institucional.jpg');
-      if (fs.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes('sidebarPoster')) {
-      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-truck-yellow.png');
-      if (fs.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes('defaultAvatar') || fileName.includes('avatar')) {
-      const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-avatar-default.png');
-      if (fs.existsSync(fallback)) return res.sendFile(fallback);
-    }
-
-    next();
+  // --------------------------------------------------------------------------
+  // ECONOMIC MODE API (Low-consumption configuration for Neon Free + Vercel)
+  // --------------------------------------------------------------------------
+  app.get('/api/economic-mode', async (_req, res) => {
+    const enabled = await loadEconomicModeFromNeon();
+    res.json({
+      ok: true,
+      economicMode: enabled,
+      features: {
+        chatDisabled: enabled,
+        groupsDisabled: enabled,
+        continuousPollingDisabled: enabled,
+        automaticSectorFlow: true,
+      },
+    });
   });
+
+  app.post('/api/economic-mode', requireAdminSession, async (req: AuthenticatedRequest, res) => {
+    const { enabled } = req.body || {};
+    const targetState = Boolean(enabled);
+    await persistEconomicModeToNeon(targetState);
+    appendAuditLog(
+      req.sessionUser!.id,
+      req.sessionUser!.name,
+      req.sessionUser!.accessLevel,
+      'ALTERACAO_MODO_ECONOMICO',
+      `Modo Econômico ${targetState ? 'ATIVADO' : 'DESATIVADO'} pelo Administrador.`,
+      req.ip
+    );
+    saveDatabase(dbState);
+    res.json({
+      ok: true,
+      economicMode: targetState,
+    });
+  });
+
+  // Dedicated asset serving route with Neon fallback and permanent caching
+  app.get(
+    ['/api/system-config/assets/:assetId', '/uploads/:fileName', '/uploads/:subDir/:fileName'],
+    async (req, res, next) => {
+      const rawId = req.params.assetId || req.params.fileName;
+      if (!rawId) return next();
+
+      const subDir = req.params.subDir ? path.basename(req.params.subDir) : '';
+      const fileName = path.basename(rawId);
+      const diskPath = subDir
+        ? path.join(UPLOADS_DIR, subDir, fileName)
+        : path.join(UPLOADS_DIR, fileName);
+
+      // 1. Serve directly from disk if available
+      if (fs.existsSync(diskPath)) {
+        res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
+        return res.sendFile(diskPath);
+      }
+
+      // 2. Query Neon PostgreSQL for permanent serverless storage
+      const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
+      const asset =
+        (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
+      if (asset && asset.buffer) {
+        try {
+          fs.mkdirSync(path.dirname(diskPath), { recursive: true });
+          fs.writeFileSync(diskPath, asset.buffer);
+        } catch {}
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.type(asset.mimeType || 'image/jpeg').send(asset.buffer);
+      }
+
+      // 3. Graceful fallback for system images so they never show broken image icons
+      if (fileName.includes('topHeader')) {
+        const fallback = path.join(PUBLIC_DIR, 'assets/banner-rodovar-conecta-highway.png');
+        if (fs.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes('welcomeBanner')) {
+        const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-frota-pesada-institucional.jpg');
+        if (fs.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes('sidebarPoster')) {
+        const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-truck-yellow.png');
+        if (fs.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes('defaultAvatar') || fileName.includes('avatar')) {
+        const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-avatar-default.png');
+        if (fs.existsSync(fallback)) return res.sendFile(fallback);
+      }
+
+      next();
+    }
+  );
 
   // Upload & validate a candidate image for System Config preview
   app.post(
@@ -3178,6 +3381,12 @@ export function createExpressApp(): express.Express {
         const fileName = `${fileId}.${ext}`;
         const filePath = path.join(DOCS_UPLOADS_DIR, fileName);
         fs.writeFileSync(filePath, buffer);
+        void persistSystemAssetToNeon({
+          id: fileName,
+          slot: 'documentAttachment',
+          mimeType: ext === 'pdf' ? 'application/pdf' : 'application/octet-stream',
+          dataBase64: buffer.toString('base64'),
+        });
 
         const sizeKb = Math.max(1, Math.round(buffer.length / 1024));
         const sizeStr = sizeKb > 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
@@ -3247,6 +3456,16 @@ export function createExpressApp(): express.Express {
     res.status(404).json({
       error: 'Endpoint da API não encontrado ou acesso negado por padrão.',
       code: 'API_NOT_FOUND',
+    });
+  });
+
+  // Global JSON error handler for /api routes so HTML error pages are never returned
+  app.use('/api', (err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('[API Unhandled Error]', err);
+    const status = typeof err?.status === 'number' ? err.status : 500;
+    res.status(status).json({
+      ok: false,
+      error: err?.message || 'Erro interno no servidor.',
     });
   });
 

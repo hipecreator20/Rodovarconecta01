@@ -27,13 +27,21 @@ export const isNeonConfigured = Boolean(
     !connectionString.includes('****************')
 );
 
+export function isIsolatedTestEnv(): boolean {
+  return Boolean(
+    process.env.RODOVAR_DATA_ROOT &&
+      !process.env.VERCEL &&
+      !process.env.VERCEL_ENV
+  );
+}
+
 export const pool = new Pool({
   connectionString: isNeonConfigured
     ? connectionString
     : DEFAULT_NEON_DATABASE_URL,
   connectionTimeoutMillis: 15000,
   idleTimeoutMillis: 10000,
-  max: 10,
+  max: 25,
 });
 
 export const sql = isNeonConfigured ? neon(connectionString) : null;
@@ -173,7 +181,7 @@ export async function getNeonHealthStats(): Promise<NeonHealthStats> {
 }
 
 export async function initializeNeonSchema(): Promise<void> {
-  if (!isNeonConfigured) {
+  if (!isNeonConfigured || isIsolatedTestEnv()) {
     return;
   }
   const client = await pool.connect();
@@ -223,7 +231,7 @@ export async function initializeNeonSchema(): Promise<void> {
 
       CREATE TABLE IF NOT EXISTS rodovar_payments (
         id VARCHAR(64) PRIMARY KEY,
-        frete_id VARCHAR(64) REFERENCES rodovar_fretes(id),
+        frete_id VARCHAR(64),
         type VARCHAR(64) NOT NULL,
         amount NUMERIC(12,2) NOT NULL,
         status VARCHAR(64) NOT NULL,
@@ -323,6 +331,23 @@ export async function initializeNeonSchema(): Promise<void> {
         height INT,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS rodovar_notifications (
+        id VARCHAR(128) PRIMARY KEY,
+        recipient_id VARCHAR(64) NOT NULL,
+        type VARCHAR(64) NOT NULL,
+        dot_color VARCHAR(32) DEFAULT 'blue',
+        title VARCHAR(255) NOT NULL,
+        subtitle TEXT,
+        time_label VARCHAR(64),
+        read BOOLEAN DEFAULT FALSE,
+        target_section VARCHAR(64) NOT NULL,
+        target_id VARCHAR(64) NOT NULL,
+        dedupe_key VARCHAR(128),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_rodovar_notif_recipient ON rodovar_notifications(recipient_id);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_notif_dedupe ON rodovar_notifications(dedupe_key);
     `);
 
     await syncLocalDataToNeon(client);
@@ -337,7 +362,7 @@ export async function initializeNeonSchema(): Promise<void> {
 async function syncLocalDataToNeon(client: any): Promise<void> {
   const dataDir = path.join(resolveDataRoot(), 'data');
 
-  // 1. Sync Users from rodovar-server-db.json
+  // 1. Seed Users from rodovar-server-db.json (non-destructive ON CONFLICT DO NOTHING)
   const dbPath = path.join(dataDir, 'rodovar-server-db.json');
   if (fs.existsSync(dbPath)) {
     const dbRaw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
@@ -347,14 +372,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
       await client.query(
         `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           email = EXCLUDED.email,
-           department = EXCLUDED.department,
-           role = EXCLUDED.role,
-           access_level = EXCLUDED.access_level,
-           password_hash = EXCLUDED.password_hash,
-           must_change_password = EXCLUDED.must_change_password`,
+         ON CONFLICT (id) DO NOTHING`,
         [
           String(u.id),
           String(u.name || u.login || u.email),
@@ -365,13 +383,13 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
           String(u.passwordHash || 'managed'),
           Boolean(u.mustChangePassword),
         ]
-      );
+      ).catch(() => {});
     }
 
     await client.query(
       `INSERT INTO rodovar_state_store (key, payload, updated_at)
        VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
-       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+       ON CONFLICT (key) DO NOTHING`,
       [
         'rodovar-server-db',
         JSON.stringify({
@@ -383,7 +401,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
     );
   }
 
-  // 2. Sync Unified Freights from data/freights-store/*.json + payment-store/freights.json
+  // 2. Seed Unified Freights from data/freights-store/*.json + payment-store/freights.json
   const freightsDir = path.join(dataDir, 'freights-store');
   if (fs.existsSync(freightsDir)) {
     const files = fs
@@ -402,22 +420,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
            destination_city, destination_state, destination_address, cargo_description,
            agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-         ON CONFLICT (id) DO UPDATE SET
-           sequential_id = EXCLUDED.sequential_id,
-           client_name = EXCLUDED.client_name,
-           client_cnpj = EXCLUDED.client_cnpj,
-           origin = EXCLUDED.origin,
-           destination_city = EXCLUDED.destination_city,
-           destination_state = EXCLUDED.destination_state,
-           destination_address = EXCLUDED.destination_address,
-           cargo_description = EXCLUDED.cargo_description,
-           agreed_value = EXCLUDED.agreed_value,
-           driver_name = EXCLUDED.driver_name,
-           driver_cpf = EXCLUDED.driver_cpf,
-           driver_phone = EXCLUDED.driver_phone,
-           truck_plate = EXCLUDED.truck_plate,
-           status = EXCLUDED.status,
-           updated_at = CURRENT_TIMESTAMP`,
+         ON CONFLICT (id) DO NOTHING`,
         [
           String(f.id),
           String(f.protocol),
@@ -435,7 +438,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
           f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null,
           String(f.situacaoMonitoramento !== 'NAO_LIBERADO' ? f.situacaoMonitoramento : f.situacaoOperacional !== 'NAO_ENVIADO' ? f.situacaoOperacional : f.situacaoComercial || 'EM_NEGOCIACAO').slice(0, 64),
         ]
-      );
+      ).catch(() => {});
     }
   }
 
@@ -469,12 +472,12 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
             null,
             String(pf.status || 'Pendente').slice(0, 64),
           ]
-        );
+        ).catch(() => {});
       }
     }
   }
 
-  // 3. Sync Internal Requests from data/requests-server.json
+  // 3. Seed Internal Requests from data/requests-server.json
   const reqPath = path.join(dataDir, 'requests-server.json');
   if (fs.existsSync(reqPath)) {
     const reqState = JSON.parse(fs.readFileSync(reqPath, 'utf8'));
@@ -484,12 +487,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
       await client.query(
         `INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET
-           title = EXCLUDED.title,
-           department = EXCLUDED.department,
-           requester_name = EXCLUDED.requester_name,
-           status = EXCLUDED.status,
-           details = EXCLUDED.details`,
+         ON CONFLICT (id) DO NOTHING`,
         [
           String(r.id),
           String(r.subject || r.protocol || 'Solicitação').slice(0, 255),
@@ -498,11 +496,11 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
           String(r.status || 'Aberta').slice(0, 64),
           String(r.description || ''),
         ]
-      );
+      ).catch(() => {});
     }
   }
 
-  // 4. Sync Payments from data/payment-store/receipts.json
+  // 4. Seed Payments from data/payment-store/receipts.json
   const receiptsPath = path.join(dataDir, 'payment-store', 'receipts.json');
   if (fs.existsSync(receiptsPath)) {
     const receipts = JSON.parse(fs.readFileSync(receiptsPath, 'utf8'));
@@ -512,10 +510,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
         await client.query(
           `INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET
-             type = EXCLUDED.type,
-             amount = EXCLUDED.amount,
-             status = EXCLUDED.status`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(rec.id),
             String(rec.freightId),
@@ -523,12 +518,12 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
             Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100),
             String(rec.verificationStatus || rec.uploadStatus || 'SALVO_NO_SERVIDOR').slice(0, 64),
           ]
-        );
+        ).catch(() => {});
       }
     }
   }
 
-  // 5. Sync Announcements (Mural) from rodovar-server-db.json
+  // 5. Seed Announcements (Mural) from rodovar-server-db.json
   if (fs.existsSync(dbPath)) {
     try {
       const dbRaw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
@@ -538,13 +533,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
         await client.query(
           `INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-           ON CONFLICT (id) DO UPDATE SET
-             title = EXCLUDED.title,
-             author_name = EXCLUDED.author_name,
-             target_audience = EXCLUDED.target_audience,
-             priority = EXCLUDED.priority,
-             content = EXCLUDED.content,
-             data = EXCLUDED.data`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(a.id),
             String(a.title).slice(0, 255),
@@ -554,13 +543,13 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
             String(a.content || a.summary || ''),
             JSON.stringify(a),
           ]
-        );
+        ).catch(() => {});
       }
       if (announcements.length > 0) {
         await client.query(
           `INSERT INTO rodovar_state_store (key, payload, updated_at)
            VALUES ('rodovar-mural', $1::jsonb, CURRENT_TIMESTAMP)
-           ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+           ON CONFLICT (key) DO NOTHING`,
           [JSON.stringify(dbRaw.mural)]
         );
       }
@@ -569,7 +558,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
     }
   }
 
-  // 6. Sync Corporate Agenda from data/agenda-local.json
+  // 6. Seed Corporate Agenda from data/agenda-local.json
   const agendaPath = path.join(dataDir, 'agenda-local.json');
   if (fs.existsSync(agendaPath)) {
     try {
@@ -580,13 +569,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
         await client.query(
           `INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-           ON CONFLICT (id) DO UPDATE SET
-             title = EXCLUDED.title,
-             date_iso = EXCLUDED.date_iso,
-             start_time = EXCLUDED.start_time,
-             end_time = EXCLUDED.end_time,
-             category = EXCLUDED.category,
-             data = EXCLUDED.data`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(e.id),
             String(e.title).slice(0, 255),
@@ -596,12 +579,12 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
             String(e.category || 'Geral').slice(0, 100),
             JSON.stringify(e),
           ]
-        );
+        ).catch(() => {});
       }
       await client.query(
         `INSERT INTO rodovar_state_store (key, payload, updated_at)
          VALUES ('rodovar-agenda', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+         ON CONFLICT (key) DO NOTHING`,
         [JSON.stringify(agendaRaw)]
       );
     } catch (e) {
@@ -612,7 +595,7 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
 
 // Live persistence helpers for mutation operations
 export async function persistUserToNeon(u: any): Promise<void> {
-  if (!isNeonConfigured || !u || !u.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !u || !u.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -646,6 +629,208 @@ export async function persistUserToNeon(u: any): Promise<void> {
   }
 }
 
+export async function persistFreightToNeon(f: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !f || !f.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      const seqId = String(f.protocol || f.code || f.id).slice(0, 32);
+      const destRaw = String(f.destinoCidadeUf || f.destino || 'Destino');
+      const destParts = destRaw.split('/');
+      const destCity = (destParts[0] || destRaw).trim().slice(0, 255);
+      const destState = (destParts[1] || 'BA').trim().slice(0, 8);
+      const agreedReais =
+        typeof f.valorTotal === 'number'
+          ? Number(f.valorTotal.toFixed(2))
+          : Number(
+              (
+                (f.valorCobradoClienteCentavos ||
+                  f.valorContratadoCentavos ||
+                  f.valorFreteMotoristaCentavos ||
+                  0) / 100
+              ).toFixed(2)
+            );
+      const status = String(
+        f.situacaoMonitoramento && f.situacaoMonitoramento !== 'NAO_LIBERADO'
+          ? f.situacaoMonitoramento
+          : f.situacaoOperacional && f.situacaoOperacional !== 'NAO_ENVIADO'
+          ? f.situacaoOperacional
+          : f.situacaoComercial || f.status || 'EM_ANDAMENTO'
+      ).slice(0, 64);
+
+      await client.query(
+        `INSERT INTO rodovar_fretes (
+           id, sequential_id, client_name, client_cnpj, origin,
+           destination_city, destination_state, destination_address, cargo_description,
+           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CURRENT_TIMESTAMP)
+         ON CONFLICT (id) DO UPDATE SET
+           sequential_id = EXCLUDED.sequential_id,
+           client_name = EXCLUDED.client_name,
+           client_cnpj = EXCLUDED.client_cnpj,
+           origin = EXCLUDED.origin,
+           destination_city = EXCLUDED.destination_city,
+           destination_state = EXCLUDED.destination_state,
+           destination_address = EXCLUDED.destination_address,
+           cargo_description = EXCLUDED.cargo_description,
+           agreed_value = EXCLUDED.agreed_value,
+           driver_name = EXCLUDED.driver_name,
+           driver_cpf = EXCLUDED.driver_cpf,
+           driver_phone = EXCLUDED.driver_phone,
+           truck_plate = EXCLUDED.truck_plate,
+           status = EXCLUDED.status,
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          String(f.id).slice(0, 64),
+          seqId,
+          String(f.cliente || 'Cliente').slice(0, 255),
+          f.clienteCnpj ? String(f.clienteCnpj).slice(0, 32) : null,
+          String(f.origemCidadeUf || f.origem || 'Origem').slice(0, 255),
+          destCity || 'Destino',
+          destState || 'BA',
+          f.enderecoEntrega ? String(f.enderecoEntrega) : null,
+          f.tipoCarga ? String(f.tipoCarga) : null,
+          agreedReais,
+          f.motoristaNome ? String(f.motoristaNome).slice(0, 255) : null,
+          f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null,
+          f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null,
+          f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null,
+          status,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistFreightToNeon notice:', (err as Error).message);
+  }
+}
+
+export async function persistRequestToNeon(r: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !r || !r.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO UPDATE SET
+           title = EXCLUDED.title,
+           department = EXCLUDED.department,
+           requester_name = EXCLUDED.requester_name,
+           status = EXCLUDED.status,
+           details = EXCLUDED.details`,
+        [
+          String(r.id).slice(0, 64),
+          String(r.subject || r.protocol || 'Solicitação').slice(0, 255),
+          String(r.targetDepartment || 'Administrativo').slice(0, 100),
+          String(r.requesterName || 'Colaborador').slice(0, 255),
+          String(r.status || 'Aberta').slice(0, 64),
+          String(r.description || ''),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistRequestToNeon notice:', (err as Error).message);
+  }
+}
+
+export async function persistPaymentReceiptToNeon(rec: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !rec || !rec.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+           type = EXCLUDED.type,
+           amount = EXCLUDED.amount,
+           status = EXCLUDED.status`,
+        [
+          String(rec.id).slice(0, 64),
+          rec.freightId ? String(rec.freightId).slice(0, 64) : null,
+          String(rec.installmentType || 'ADIANTAMENTO').slice(0, 64),
+          Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100),
+          String(rec.verificationStatus || rec.uploadStatus || 'SALVO_NO_SERVIDOR').slice(0, 64),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistPaymentReceiptToNeon notice:', (err as Error).message);
+  }
+}
+
+export async function persistAnnouncementToNeon(a: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !a || !a.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           title = EXCLUDED.title,
+           author_name = EXCLUDED.author_name,
+           target_audience = EXCLUDED.target_audience,
+           priority = EXCLUDED.priority,
+           content = EXCLUDED.content,
+           data = EXCLUDED.data`,
+        [
+          String(a.id).slice(0, 64),
+          String(a.title || 'Comunicado').slice(0, 255),
+          String(a.authorName || 'Diretoria').slice(0, 255),
+          String(a.targetAudience || 'Todos').slice(0, 100),
+          String(a.priority || 'Normal').slice(0, 50),
+          String(a.content || a.summary || ''),
+          JSON.stringify(a),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistAnnouncementToNeon notice:', (err as Error).message);
+  }
+}
+
+export async function persistAgendaEventToNeon(e: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !e || !e.id) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           title = EXCLUDED.title,
+           date_iso = EXCLUDED.date_iso,
+           start_time = EXCLUDED.start_time,
+           end_time = EXCLUDED.end_time,
+           category = EXCLUDED.category,
+           data = EXCLUDED.data`,
+        [
+          String(e.id).slice(0, 64),
+          String(e.title || 'Evento').slice(0, 255),
+          String(e.dateIso || new Date().toISOString().slice(0, 10)).slice(0, 32),
+          String(e.start || '08:00').slice(0, 16),
+          String(e.end || '09:00').slice(0, 16),
+          String(e.category || 'Geral').slice(0, 100),
+          JSON.stringify(e),
+        ]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistAgendaEventToNeon notice:', (err as Error).message);
+  }
+}
+
 export async function persistAuditLogToNeon(log: {
   id: string;
   actorId?: string;
@@ -654,7 +839,7 @@ export async function persistAuditLogToNeon(log: {
   details?: string;
   ip?: string;
 }): Promise<void> {
-  if (!isNeonConfigured || !log || !log.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !log || !log.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -686,7 +871,7 @@ export async function persistChatMessageToNeon(msg: {
   senderName?: string;
   text: string;
 }): Promise<void> {
-  if (!isNeonConfigured || !msg || !msg.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !msg || !msg.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -711,7 +896,7 @@ export async function persistChatMessageToNeon(msg: {
 }
 
 export async function persistStateSnapshotToNeon(key: string, data: any): Promise<void> {
-  if (!isNeonConfigured || !key) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !key) return;
   try {
     const client = await pool.connect();
     try {
@@ -729,6 +914,59 @@ export async function persistStateSnapshotToNeon(key: string, data: any): Promis
   }
 }
 
+export async function loadStateSnapshotFromNeon<T = any>(
+  key: string
+): Promise<{ payload: T; updatedAtMs: number } | null> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !key) return null;
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT payload, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+         FROM rodovar_state_store
+         WHERE key = $1
+         LIMIT 1`,
+        [key]
+      );
+      if (res.rows.length > 0 && res.rows[0].payload) {
+        return {
+          payload: res.rows[0].payload as T,
+          updatedAtMs: Number(res.rows[0].updated_at_ms || Date.now()),
+        };
+      }
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn(`Neon loadStateSnapshotFromNeon(${key}) notice:`, (err as Error).message);
+  }
+  return null;
+}
+
+export async function fetchNeonStateTimestamps(): Promise<Record<string, number>> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return {};
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT key, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+         FROM rodovar_state_store`
+      );
+      const map: Record<string, number> = {};
+      for (const row of res.rows) {
+        if (row.key) {
+          map[String(row.key)] = Number(row.updated_at_ms || 0);
+        }
+      }
+      return map;
+    } finally {
+      client.release();
+    }
+  } catch {
+    return {};
+  }
+}
+
 export async function persistSocialProfileToNeon(p: {
   userId: string;
   coverUrl?: string;
@@ -738,7 +976,7 @@ export async function persistSocialProfileToNeon(p: {
   location?: string;
   socialLinks?: any;
 }): Promise<void> {
-  if (!isNeonConfigured || !p || !p.userId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !p || !p.userId) return;
   try {
     const client = await pool.connect();
     try {
@@ -783,7 +1021,7 @@ export async function persistSocialPostToNeon(post: {
   likes?: string[];
   audience?: string;
 }): Promise<void> {
-  if (!isNeonConfigured || !post || !post.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !post || !post.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -818,7 +1056,7 @@ export async function persistSocialPostToNeon(post: {
 }
 
 export async function deleteSocialPostFromNeon(postId: string): Promise<void> {
-  if (!isNeonConfigured || !postId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !postId) return;
   try {
     const client = await pool.connect();
     try {
@@ -841,7 +1079,7 @@ export async function persistSocialCommentToNeon(c: {
   authorRole?: string;
   content: string;
 }): Promise<void> {
-  if (!isNeonConfigured || !c || !c.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !c || !c.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -868,7 +1106,7 @@ export async function persistSocialCommentToNeon(c: {
 }
 
 export async function deleteSocialCommentFromNeon(commentId: string): Promise<void> {
-  if (!isNeonConfigured || !commentId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !commentId) return;
   try {
     const client = await pool.connect();
     try {
@@ -889,7 +1127,7 @@ export async function persistSystemAssetToNeon(asset: {
   width?: number;
   height?: number;
 }): Promise<void> {
-  if (!isNeonConfigured || !asset.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !asset.id) return;
   try {
     const client = await pool.connect();
     try {
@@ -914,7 +1152,7 @@ export async function persistSystemAssetToNeon(asset: {
 }
 
 export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: string; buffer: Buffer } | null> {
-  if (!isNeonConfigured || !id) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !id) return null;
   try {
     const client = await pool.connect();
     try {
@@ -938,7 +1176,7 @@ export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: st
 }
 
 export async function persistSystemConfigToNeon(config: any): Promise<void> {
-  if (!isNeonConfigured || !config) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !config) return;
   try {
     const client = await pool.connect();
     try {
@@ -957,7 +1195,7 @@ export async function persistSystemConfigToNeon(config: any): Promise<void> {
 }
 
 export async function loadSystemConfigFromNeon(): Promise<any | null> {
-  if (!isNeonConfigured) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv()) return null;
   try {
     const client = await pool.connect();
     try {
@@ -975,6 +1213,158 @@ export async function loadSystemConfigFromNeon(): Promise<any | null> {
   }
   return null;
 }
+
+export async function persistNotificationToNeon(notif: {
+  id: string;
+  recipientId: string;
+  type: string;
+  dotColor?: string;
+  title: string;
+  subtitle?: string;
+  timeLabel?: string;
+  read?: boolean;
+  targetSection: string;
+  targetId?: string;
+  dedupeKey?: string;
+}): Promise<boolean> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !notif.id || !notif.recipientId) return false;
+  try {
+    const client = await pool.connect();
+    try {
+      if (notif.dedupeKey) {
+        const check = await client.query(
+          `SELECT id FROM rodovar_notifications WHERE recipient_id = $1 AND dedupe_key = $2 LIMIT 1`,
+          [notif.recipientId, notif.dedupeKey]
+        );
+        if (check.rows.length > 0) return false;
+      }
+      await client.query(
+        `INSERT INTO rodovar_notifications (
+          id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
+        ON CONFLICT (id) DO NOTHING`,
+        [
+          notif.id,
+          notif.recipientId,
+          notif.type,
+          notif.dotColor || 'blue',
+          notif.title,
+          notif.subtitle || null,
+          notif.timeLabel || null,
+          Boolean(notif.read),
+          notif.targetSection,
+          notif.targetId || null,
+          notif.dedupeKey || null,
+        ]
+      );
+      return true;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistNotificationToNeon error:', (err as Error).message);
+    return false;
+  }
+}
+
+export async function loadNotificationsFromNeon(recipientId: string, limit = 50): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !recipientId) return [];
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
+                time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
+                dedupe_key AS "dedupeKey", created_at AS "createdAt"
+         FROM rodovar_notifications
+         WHERE recipient_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [recipientId, limit]
+      );
+      return res.rows;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon loadNotificationsFromNeon error:', (err as Error).message);
+    return [];
+  }
+}
+
+export async function markNotificationReadInNeon(notifId: string, recipientId: string): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !notifId) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `UPDATE rodovar_notifications SET read = TRUE WHERE id = $1 AND recipient_id = $2`,
+        [notifId, recipientId]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon markNotificationReadInNeon error:', (err as Error).message);
+  }
+}
+
+export async function markAllNotificationsReadInNeon(recipientId: string): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !recipientId) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `UPDATE rodovar_notifications SET read = TRUE WHERE recipient_id = $1 AND read = FALSE`,
+        [recipientId]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon markAllNotificationsReadInNeon error:', (err as Error).message);
+  }
+}
+
+export async function persistEconomicModeToNeon(enabled: boolean): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO rodovar_state_store (key, payload, updated_at)
+         VALUES ('rodovar-economic-mode', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify({ enabled, updatedAt: new Date().toISOString() })]
+      );
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('Neon persistEconomicModeToNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadEconomicModeFromNeon(): Promise<boolean> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return true; // default true
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-economic-mode' LIMIT 1`
+      );
+      if (res.rows.length > 0 && res.rows[0].payload) {
+        return Boolean(res.rows[0].payload.enabled ?? true);
+      }
+    } finally {
+      client.release();
+    }
+  } catch {
+    return true;
+  }
+  return true; // Default true
+}
+
 
 
 

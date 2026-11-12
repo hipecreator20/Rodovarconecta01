@@ -31,6 +31,16 @@ import {
   canViewFreightTeam,
   hasPagePermission,
 } from '../lib/permissions.ts';
+import {
+  persistNotificationToNeon,
+  loadNotificationsFromNeon,
+  markNotificationReadInNeon,
+  markAllNotificationsReadInNeon,
+  persistFreightToNeon,
+  persistStateSnapshotToNeon,
+  persistSystemAssetToNeon,
+  getSystemAssetFromNeon,
+} from '../../neon.ts';
 import { resolveDataRoot } from './dataRoot.ts';
 
 export const RODOVAR_CNPJ = '49.908.710/0001-03';
@@ -220,6 +230,48 @@ function syncSubDocCounters(freight: UnifiedFreightRecord, sub: FreightSubDocume
 const financeListeners = new Set<(freight:UnifiedFreightRecord)=>void>();
 export const subscribeUnifiedFinance=(listener:(freight:UnifiedFreightRecord)=>void)=>{financeListeners.add(listener);return ()=>financeListeners.delete(listener);};
 export const unifiedFinanceFreights=()=>[...freightsIndex.values()].filter(f=>f.situacaoMonitoramento!=='NAO_LIBERADO'&&f.situacaoMonitoramento!=='DEVOLVIDO_EXPEDICAO'&&f.situacaoOperacional!=='CANCELADO');
+function saveFreightsSnapshotToNeon(): void {
+  void persistStateSnapshotToNeon('rodovar-freights-state', {
+    nextProtocolNumber,
+    freights: Array.from(freightsIndex.values()),
+    subDocs: Array.from(freightSubDocs.values()),
+    notifications: serverNotifications.slice(0, 300),
+    updatedAtIso: new Date().toISOString(),
+  });
+}
+
+export function hydrateUnifiedFreightsFromPayload(payload: any): void {
+  if (!payload || typeof payload !== 'object') return;
+  if (typeof payload.nextProtocolNumber === 'number' && payload.nextProtocolNumber > nextProtocolNumber) {
+    nextProtocolNumber = payload.nextProtocolNumber;
+  }
+  if (Array.isArray(payload.subDocs)) {
+    for (const sub of payload.subDocs) {
+      if (sub && sub.freightId) {
+        freightSubDocs.set(sub.freightId, sub);
+      }
+    }
+  }
+  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+    for (const f of payload.freights) {
+      if (!f || !f.id) continue;
+      const existing = freightsIndex.get(f.id);
+      if (!existing || (Number(f.revision || 0) >= Number(existing.revision || 0))) {
+        freightsIndex.set(f.id, f);
+      }
+    }
+  }
+  if (Array.isArray(payload.notifications) && payload.notifications.length > 0) {
+    const existingIds = new Set(serverNotifications.map((n) => n.id));
+    for (const n of payload.notifications) {
+      if (n && n.id && !existingIds.has(n.id)) {
+        serverNotifications.push(n);
+        existingIds.add(n.id);
+      }
+    }
+  }
+}
+
 export function persistFreightAndSubDoc(
   freight: UnifiedFreightRecord,
   sub?: FreightSubDocument
@@ -238,14 +290,18 @@ export function persistFreightAndSubDoc(
   writeJsonAtomically(getFreightDocPath(freight.id), freight);
   writeJsonAtomically(getFreightSubDocPath(freight.id), existingSub);
   for (const listener of financeListeners) listener(freight);
+  void persistFreightToNeon(freight);
+  saveFreightsSnapshotToNeon();
 }
 
 function saveNotifications(): void {
   writeJsonAtomically(NOTIFICATIONS_FILE, serverNotifications);
+  saveFreightsSnapshotToNeon();
 }
 
 function saveSequence(): void {
   writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber });
+  saveFreightsSnapshotToNeon();
 }
 
 export function formatProtocolNumber(seq: number): string {
@@ -311,6 +367,7 @@ export function pushFreightNotification(params: {
     serverNotifications = serverNotifications.slice(0, 500);
   }
   saveNotifications();
+  void persistNotificationToNeon(notif).catch(() => {});
 }
 
 // Non-destructively adapt legacy records to the 3-stage workflow without losing history or sending retroactive notifications
@@ -1274,12 +1331,38 @@ export function registerUnifiedFreightRoutes(
   // --------------------------------------------------------------------------
   // 2. GET NOTIFICATIONS FOR CURRENT USER
   // --------------------------------------------------------------------------
-  app.get('/api/meus-fretes/notifications', requireApprovedSession, (req: any, res: Response) => {
+  app.get('/api/meus-fretes/notifications', requireApprovedSession, async (req: any, res: Response) => {
     const user = req.sessionUser as Employee;
-    const myNotifs = serverNotifications
-      .filter((n) => n.recipientId === user.id)
+    const localNotifs = serverNotifications.filter((n) => n.recipientId === user.id);
+    const neonNotifs = await loadNotificationsFromNeon(user.id, 50).catch(() => []);
+
+    const map = new Map<string, ServerNotificationRecord>();
+    for (const n of localNotifs) {
+      map.set(n.id, n);
+    }
+    for (const n of neonNotifs) {
+      if (!map.has(n.id)) {
+        map.set(n.id, {
+          id: n.id,
+          recipientId: n.recipientId,
+          type: n.type || 'prazo',
+          dotColor: n.dotColor || 'blue',
+          title: n.title,
+          subtitle: n.subtitle || '',
+          timeLabel: n.timeLabel || '',
+          createdAtIso: n.createdAt ? new Date(n.createdAt).toISOString() : new Date().toISOString(),
+          read: Boolean(n.read),
+          targetSection: n.targetSection || 'fretes_comercial',
+          targetId: n.targetId,
+          dedupeKey: n.dedupeKey,
+        });
+      }
+    }
+
+    const myNotifs = Array.from(map.values())
       .sort((a, b) => (b.createdAtIso || '').localeCompare(a.createdAtIso || ''))
       .slice(0, 50);
+
     res.json({
       notifications: myNotifs,
       unreadCount: myNotifs.filter((n) => !n.read).length,
@@ -1299,6 +1382,7 @@ export function registerUnifiedFreightRoutes(
         target.read = true;
         saveNotifications();
       }
+      void markNotificationReadInNeon(notifId, user.id);
       res.json({ ok: true });
     }
   );
@@ -1316,6 +1400,7 @@ export function registerUnifiedFreightRoutes(
         }
       });
       if (changed) saveNotifications();
+      void markAllNotificationsReadInNeon(user.id);
       res.json({ ok: true });
     }
   );
@@ -3370,7 +3455,10 @@ export function registerUnifiedFreightRoutes(
 
       const isAssignedOrManager =
         freight.monitoramentoResponsavelId === user.id || canViewFreightTeam(user);
-      if (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id) {
+      if (
+        user.accessLevel !== 'ADMINISTRADOR' &&
+        (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id)
+      ) {
         res.status(403).json({
           error:
             'Permissão negada: apenas o Operador de Monitoramento responsável ou a Gestão pode atualizar o acompanhamento deste frete.',
@@ -3981,6 +4069,12 @@ export function registerUnifiedFreightRoutes(
       const storageName = `fdoc-${freight.id}-${crypto.randomUUID()}.${validation.extension}`;
       const diskPath = path.join(FREIGHT_ATTACHMENTS_DIR, storageName);
       fs.writeFileSync(diskPath, fileBuf);
+      void persistSystemAssetToNeon({
+        id: storageName,
+        slot: 'freightAttachment',
+        mimeType: validation.mimeType || 'application/octet-stream',
+        dataBase64: fileBuf.toString('base64'),
+      });
 
       const sp = formatSaoPauloDateTime();
       const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
@@ -4111,7 +4205,7 @@ export function registerUnifiedFreightRoutes(
       '/api/meus-fretes/:freightId/attachments/:attId/download',
     ],
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = req.sessionUser as Employee;
       const freightId = String(req.params.freightId || '');
       const attId = String(req.params.attId || '');
@@ -4141,8 +4235,24 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const diskPath = path.join(FREIGHT_ATTACHMENTS_DIR, path.basename(att.storageName));
+      const safeFile = path.basename(att.storageName);
+      const diskPath = path.join(FREIGHT_ATTACHMENTS_DIR, safeFile);
       if (!fs.existsSync(diskPath)) {
+        const neonAsset = await getSystemAssetFromNeon(safeFile);
+        if (neonAsset && neonAsset.buffer) {
+          try {
+            ensureDirectories();
+            fs.writeFileSync(diskPath, neonAsset.buffer);
+          } catch {}
+          res.setHeader('Content-Type', att.mimeType || neonAsset.mimeType);
+          res.setHeader(
+            'Content-Disposition',
+            `inline; filename="${encodeURIComponent(att.fileName)}"`
+          );
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.send(neonAsset.buffer);
+          return;
+        }
         res.status(404).json({ error: 'Arquivo físico não encontrado no armazenamento do servidor.' });
         return;
       }

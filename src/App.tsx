@@ -12,6 +12,7 @@ import './components/NotificationsClean.css';
 import React, { useEffect, useState, useRef } from 'react';
 import { FirstAccessPassword } from './components/FirstAccessPassword';
 import {
+  Activity,
   Bell,
   BookOpen,
   Calendar,
@@ -25,6 +26,7 @@ import {
   Folder,
   HelpCircle,
   Home,
+  Leaf,
   Link2,
   LogIn,
   LogOut,
@@ -43,6 +45,7 @@ import {
 } from 'lucide-react';
 import { RodovarLogo } from './components/RodovarLogo';
 import { MobileDeviceView } from './components/MobileSimulatorModal';
+import { SectorNotificationFlowView } from './components/SectorNotificationFlowView';
 import { ModulesView } from './components/ModulesView';
 import { LoginScreen } from './components/LoginScreen';
 import { FinanceiroFretesView } from './components/FinanceiroFretesView';
@@ -96,6 +99,9 @@ import {
   apiFetchAdminAccessRequests,
   apiFetchFreightNotifications,
   apiMarkFreightNotificationRead,
+  apiMarkAllFreightNotificationsRead,
+  apiFetchEconomicMode,
+  apiUpdateEconomicMode,
   apiLogout,
   resolveAvatarUrl,
   withRevisionParam,
@@ -127,6 +133,7 @@ const SECTION_TO_PATH: Record<MenuSection, string> = {
   perfil: '/perfil',
   administracao: '/administracao',
   ajuda: '/ajuda',
+  fluxo_notificacoes: '/fluxo-notificacoes',
 };
 
 function getSectionFromPathname(pathname: string): MenuSection | null {
@@ -146,6 +153,7 @@ function getSectionFromPathname(pathname: string): MenuSection | null {
   if (clean === '/perfil') return 'perfil';
   if (clean === '/administracao' || clean === '/liberacao') return 'administracao';
   if (clean === '/ajuda') return 'ajuda';
+  if (clean === '/fluxo-notificacoes' || clean === '/notificacoes') return 'fluxo_notificacoes';
   return null;
 }
 
@@ -176,6 +184,24 @@ export default function App() {
     }
     return 'inicio';
   });
+  const [economicMode, setEconomicMode] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    apiFetchEconomicMode().then((res) => {
+      if (isMounted) setEconomicMode(res.economicMode);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleToggleEconomicMode = async () => {
+    const next = !economicMode;
+    setEconomicMode(next);
+    await apiUpdateEconomicMode(next);
+  };
+
   const [preparingAuthenticatedPanel, setPreparingAuthenticatedPanel] = useState(false);
   const authenticatedPanelRelease = useRef<(() => void) | null>(null);
   useAuthenticatedPanelLoading(preparingAuthenticatedPanel, authenticatedPanelRelease);
@@ -200,9 +226,13 @@ export default function App() {
         if (!controller.signal.aborted) window.dispatchEvent(new CustomEvent('rodovar:agenda-notifications',{detail:data.notifications}));
       } catch { /* Existing notification state remains available on network failure. */ }
     };
-    void update(); const interval = setInterval(update,15000);
-    return () => {controller.abort();clearInterval(interval);};
-  }, [isAuthenticated]);
+    void update();
+    if (!economicMode) {
+      const interval = setInterval(update, 15000);
+      return () => { controller.abort(); clearInterval(interval); };
+    }
+    return () => { controller.abort(); };
+  }, [isAuthenticated, economicMode]);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [pendingAccessRequestsCount, setPendingAccessRequestsCount] = useState<number>(0);
   const [notificationNavigationError,setNotificationNavigationError]=useState('');
@@ -579,6 +609,17 @@ export default function App() {
                 }
               })
               .catch(() => {});
+          } else {
+            void fetch('/api/employees', { headers: getAuthHeaders() })
+              .then(async (r) => {
+                if (r.ok) {
+                  const data = await r.json();
+                  if (Array.isArray(data?.employees) && data.employees.length > 0) {
+                    setEmployees(data.employees);
+                  }
+                }
+              })
+              .catch(() => {});
           }
         } else {
           setIsAuthenticated(false);
@@ -639,13 +680,18 @@ export default function App() {
     if(!isAuthenticated || currentUser.mustChangePassword)return;
     const controller=new AbortController();
     const load=async()=>{try{const response=await fetch('/api/employees',{headers:getAuthHeaders(),signal:controller.signal});if(response.ok){const data=await response.json();if(!controller.signal.aborted)setEmployees(data.employees);}}catch{}};
-    load();const timer=setInterval(load,10000);return()=>{controller.abort();clearInterval(timer);};
-  },[isAuthenticated,currentUserId,currentUser.mustChangePassword]);
+    load();
+    if (!economicMode) {
+      const timer=setInterval(load,10000);
+      return()=>{controller.abort();clearInterval(timer);};
+    }
+    return () => { controller.abort(); };
+  },[isAuthenticated,currentUserId,currentUser.mustChangePassword,economicMode]);
 
-  // Poll systemConfig revision periodically so other active tabs/sessions stay updated
+  // Poll systemConfig revision periodically so other active tabs/sessions stay updated (only in standard mode)
   useEffect(() => {
     if (!isAuthenticated) return;
-    const interval = setInterval(async () => {
+    const loadConfigAndNotifs = async () => {
       try {
         const res = await fetch('/api/system-config/version', { credentials: 'include' });
         if (res.ok) {
@@ -665,7 +711,6 @@ export default function App() {
       } catch {
         // ignore network hiccup
       }
-      // Also poll server freight notifications for current user
       try {
         const fNotifs = await apiFetchFreightNotifications();
         if (fNotifs.notifications && fNotifs.notifications.length > 0) {
@@ -680,9 +725,13 @@ export default function App() {
       } catch {
         // ignore
       }
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [isAuthenticated, systemConfig]);
+    };
+    loadConfigAndNotifs();
+    if (!economicMode) {
+      const interval = setInterval(loadConfigAndNotifs, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated, systemConfig, economicMode]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -696,9 +745,10 @@ export default function App() {
       } catch {
         /* A temporary connection failure does not revoke the server session. */
       }
-    }, 15000);
+    }, 30000);
     return () => clearInterval(timer);
   }, [isAuthenticated]);
+
   useEffect(()=>{
     if(!isAuthenticated || !hasPagePermission(currentUser,'solicitacoes')) {setRequests([]);return;}
     let cancelled=false;
@@ -706,12 +756,21 @@ export default function App() {
           setRequests(d.requests);
           setNotifications(prev => [...prev.filter(n => n.type!=='solicitacao'), ...d.notifications.map((n:any) => ({id:'queue:'+n.id,type:'solicitacao' as const,dotColor:'blue' as const,title:n.title,subtitle:'Atualização no atendimento interno',timeLabel:'Solicitações',read:n.read,targetSection:'solicitacoes' as const,targetId:n.targetId,recipientId:n.recipientId,publicationId:'queue:'+n.id,createdAtIso:n.createdAtIso}))]);
         }}}catch{}};
-    load();const timer=setInterval(load,5000);return()=>{cancelled=true;clearInterval(timer);};
-  },[isAuthenticated,currentUser.id,currentUser.accessProfile]);
+    load();
+    if (!economicMode) {
+      const timer=setInterval(load,5000);
+      return()=>{cancelled=true;clearInterval(timer);};
+    }
+    return () => { cancelled = true; };
+  },[isAuthenticated,currentUser.id,currentUser.accessProfile,economicMode]);
 
-  // Redirecionamento automático caso a página ativa seja desabilitada nas permissões do colaborador
+  // Redirecionamento automático caso a página ativa seja desabilitada nas permissões do colaborador ou em modo econômico
   useEffect(() => {
-    if (activeSection === 'administracao') {
+    if (economicMode && (activeSection === 'mensagens' || activeSection === 'grupos')) {
+      setActiveSection(permittedHome(currentUser) as MenuSection);
+      return;
+    }
+    if (activeSection === 'administracao' || activeSection === 'fluxo_notificacoes') {
       if (
         !hasPagePermission(currentUser, 'administracao')
       ) {
@@ -724,7 +783,7 @@ export default function App() {
         setActiveSection(permittedHome(currentUser) as MenuSection);
       }
     }
-  }, [currentUser, activeSection]);
+  }, [currentUser, activeSection, economicMode]);
 
   // Helper to record Audit Logs locally and persist to Cloud Firestore when Admin
   const recordAuditLog = async (
@@ -769,6 +828,7 @@ export default function App() {
   const handleMarkAllNotificationsRead = async () => {
     const agendaIds=notifications.filter(n=>n.id.startsWith('agenda:')&&!n.read).map(n=>n.id);if(agendaIds.length)await fetch('/api/agenda/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:agendaIds})});
     const muralIds=notifications.filter(n=>n.id.startsWith('mural:')&&!n.read).map(n=>n.id);if(muralIds.length){const response=await fetch('/api/mural/notifications/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:muralIds})});if(!response.ok)return;}
+    await apiMarkAllFreightNotificationsRead();
     await Promise.all(notifications.filter(n=>n.id.startsWith('fnotif-')&&!n.read).map(n=>apiMarkFreightNotificationRead(n.id)));
     await Promise.all(notifications.filter(n=>n.id.startsWith('queue:') && !n.read && n.targetId).map(n=>fetch('/api/requests/'+n.targetId+'/read',{method:'POST',headers:getAuthHeaders(),body:'{}'})));
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
@@ -860,6 +920,17 @@ export default function App() {
             if (adminData.ok) {
               setPendingAccessRequestsCount(adminData.pendingCount);
               setEmployees(adminData.accounts);
+            }
+          })
+          .catch(() => {});
+      } else {
+        void fetch('/api/employees', { headers: getAuthHeaders() })
+          .then(async (r) => {
+            if (r.ok) {
+              const data = await r.json();
+              if (Array.isArray(data?.employees) && data.employees.length > 0) {
+                setEmployees(data.employees);
+              }
             }
           })
           .catch(() => {});
@@ -2082,18 +2153,22 @@ export default function App() {
       icon: Wallet,
     },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
-    {
-      id: 'mensagens',
-      label: 'Mensagens',
-      icon: MessageSquare,
-      badge: unreadDirectMessagesCount || undefined,
-    },
-    {
-      id: 'grupos',
-      label: 'Grupos',
-      icon: Users,
-      badge: unreadGroupMessagesCount || undefined,
-    },
+    ...(!economicMode
+      ? [
+          {
+            id: 'mensagens' as MenuSection,
+            label: 'Mensagens',
+            icon: MessageSquare,
+            badge: unreadDirectMessagesCount || undefined,
+          },
+          {
+            id: 'grupos' as MenuSection,
+            label: 'Grupos',
+            icon: Users,
+            badge: unreadGroupMessagesCount || undefined,
+          },
+        ]
+      : []),
     { id: 'diretorio', label: 'Colaboradores', icon: Users },
     { id: 'perfil', label: 'Meu Perfil', icon: User },
     {
@@ -2307,6 +2382,7 @@ export default function App() {
             setShowCommandPalette(true);
           }}
           onOpenNotificationsCenter={() => setShowNotificationsCenterModal(true)}
+          onAccessNotification={handleAccessNotification}
           onOpenInstallModal={() => {
             resetInstallOutcome();
             setShowPWAInstallGuideModal(true);
@@ -2314,7 +2390,17 @@ export default function App() {
           isInstalled={isInstalled}
           canPromptInstall={canPromptInstall}
         >
-          {activeSection === 'fretes_comercial' ? (
+          {activeSection === 'fluxo_notificacoes' ? (
+            <SectorNotificationFlowView
+              currentUser={currentUser}
+              onNavigate={(s) => setActiveSection(s)}
+              economicMode={economicMode}
+              onToggleEconomicMode={handleToggleEconomicMode}
+              realNotifications={sortedUniqueNotifications}
+              onMarkAllRead={handleMarkAllNotificationsRead}
+              onAccessNotification={handleAccessNotification}
+            />
+          ) : activeSection === 'fretes_comercial' ? (
             <MeusFretesComercialView
               currentUser={currentUser}
               selectedFreightIdFromNotification={selectedNotificationFreightId}
@@ -2335,6 +2421,53 @@ export default function App() {
               selectedFreightIdFromNotification={selectedNotificationFreightId}
               onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
               onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
+              onSyncNewFreightToFinanceiro={(item) => {
+                const total = item.valorFreteMotorista || 6000;
+                const adiant = Number((total * 0.7).toFixed(2));
+                const saldo = Number((total - adiant).toFixed(2));
+                handleAddFreight({
+                  id: `frete-${Date.now()}`,
+                  code: item.code,
+                  createdAtDate: item.createdAtDate,
+                  createdAtIso: new Date().toISOString(),
+                  empresaMarca: item.empresaMarca,
+                  dataCarregamento: item.dataCarregamento,
+                  unidadeOperacional: item.unidadeOperacional,
+                  comercialResponsavel: item.comercialResponsavel,
+                  expedicaoResponsavel: item.expedicaoResponsavel,
+                  cliente: item.cliente,
+                  telefoneCliente: item.telefoneCliente,
+                  motoristaNome: item.motoristaNome,
+                  motoristaTelefone: item.motoristaTelefone,
+                  emergenciaNome: item.emergenciaNome,
+                  emergenciaTelefone: item.emergenciaTelefone,
+                  origem: item.origem,
+                  destino: item.destino,
+                  dataColeta: item.dataColeta,
+                  dataEntrega: item.dataPrevisaoOuEntrega,
+                  valorFreteEmpresa: item.valorFreteEmpresa,
+                  valorFreteMotorista: total,
+                  regraTipo: '70_30',
+                  regraLabel: '70% / 30%',
+                  percentualAdiantamento: 70,
+                  percentualSaldo: 30,
+                  valorTotal: total,
+                  valorAdiantamento: adiant,
+                  valorSaldo: saldo,
+                  favorecido: item.favorecido,
+                  banco: item.banco,
+                  agencia: '0001',
+                  conta: '18670000-5',
+                  tipoChavePix: item.tipoChavePix,
+                  chavePix: item.chavePix,
+                  status: 'Pendente Adiantamento',
+                  adiantamentoPago: false,
+                  entregaConfirmada: item.stage === 'Entrega Concluída',
+                  saldoPago: false,
+                  solicitanteNome: `${currentUser.name} (${currentUser.department})`,
+                  docs: {},
+                });
+              }}
             />
           ) : activeSection === 'financeiro' ? (
             <FinanceiroFretesView
@@ -2406,7 +2539,24 @@ export default function App() {
               initialOpenRequestModal={openRequestModalOnLoad}
               onClearInitialModal={() => setOpenRequestModalOnLoad(false)}
             />
-          ) : null}
+          ) : (
+            <HomePremium
+              user={currentUser}
+              config={systemConfig}
+              notifications={sortedUniqueNotifications}
+              navigate={setActiveSection}
+              openAnnouncement={setSelectedAnnouncementModal}
+              openNotifications={() => setShowNotificationsCenterModal(true)}
+              accessNotification={handleAccessNotification}
+              openContacts={() =>
+                setQuickAccessModal({
+                  title: 'Contatos Oficiais RODOVAR',
+                  subtitle: 'Central de Atendimento RODOVAR • Sua Carga em Primeiro Lugar!',
+                  body: '• Telefone / WhatsApp Oficial: 71 9 9920-2476\n• Instagram Oficial: @rodovartransportadora\n• Site Institucional: www.rodovar.com.br\n• Recursos Humanos (Folha e Benefícios): Telefone: 71 9 9920-2476 | rh@rodovar.com.br\n• Plantão Operacional e Tráfego 24h: Telefone: 71 9 9920-2476 | operacoes@rodovar.com.br\n• Engenharia de Segurança do Trabalho (SST): Telefone: 71 9 9920-2476 | seguranca@rodovar.com.br\n• Financeiro e Faturamento: Telefone: 71 9 9920-2476 | financeiro@rodovar.com.br',
+                })
+              }
+            />
+          )}
         </MobileDeviceView>
       </div>
 
@@ -2839,7 +2989,17 @@ export default function App() {
           {/* MAIN WORKSPACE */}
           <div className="flex-1 flex items-start gap-4 min-w-0">
             <main className="flex-1 bg-[#F3F5F7] rounded-[22px] p-4 lg:p-5 shadow-2xl min-w-0">
-              {activeSection === 'fretes_comercial' ? (
+              {activeSection === 'fluxo_notificacoes' ? (
+                <SectorNotificationFlowView
+                  currentUser={currentUser}
+                  onNavigate={(s) => setActiveSection(s)}
+                  economicMode={economicMode}
+                  onToggleEconomicMode={handleToggleEconomicMode}
+                  realNotifications={sortedUniqueNotifications}
+                  onMarkAllRead={handleMarkAllNotificationsRead}
+                  onAccessNotification={handleAccessNotification}
+                />
+              ) : activeSection === 'fretes_comercial' ? (
                 <MeusFretesComercialView
                   currentUser={currentUser}
                   selectedFreightIdFromNotification={selectedNotificationFreightId}

@@ -2,6 +2,7 @@ import {CorporateModal} from './ui/CorporateModal';
 import {DriverCenter} from './DriverCenter';
 import {getAuthHeaders} from '../lib/serverApi';
 import {validatePortalBackup,backupEmployees} from '../lib/adminBackup';
+import {resolveEmployeeSectorLabel} from '../lib/adminMetrics';
 import {AdministrationMaster, type AdminArea} from './AdministrationMaster';
 import {AgendaPremium} from './AgendaPremium';
 import {CollaboratorsPremium} from './CollaboratorsPremium';
@@ -4998,12 +4999,14 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const depts = [...new Set(employees.map(e=>e.department))];
+                    const depts = [...new Set(employees.map((e) => resolveEmployeeSectorLabel(e)))];
                     const lines = [
                       'MATRIZ GERENCIAL DE CONFORMIDADE POR DEPARTAMENTO — RODOVAR CONECTA',
                       '------------------------------------------------------------',
                       ...depts.map((dept) => {
-                        const deptEmps = employees.filter((e) => e.department === dept && e.active);
+                        const deptEmps = employees.filter(
+                          (e) => resolveEmployeeSectorLabel(e) === dept && e.active
+                        );
                         const deptReqs = requests.filter((r) => r.targetDepartment === dept);
                         const overdueReqs = deptReqs.filter(
                           (r) => getSlaInfo(r).isOverdue && r.status !== 'Concluída'
@@ -5033,7 +5036,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-gray-200 text-gray-400 font-bold uppercase text-[10px]">
-                    <th className="py-2 pr-3">Departamento</th>
+                    <th className="py-2 pr-3">Departamento / Setor</th>
                     <th className="py-2 px-3">Colaboradores</th>
                     <th className="py-2 px-3">Leitura Confirmada</th>
                     <th className="py-2 px-3">Chamados SLA 48h</th>
@@ -5042,9 +5045,11 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {(
-                    [...new Set(employees.map(e=>e.department))]
+                    [...new Set(employees.map((e) => resolveEmployeeSectorLabel(e)))]
                   ).map((dept) => {
-                    const deptEmployees = employees.filter((e) => e.department === dept && e.active);
+                    const deptEmployees = employees.filter(
+                      (e) => resolveEmployeeSectorLabel(e) === dept && e.active
+                    );
                     const mandatoryAnns = announcements.filter(
                       (a) =>
                         !a.archived &&
@@ -5583,13 +5588,16 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                       }}
                       className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg"
                     >
-                      <option value="Operacional">Operacional</option>
-                      <option value="Administrativo">Administrativo</option>
-                      <option value="Recursos Humanos">Recursos Humanos</option>
+                      <option value="Comercial">Comercial</option>
+                      <option value="Expedição">Expedição</option>
+                      <option value="Monitoramento">Monitoramento</option>
                       <option value="Financeiro">Financeiro</option>
-                      <option value="Segurança">Segurança</option>
-                      <option value="Logística">Logística</option>
+                      <option value="Recursos Humanos">Recursos Humanos</option>
                       <option value="Diretoria">Diretoria</option>
+                      <option value="Administrativo">Administrativo</option>
+                      <option value="Logística">Logística</option>
+                      <option value="Operacional">Operacional</option>
+                      <option value="Segurança">Segurança</option>
                     </select>
                   </div>
                   <div>
@@ -5861,13 +5869,16 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                       }}
                       className="w-full px-2.5 py-2 text-xs border border-gray-300 rounded-lg"
                     >
-                      <option value="Operacional">Operacional</option>
-                      <option value="Administrativo">Administrativo</option>
-                      <option value="Recursos Humanos">Recursos Humanos</option>
+                      <option value="Comercial">Comercial</option>
+                      <option value="Expedição">Expedição</option>
+                      <option value="Monitoramento">Monitoramento</option>
                       <option value="Financeiro">Financeiro</option>
-                      <option value="Segurança">Segurança</option>
-                      <option value="Logística">Logística</option>
+                      <option value="Recursos Humanos">Recursos Humanos</option>
                       <option value="Diretoria">Diretoria</option>
+                      <option value="Administrativo">Administrativo</option>
+                      <option value="Logística">Logística</option>
+                      <option value="Operacional">Operacional</option>
+                      <option value="Segurança">Segurança</option>
                     </select>
                   </div>
                   <div>

@@ -5,12 +5,21 @@ import type { Express } from 'express';
 import type { Employee, InternalRequest, RequestAttachment, RequestStatus } from '../types/index.ts';
 import { hasPagePermission } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
+import { persistStateSnapshotToNeon, persistRequestToNeon, persistSystemAssetToNeon, getSystemAssetFromNeon } from '../../neon.ts';
 
 const DESTINATIONS = ['Recursos Humanos', 'Administrativo', 'Financeiro'];
 const STATUSES: RequestStatus[] = ['Aberta', 'Em análise', 'Em andamento', 'Aguardando funcionário', 'Concluída', 'Cancelada'];
 const terminal = (r: InternalRequest) => ['Concluída', 'Cancelada'].includes(r.status);
 interface QueueNotification { id: string; recipientId: string; targetId: string; title: string; read: boolean; createdAtIso: string }
 interface QueueState { requests: InternalRequest[]; notifications: QueueNotification[]; keys: Record<string, string> }
+
+let activeQueueState: QueueState | null = null;
+export function hydrateRequestQueueFromPayload(payload: any): void {
+  if (!activeQueueState || !payload || typeof payload !== 'object') return;
+  if (Array.isArray(payload.requests)) activeQueueState.requests = payload.requests;
+  if (Array.isArray(payload.notifications)) activeQueueState.notifications = payload.notifications;
+  if (payload.keys && typeof payload.keys === 'object') activeQueueState.keys = payload.keys;
+}
 
 export function canHandleRequest(u: Employee, r: InternalRequest): boolean {
   return u.active && u.approvalStatus === 'APROVADO' && (u.accessLevel === 'ADMINISTRADOR' ||
@@ -24,10 +33,12 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
   const attachmentsDir = path.join(directory, 'request-attachments');
   const state: QueueState = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) :
     { requests: structuredClone(initial), notifications: [], keys: {} };
+  activeQueueState = state;
   const save = () => {
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(file + '.tmp', JSON.stringify(state, null, 2));
     fs.renameSync(file + '.tmp', file);
+    void persistStateSnapshotToNeon('rodovar-requests-state', state);
   };
   const visible = (u: Employee, r: InternalRequest) => r.requesterId === u.id || canHandleRequest(u, r);
   const notify = (r: InternalRequest, recipientId: string, title: string, eventId: string) => {
@@ -56,6 +67,12 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     fs.mkdirSync(attachmentsDir, { recursive: true });
     const attachment: RequestAttachment = { id: crypto.randomUUID(), name: parsed.name, mimeType: parsed.mimeType, size: parsed.bytes.length, uploadedById: u.id, createdAtIso: new Date().toISOString() };
     fs.writeFileSync(path.join(attachmentsDir, attachment.id), parsed.bytes);
+    void persistSystemAssetToNeon({
+      id: attachment.id,
+      slot: 'request-attachment',
+      mimeType: parsed.mimeType,
+      dataBase64: parsed.bytes.toString('base64'),
+    });
     (r.attachments ||= []).push(attachment);
     r.attachmentName ||= attachment.name;
   };
@@ -90,18 +107,28 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     addAttachment(record, u, parsed);
     state.requests.unshift(record); state.keys[composite] = id;
     for (const recipient of users().filter(r => r.active && r.approvalStatus === 'APROVADO' && (targetDepartment === 'Financeiro' ? r.accessProfile === 'FINANCEIRO' : r.accessProfile === 'RH'))) notify(record, recipient.id, 'Nova solicitação ' + record.protocol, id);
-    save(); res.status(201).json({ request: record });
+    save(); void persistRequestToNeon(record); res.status(201).json({ request: record });
   });
-  app.get('/api/requests/:id/attachments/:attachmentId', guard, (req: any, res) => {
+  app.get('/api/requests/:id/attachments/:attachmentId', guard, async (req: any, res) => {
     const u = req.sessionUser, r = state.requests.find(r => r.id === req.params.id);
     if (!hasPagePermission(u, 'solicitacoes') || !r || !visible(u, r)) return fail(res, 'Arquivo não encontrado.', 404);
     const attachment = r.attachments?.find(a => a.id === req.params.attachmentId);
     if (!attachment) return fail(res, 'Arquivo não encontrado.', 404);
     const storedPath = path.join(attachmentsDir, attachment.id);
-    if (!fs.existsSync(storedPath)) return fail(res, 'Arquivo indisponível no servidor.', 404);
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Content-Type', attachment.mimeType);
-    res.attachment(attachment.name).sendFile(storedPath);
+    if (fs.existsSync(storedPath)) {
+      return res.attachment(attachment.name).sendFile(storedPath);
+    }
+    const neonAsset = await getSystemAssetFromNeon(attachment.id);
+    if (neonAsset) {
+      try {
+        fs.mkdirSync(attachmentsDir, { recursive: true });
+        fs.writeFileSync(storedPath, neonAsset.buffer);
+      } catch {}
+      return res.attachment(attachment.name).send(neonAsset.buffer);
+    }
+    return fail(res, 'Arquivo indisponível no servidor.', 404);
   });
   app.post('/api/requests/:id/:action', guard, (req: any, res) => {
     const u = req.sessionUser, r = state.requests.find(r => r.id === req.params.id);
@@ -168,6 +195,6 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
       } else return fail(res, 'Ação inválida.', 404);
     }
     if (actionKey) state.keys[composite] = r.id;
-    save(); res.json({ request: r });
+    save(); void persistRequestToNeon(r); res.json({ request: r });
   });
 }
