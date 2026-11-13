@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useMemo, useState } from 'react';
 import { Check, Download, FileText, Printer, Share2, X } from 'lucide-react';
 import type { UnifiedFreightRecord } from '../types';
 import {
@@ -306,23 +305,23 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
 }) => {
   if (data.brand === 'VL TRANSPORTES') {
     return (
-      <div className="oc-sheet bg-white border border-slate-700 p-2 text-[10px] text-slate-900 space-y-1 shadow-xs rounded-md">
+      <div className="bg-white border border-slate-700 p-2.5 text-[11px] text-slate-900 space-y-1.5">
         <div className="grid grid-cols-12 border border-slate-700">
-          <div className="col-span-3 border-r border-slate-700 p-1.5 flex items-center justify-center bg-white">
+          <div className="col-span-3 border-r border-slate-700 p-2 flex items-center justify-center bg-white">
             <img
               src={data.company.logoPath}
               alt="VL Transportes"
-              className="max-h-9 w-auto object-contain"
+              className="max-h-12 w-auto object-contain"
             />
           </div>
-          <div className="col-span-6 border-r border-slate-700 p-1.5 text-center flex flex-col justify-center">
-            <p className="font-black text-[11px]">{data.company.legalName}</p>
+          <div className="col-span-6 border-r border-slate-700 p-2 text-center flex flex-col justify-center">
+            <p className="font-black text-xs">{data.company.legalName}</p>
             <p className="text-[10px]">
-              CNPJ: {data.company.cnpj} &nbsp; Fone: {data.company.phone}
+              CNPJ: {data.company.cnpj} &nbsp;&nbsp; Fone: {data.company.phone}
             </p>
             <p className="text-[10px]">{data.company.address}</p>
           </div>
-          <div className="col-span-3 p-1.5 text-[10px] space-y-0.5 flex flex-col justify-center">
+          <div className="col-span-3 p-2 text-[10px] space-y-0.5 flex flex-col justify-center">
             <p>
               <strong>Modelo:</strong> Personalizado
             </p>
@@ -335,94 +334,93 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
           </div>
         </div>
 
-        <div className="grid grid-cols-12 border border-slate-700 bg-slate-100 px-1.5 py-0.5 font-bold text-[10px] items-center">
-          <span className="col-span-3">Solicitada: {data.solicitadaData}</span>
+        <div className="grid grid-cols-12 border border-slate-700 bg-slate-100 px-2 py-1 font-bold text-[11px] items-center">
+          <span className="col-span-3">Solicitada Em: {data.solicitadaData}</span>
           <span className="col-span-2">às: {data.solicitadaHora}</span>
           <span className="col-span-4 text-center font-black">ORDEM DE COLETA</span>
           <span className="col-span-2 text-center font-black">
-            Nº {data.seqFormatted}/{data.year}
+            Nº: {data.seqFormatted} / {data.year}
           </span>
           <span className="col-span-1 text-right font-black">{viaLabel}</span>
         </div>
 
         <div className="grid grid-cols-12 border border-slate-700 text-[10px]">
-          <div className="col-span-5 border-r border-slate-700 px-1.5 py-0.5">
+          <div className="col-span-5 border-r border-slate-700 px-2 py-1">
             <strong>Comercial:</strong> {data.comercial}
           </div>
-          <div className="col-span-3 border-r border-slate-700 px-1.5 py-0.5">
-            <strong>Pedido:</strong> {data.pedido}
+          <div className="col-span-3 border-r border-slate-700 px-2 py-1">
+            <strong>Pedido Nº:</strong> {data.pedido}
           </div>
-          <div className="col-span-4 px-1.5 py-0.5">
-            <strong>Orçamento:</strong> {data.orcamento}
+          <div className="col-span-4 px-2 py-1">
+            <strong>Orçamento Nº:</strong> {data.orcamento}
           </div>
         </div>
 
         <div className="border border-slate-700 divide-y divide-slate-700 text-[10px]">
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Cliente:</strong> {data.clienteNome} ({data.protocol})
           </div>
           <div className="grid grid-cols-12">
-            <div className="col-span-8 border-r border-slate-700 px-1.5 py-0.5">
+            <div className="col-span-8 border-r border-slate-700 px-2 py-1">
               <strong>Remetente:</strong> {data.remetenteNome}
             </div>
-            <div className="col-span-4 px-1.5 py-0.5">
+            <div className="col-span-4 px-2 py-1">
               <strong>Fone:</strong> {data.remetenteTelefone}
             </div>
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Coleta:</strong> {data.remetenteEndereco} — {data.remetenteMunicipio}
+          <div className="px-2 py-1">
+            <strong>Local da coleta:</strong> {data.remetenteEndereco} — {data.remetenteMunicipio}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Ponto Ref.:</strong> {data.pontoReferencia}
           </div>
           <div className="grid grid-cols-12">
-            <div className="col-span-8 border-r border-slate-700 px-1.5 py-0.5">
+            <div className="col-span-8 border-r border-slate-700 px-2 py-1">
               <strong>Destinatário:</strong> {data.destinatarioNome}
             </div>
-            <div className="col-span-4 px-1.5 py-0.5">
+            <div className="col-span-4 px-2 py-1">
               <strong>Fone:</strong> {data.destinatarioTelefone}
             </div>
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Entrega:</strong> {data.destinatarioEndereco} — {data.destinatarioMunicipio}
+          <div className="px-2 py-1">
+            <strong>Local entrega:</strong> {data.destinatarioEndereco} — {data.destinatarioMunicipio}
           </div>
         </div>
 
         <div className="border border-slate-700 divide-y divide-slate-700 text-[10px]">
-          <div className="bg-slate-100 text-center font-black py-0.5 text-[10px]">
+          <div className="bg-slate-100 text-center font-black py-1 text-[11px]">
             Dados do carregamento
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Carga:</strong> Peso: {data.pesoBrutoFormatted} kg • Vol.: {data.volumes} • Valor:{' '}
-            {data.valorMercadoriaFormatted} • Entregas: {data.qtdEntregas}
+          <div className="px-2 py-1">
+            <strong>Dados da carga:</strong> Peso Solicitado: {data.pesoBrutoFormatted} kg - Volume Solicitado:{' '}
+            {data.volumes} - Valor Mercadoria: {data.valorMercadoriaFormatted} - QTD entregas: {data.qtdEntregas}
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Conteúdo:</strong> {data.produto} — Emb.: {data.embalagem}
+          <div className="px-2 py-1">
+            <strong>Conteúdo:</strong> {data.produto} - Embalagem: {data.embalagem}
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Veículo:</strong> {data.tipoVeiculo} | Cav.: {data.placaCavalo} • Carr.:{' '}
-            {data.placaCarreta} • Bitrem: {data.placaBitrem}
+          <div className="px-2 py-1">
+            <strong>Veículo(s):</strong> {data.tipoVeiculo} | Placa veículo: {data.placaCavalo} - Placa carreta:{' '}
+            {data.placaCarreta} - Placa bitrem: {data.placaBitrem}
           </div>
-          <div className="px-1.5 py-0.5">
-            <strong>Motorista:</strong> {data.motoristaNome} • CPF: {data.motoristaCpf} • RG:{' '}
-            {data.motoristaRg}
+          <div className="px-2 py-1">
+            <strong>Motorista:</strong> {data.motoristaNome} - CPF: {data.motoristaCpf} - RG: {data.motoristaRg}
           </div>
-          <div className="px-1.5 py-1">
-            <strong>Obs.:</strong> {data.observacoes}
+          <div className="px-2 py-1.5">
+            <strong>Observações:</strong> {data.observacoes}
           </div>
         </div>
 
-        <div className="flex items-end justify-between pt-2.5 px-1 text-[10px]">
+        <div className="flex items-end justify-between pt-4 px-1 text-[10px]">
           <div>
             {viaLabel === '1ª-VIA' ? (
               <span>{data.cidadeExtensoFooter}</span>
             ) : (
               <span className="font-bold">
-                Chegada: ___/___/_____ ___:___ &nbsp; Saída: ___/___/_____ ___:___
+                Chegada: ___/___/_____ às ___:___ &nbsp;&nbsp; Saída: ___/___/_____ às ___:___
               </span>
             )}
           </div>
-          <div className="w-48 border-t border-slate-800 text-center pt-0.5 font-bold">
+          <div className="w-56 border-t border-slate-800 text-center pt-1 font-bold">
             {data.company.legalName}
           </div>
         </div>
@@ -431,38 +429,38 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
   }
 
   return (
-    <div className="oc-sheet bg-white border border-slate-700 p-2 text-[10px] text-slate-900 space-y-1 shadow-xs rounded-md">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-        <div className="border border-slate-700 p-1.5 space-y-0.5">
+    <div className="bg-white border border-slate-700 p-2.5 text-[11px] text-slate-900 space-y-1.5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+        <div className="border border-slate-700 p-2 space-y-0.5">
           <img
             src={data.company.logoPath}
             alt="RODOVAR"
-            className="h-7 w-auto object-contain mb-0.5"
+            className="h-9 w-auto object-contain mb-1"
           />
           <p className="font-black text-[11px]">{data.company.legalName}</p>
           <p className="text-[10px]">
-            CNPJ: {data.company.cnpj} &nbsp; IE: {data.company.ie}
+            CNPJ: {data.company.cnpj} &nbsp;&nbsp; IE: {data.company.ie}
           </p>
           <p className="text-[10px]">{data.company.address}</p>
         </div>
         <div className="border border-slate-700 flex flex-col">
-          <div className="bg-slate-100 border-b border-slate-700 px-1.5 py-0.5 flex items-center justify-between font-black text-[11px]">
+          <div className="bg-slate-100 border-b border-slate-700 px-2 py-1 flex items-center justify-between font-black text-[11px]">
             <span>ORDEM DE COLETA</span>
             <span>
-              Nº {data.seqFormatted}/{data.year}
+              Nº: {data.seqFormatted} / {data.year}
             </span>
             <span>{viaLabel}</span>
           </div>
-          <div className="p-1.5 text-[10px] space-y-0.5">
+          <div className="p-2 text-[10px] space-y-0.5">
             <p>
               <strong>Cliente:</strong> {data.clienteNome}
             </p>
             <div className="flex justify-between gap-2">
-              <span className="truncate">
+              <span>
                 <strong>Município:</strong> {data.clienteMunicipio}
               </span>
-              <span className="shrink-0">
-                <strong>Tel.:</strong> {data.clienteTelefone}
+              <span>
+                <strong>Telefone:</strong> {data.clienteTelefone}
               </span>
             </div>
             <div className="flex justify-between gap-2">
@@ -481,27 +479,27 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 border border-slate-700 divide-x divide-slate-700 text-[10px]">
-        <div className="px-1.5 py-0.5 truncate">
+        <div className="px-2 py-1">
           <strong>Comercial:</strong> {data.comercial}
         </div>
-        <div className="px-1.5 py-0.5 truncate">
+        <div className="px-2 py-1">
           <strong>Orçamento:</strong> {data.orcamento}
         </div>
-        <div className="px-1.5 py-0.5 truncate">
+        <div className="px-2 py-1">
           <strong>Pedido:</strong> {data.pedido}
         </div>
-        <div className="px-1.5 py-0.5 truncate">
-          <strong>Solicitada:</strong> {data.solicitadaData} {data.solicitadaHora}
+        <div className="px-2 py-1">
+          <strong>Solicitada Em:</strong> {data.solicitadaData} {data.solicitadaHora}
         </div>
       </div>
 
       <div className="border border-slate-700">
         <div className="grid grid-cols-2 bg-slate-100 border-b border-slate-700 font-black text-[10px] text-center divide-x divide-slate-700">
-          <div className="py-0.5">LOCAL COLETA</div>
-          <div className="py-0.5">LOCAL ENTREGA</div>
+          <div className="py-1">LOCAL COLETA</div>
+          <div className="py-1">LOCAL ENTREGA</div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-slate-700 text-[10px]">
-          <div className="p-1.5 space-y-0.5">
+          <div className="p-2 space-y-0.5">
             <p>
               <strong>Remetente:</strong> {data.remetenteNome}
             </p>
@@ -513,7 +511,7 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
                 <strong>Bairro:</strong> {data.remetenteBairro}
               </span>
               <span>
-                <strong>Tel.:</strong> {data.remetenteTelefone}
+                <strong>Telefone:</strong> {data.remetenteTelefone}
               </span>
             </p>
             <p className="flex justify-between gap-2">
@@ -533,7 +531,7 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
               </span>
             </p>
           </div>
-          <div className="p-1.5 space-y-0.5">
+          <div className="p-2 space-y-0.5">
             <p>
               <strong>Destinatário:</strong> {data.destinatarioNome}
             </p>
@@ -545,7 +543,7 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
                 <strong>Bairro:</strong> {data.destinatarioBairro}
               </span>
               <span>
-                <strong>Tel.:</strong> {data.destinatarioTelefone}
+                <strong>Telefone:</strong> {data.destinatarioTelefone}
               </span>
             </p>
             <p className="flex justify-between gap-2">
@@ -566,78 +564,78 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
             </p>
           </div>
         </div>
-        <div className="border-t border-slate-700 px-1.5 py-0.5 text-[10px]">
+        <div className="border-t border-slate-700 px-2 py-1 text-[10px]">
           <strong>Ponto Ref.:</strong> {data.pontoReferencia}
         </div>
       </div>
 
       <div className="border border-slate-700 text-[10px]">
-        <div className="bg-slate-100 border-b border-slate-700 text-center font-black py-0.5">
+        <div className="bg-slate-100 border-b border-slate-700 text-center font-black py-1">
           DESCRIÇÃO DA CARGA A SER COLETADA
         </div>
         <div className="grid grid-cols-5 divide-x divide-slate-700 text-center font-bold border-b border-slate-700">
-          <div className="py-0.5">Produto</div>
-          <div className="py-0.5">Espécie</div>
-          <div className="py-0.5">Valor</div>
-          <div className="py-0.5">Volumes</div>
-          <div className="py-0.5">Peso Bruto</div>
+          <div className="py-1">Produto</div>
+          <div className="py-1">Espécie</div>
+          <div className="py-1">Valor</div>
+          <div className="py-1">Volumes</div>
+          <div className="py-1">Peso Bruto</div>
         </div>
         <div className="grid grid-cols-5 divide-x divide-slate-700 text-center">
-          <div className="py-1 px-1">{data.produto}</div>
-          <div className="py-1 px-1">{data.especie}</div>
-          <div className="py-1 px-1">{data.valorMercadoriaFormatted}</div>
-          <div className="py-1 px-1">{data.volumes}</div>
-          <div className="py-1 px-1">{data.pesoBrutoFormatted} kg</div>
+          <div className="py-1.5 px-1">{data.produto}</div>
+          <div className="py-1.5 px-1">{data.especie}</div>
+          <div className="py-1.5 px-1">{data.valorMercadoriaFormatted}</div>
+          <div className="py-1.5 px-1">{data.volumes}</div>
+          <div className="py-1.5 px-1">{data.pesoBrutoFormatted} kg</div>
         </div>
       </div>
 
-      <div className="border border-slate-700 px-1.5 py-1 text-[10px]">
+      <div className="border border-slate-700 px-2 py-1.5 text-[10px]">
         <strong>OBSERVAÇÕES:</strong> {data.observacoes}
       </div>
 
       <div className="border border-slate-700 divide-y divide-slate-700 text-[10px]">
         <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-slate-700">
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Motorista:</strong> {data.motoristaNome}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>CPF:</strong> {data.motoristaCpf}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>RG:</strong> {data.motoristaRg}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>CNH:</strong> {data.motoristaCnh}
           </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-slate-700">
-          <div className="px-1.5 py-0.5">
-            <strong>Veículo:</strong> {data.tipoVeiculo}
+          <div className="px-2 py-1">
+            <strong>Tipo de veículo:</strong> {data.tipoVeiculo}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Placa:</strong> {data.placaCavalo}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Carreta:</strong> {data.placaCarreta}
           </div>
-          <div className="px-1.5 py-0.5">
+          <div className="px-2 py-1">
             <strong>Bitrem:</strong> {data.placaBitrem}
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 border border-slate-700 divide-y sm:divide-y-0 sm:divide-x divide-slate-700 text-[10px]">
-        <div className="p-1.5 flex flex-col justify-between">
+        <div className="p-2 flex flex-col justify-between">
           <strong>Assinatura do Motorista:</strong>
-          <div className="mt-3 border-t border-slate-700 text-center pt-0.5">{data.motoristaNome}</div>
+          <div className="mt-5 border-t border-slate-700 text-center pt-0.5">{data.motoristaNome}</div>
         </div>
-        <div className="p-1.5 flex items-center justify-center font-bold">Data: ___/___/_____</div>
-        <div className="p-1.5 flex flex-col justify-between">
+        <div className="p-2 flex items-center justify-center font-bold">Data: ___/___/_____</div>
+        <div className="p-2 flex flex-col justify-between">
           <p>
-            <strong>Responsável:</strong> {data.usuarioResponsavel}
+            <strong>Responsável pela Operação:</strong> {data.usuarioResponsavel}
           </p>
-          <p className="mt-2.5 flex items-end gap-1.5">
-            <strong>Ass. Recebedor:</strong>
+          <p className="mt-4 flex items-end gap-2">
+            <strong>Ass. do Recebedor:</strong>
             <span className="flex-1 border-b border-slate-700 inline-block" />
           </p>
         </div>
@@ -667,19 +665,6 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
 }) => {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
-  const [viaPreviewMode, setViaPreviewMode] = useState<'1A' | '2A' | 'AMBAS'>('1A');
-
-  useEffect(() => {
-    if (!freight) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [freight, onClose]);
 
   const validationIssues = useMemo(() => {
     if (!freight) return [];
@@ -721,41 +706,32 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
     }
   };
 
-  const modalContent = (
-    <div
-      className="fixed inset-0 z-[90] bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-hidden"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Ordem de Coleta ${freight.protocol}`}
-    >
-      <div
-        className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[84dvh] min-h-0 border border-slate-200"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-4 py-2.5 bg-[#080B0D] text-white flex flex-wrap items-center justify-between gap-2 shrink-0">
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[93vh]">
+        <div className="px-5 py-3.5 bg-[#080B0D] text-white flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <FileText className="w-4 h-4 text-[#FFD400] shrink-0" />
             <span className="text-xs font-extrabold uppercase tracking-wider text-[#FFD400] truncate">
-              Ordem de Coleta {freight.empresaMarca === 'VL TRANSPORTES' ? 'VL' : 'RODOVAR'} — {freight.protocol}
+              Ordem de Coleta Oficial {freight.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : 'RODOVAR'} — {freight.protocol}
             </span>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
             {docData && (
               <>
                 <button
                   type="button"
                   disabled={pdfBusy}
                   onClick={() => void handleDownloadPdf()}
-                  className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-2.5 py-1 rounded-lg cursor-pointer disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-3 py-1.5 rounded-lg cursor-pointer disabled:opacity-60"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>{pdfBusy ? 'Gerando...' : 'Baixar PDF (2 vias A4)'}</span>
+                  <span>{pdfBusy ? 'Gerando PDF...' : 'Baixar PDF (2 vias A4)'}</span>
                 </button>
                 <button
                   type="button"
                   onClick={handlePrint}
-                  className="inline-flex items-center gap-1 bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-2.5 py-1 rounded-lg cursor-pointer"
+                  className="inline-flex items-center gap-1.5 bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Imprimir</span>
@@ -766,7 +742,7 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
               <button
                 type="button"
                 onClick={() => onShare(freight)}
-                className="inline-flex items-center gap-1 bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-2.5 py-1 rounded-lg cursor-pointer"
+                className="inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer"
               >
                 <Share2 className="w-3.5 h-3.5" />
                 <span>Compartilhar</span>
@@ -775,47 +751,15 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex items-center gap-1 bg-white/15 hover:bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-lg cursor-pointer transition-colors"
+              className="p-1 text-gray-300 hover:text-white cursor-pointer"
               aria-label="Fechar visualização"
-              title="Fechar (Esc)"
             >
-              <X className="w-4 h-4" />
-              <span className="hidden sm:inline">Fechar</span>
+              <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {docData && (
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
-            <span className="text-[11px] font-bold text-slate-600">
-              {docData.brand} • Nº <strong>{docData.seqFormatted}/{docData.year}</strong> • A4 (2 vias)
-            </span>
-            <div className="inline-flex items-center rounded-lg bg-slate-200/80 p-0.5 text-[11px] font-bold">
-              {(
-                [
-                  { id: '1A', label: '1ª Via' },
-                  { id: '2A', label: '2ª Via' },
-                  { id: 'AMBAS', label: '2 Vias A4' },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setViaPreviewMode(tab.id)}
-                  className={`px-2.5 py-1 rounded-md cursor-pointer transition ${
-                    viaPreviewMode === tab.id
-                      ? 'bg-[#080B0D] text-[#FFD400] shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="p-3 sm:p-4 overflow-y-auto space-y-3 bg-slate-100 flex-1 min-h-0">
+        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 bg-slate-100 flex-1">
           {modalError && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-800">
               {modalError}
@@ -823,7 +767,7 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
           )}
 
           {!docData ? (
-            <div className="bg-white rounded-xl border border-amber-300 p-4 space-y-2 text-xs text-slate-800">
+            <div className="bg-white rounded-xl border border-amber-300 p-5 space-y-2 text-xs text-slate-800">
               <p className="font-black text-sm text-amber-900">
                 Ordem de Coleta indisponível para impressão/PDF
               </p>
@@ -834,68 +778,58 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
               </ul>
             </div>
           ) : (
-            <div className="space-y-3">
-              {(viaPreviewMode === '1A' || viaPreviewMode === 'AMBAS') && (
-                <ViaSheetPreview data={docData} viaLabel="1ª-VIA" />
-              )}
-              {viaPreviewMode === 'AMBAS' && (
-                <div className="border-t-2 border-dashed border-slate-400 relative my-2">
-                  <span className="absolute -top-2 left-1/2 -translate-x-1/2 bg-slate-100 px-2 text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">
-                    Linha de corte — 2 vias na mesma folha A4
-                  </span>
-                </div>
-              )}
-              {(viaPreviewMode === '2A' || viaPreviewMode === 'AMBAS') && (
-                <ViaSheetPreview data={docData} viaLabel="2ª-VIA" />
-              )}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 px-1">
+                <span>
+                  Modelo selecionado automaticamente: <strong>{docData.brand}</strong> • Nº{' '}
+                  <strong>
+                    {docData.seqFormatted}/{docData.year}
+                  </strong>
+                </span>
+                <span>Formato A4 Retrato (1ª Via + 2ª Via na mesma folha)</span>
+              </div>
+
+              <ViaSheetPreview data={docData} viaLabel="1ª-VIA" />
+              <div className="border-t-2 border-dashed border-slate-400 relative">
+                <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-slate-100 px-2 text-[10px] font-bold text-slate-500 uppercase">
+                  Linha de destaque — 2 vias na mesma folha A4
+                </span>
+              </div>
+              <ViaSheetPreview data={docData} viaLabel="2ª-VIA" />
             </div>
           )}
         </div>
 
-        <div className="px-4 py-2.5 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
-          {docData && canConfirmDriverSend ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 flex-1">
-              <div className="text-xs text-emerald-950">
-                <p className="font-extrabold">
-                  Envio ao Motorista ({freight.motoristaNome || '—'})
-                </p>
-                <p className="text-[11px] text-emerald-800">
-                  {freight.checklistFechamento?.ordemColetaEnviadaMotorista
-                    ? `Confirmado por ${freight.checklistFechamento.ordemColetaEnviadaPorNome}`
-                    : 'Confirme após enviar o PDF ao motorista.'}
-                </p>
-              </div>
-              {!freight.checklistFechamento?.ordemColetaEnviadaMotorista && onConfirmDriverSend && (
-                <button
-                  type="button"
-                  disabled={actionBusy}
-                  onClick={onConfirmDriverSend}
-                  className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-xl text-xs cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Confirmar envio ao motorista</span>
-                </button>
-              )}
+        {docData && canConfirmDriverSend && (
+          <div className="px-5 py-3 bg-emerald-50 border-t border-emerald-200 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-emerald-950">
+              <p className="font-extrabold">
+                Envio da Ordem de Coleta ao Motorista ({freight.motoristaNome || '—'})
+              </p>
+              <p className="text-[11px]">
+                {freight.checklistFechamento?.ordemColetaEnviadaMotorista
+                  ? `Confirmado por ${freight.checklistFechamento.ordemColetaEnviadaPorNome} em ${
+                      freight.checklistFechamento.ordemColetaEnviadaEmFormatado ||
+                      freight.checklistFechamento.ordemColetaEnviadaEm ||
+                      ''
+                    }`
+                  : 'Após enviar o PDF ao motorista, confirme o envio para concluir a 5ª verificação.'}
+              </p>
             </div>
-          ) : (
-            <span className="text-[11px] text-slate-500 font-medium">
-              Pressione Esc ou clique em Fechar para voltar.
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3.5 py-1.5 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-extrabold text-slate-800 cursor-pointer ml-auto"
-          >
-            Fechar
-          </button>
-        </div>
+            {!freight.checklistFechamento?.ordemColetaEnviadaMotorista && onConfirmDriverSend && (
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={onConfirmDriverSend}
+                className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Confirmar envio ao motorista</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
-
-  if (typeof document !== 'undefined') {
-    return createPortal(modalContent, document.body);
-  }
-  return modalContent;
 };

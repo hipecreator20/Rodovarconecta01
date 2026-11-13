@@ -8,4 +8,3 @@ body{font-size:14px;font-weight:400}input,select,textarea{font-size:14px}h1,h2{f
 @media(min-width:1600px){.fa-workspace:has(.fa-detail-panel){grid-template-columns:minmax(0,1fr) minmax(500px,600px)}.fa-detail-panel{width:100%}}
 @media(max-width:600px){.fa-detail-body{padding:16px}.fa-detail-heading h2{font-size:22px}.fa-status{max-width:60%}}
 .fa-detail-body strong,.fa-detail-body dd,.fa-detail-body p,.fa-detail-heading p{font-size:14px!important;line-height:1.5!important;font-weight:500}.fa-detail-body .fa-label,.fa-detail-body dt,.fa-detail-body time,.fa-card-location time{font-size:12px!important;line-height:1.5!important;font-weight:500}.fa-card-operator strong{font-size:14px;font-weight:500}.fa-detail-heading p{overflow-wrap:break-word}
-.oc-sheet,.oc-sheet *{line-height:1.25!important}.oc-sheet [class*="text-[9"],.oc-sheet [class*="text-[10"]{font-size:10px!important}.oc-sheet [class*="text-[11"]{font-size:11px!important}

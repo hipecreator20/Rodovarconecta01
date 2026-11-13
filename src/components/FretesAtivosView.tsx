@@ -30,7 +30,6 @@ import {
   Upload,
   User,
   X,
-  ClipboardPaste,
 } from 'lucide-react';
 import {
   CarrierBrand,
@@ -45,7 +44,6 @@ import {
   UnifiedFreightRecord,
 } from '../types';
 import {
-  apiCreateCommercialFreight,
   apiDownloadFreightAttachment,
   apiFetchFreightsList,
   apiMonitoramentoAction,
@@ -71,7 +69,6 @@ import {
   invalidateFreightQueriesAfterMutation,
 } from '../lib/freightQueryCache';
 import {
-  canAccessComercialFreights,
   canAccessExpedicaoFreights,
   canOperateMonitoring,
   canTransferFreightResponsibility,
@@ -83,8 +80,6 @@ import {
   formatSituacaoMonitoramentoLabel,
 } from './MeusFretesComercialView';
 import { OrdemColetaModal } from './OrdemColetaDocument';
-import { ImportFreightScriptModal } from './ImportFreightScriptModal';
-import { ParsedTrafficScript } from '../lib/carrierLogos';
 import { CorporateModal } from './ui/CorporateModal';
 import './FretesAtivosView.css';
 
@@ -408,7 +403,6 @@ interface FretesAtivosViewProps {
   selectedFreightIdFromNotification?: string | null;
   onClearSelectedNotificationFreight?: () => void;
   onSwitchToExpedicao?: () => void;
-  onSwitchToComercial?: () => void;
   onSyncNewFreightToFinanceiro?: (item: ActiveFreightCardItem) => void;
   onSyncStageToFinanceiro?: (code: string, stage: ActiveFreightStage) => void;
 }
@@ -418,13 +412,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   selectedFreightIdFromNotification,
   onClearSelectedNotificationFreight,
   onSwitchToExpedicao,
-  onSwitchToComercial,
 }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [orderModalFreight, setOrderModalFreight] = useState<UnifiedFreightRecord | null>(null);
-  const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
-  const canImportComercialScript = useMemo(() => canAccessComercialFreights(currentUser), [currentUser]);
 
   const isOperationalProfile = useMemo(
     () =>
@@ -1151,16 +1142,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
               >
                 <ArrowRight className="w-3.5 h-3.5" />
                 <span>Ir para Expedição</span>
-              </button>
-            )}
-            {canImportComercialScript && (
-              <button
-                type="button"
-                onClick={() => setIsScriptModalOpen(true)}
-                className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-white/95 text-slate-950 px-3 py-1 rounded-lg hover:bg-white transition cursor-pointer"
-              >
-                <ClipboardPaste className="w-3.5 h-3.5" />
-                <span>Importar Script</span>
               </button>
             )}
           </div>
@@ -2627,77 +2608,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           onClose={() => setOrderModalFreight(null)}
         />
       )}
-      <ImportFreightScriptModal
-        isOpen={isScriptModalOpen}
-        onClose={() => setIsScriptModalOpen(false)}
-        importDirectLabel="Importar para Meus Fretes"
-        onImportDirect={async (parsed: Partial<ParsedTrafficScript>) => {
-          const valorCobradoClienteCentavos =
-            parsed.valorFreteEmpresa && parsed.valorFreteEmpresa > 0
-              ? Math.round(parsed.valorFreteEmpresa * 100)
-              : 0;
-          const valorContratadoCentavos =
-            parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
-              ? Math.round(parsed.valorFreteMotorista * 100)
-              : 0;
-          const res = await apiCreateCommercialFreight({
-            empresaMarca:
-              parsed.empresaMarca === 'VL TRANSPORTES' || parsed.empresaMarca === 'RODOVAR'
-                ? parsed.empresaMarca
-                : 'RODOVAR',
-            unidadeOperacional:
-              parsed.unidadeOperacional ||
-              ((currentUser.location || 'BA - Salvador') as OperationalUnit),
-            cliente: (parsed.cliente || '').trim(),
-            clienteCnpj: (parsed.clienteCnpj || '').trim(),
-            clienteContato: (parsed.telefoneCliente || '').trim(),
-            origemCidadeUf: (parsed.origem || '').trim(),
-            enderecoColeta: (parsed.enderecoColeta || '').trim(),
-            destinoCidadeUf: (parsed.destino || '').trim(),
-            enderecoEntrega: (parsed.enderecoEntrega || '').trim(),
-            tipoCarga: (parsed.tipoCarga || '').trim(),
-            pesoKg: parsed.pesoKg || 0,
-            volumes: parsed.volumes || 0,
-            veiculoNecessario: (parsed.veiculoNecessario || '').trim(),
-            dataColetaIso: parsed.dataColetaIso || '',
-            janelaColetaInicio: '',
-            janelaColetaFim: '',
-            dataEntregaPrevistaIso: '',
-            janelaEntregaInicio: '',
-            janelaEntregaFim: '',
-            valorCobradoClienteCentavos,
-            valorContratadoCentavos,
-            condicoesComerciais: parsed.condicoesPagamento || '',
-            condicoesOperacionais: '',
-            condicoesPagamento: parsed.condicoesPagamento || '',
-            observacoes: parsed.observacoes || '',
-            comercialScriptRef: parsed.comercialResponsavel || '',
-            motoristaNome: parsed.motoristaNome || '',
-            motoristaCpf: parsed.motoristaCpf || '',
-            motoristaTelefone: parsed.motoristaTelefone || '',
-            emergenciaNome: parsed.emergenciaNome || '',
-            emergenciaTelefone: parsed.emergenciaTelefone || '',
-            placaVeiculo: parsed.placaVeiculo || '',
-            favorecidoPagamento: parsed.favorecido || '',
-            tipoChavePix: parsed.tipoChavePix || '',
-            chavePix: parsed.chavePix || '',
-            bancoPagamento: parsed.banco || '',
-            confirmAndSendToExpedicao: false,
-            idempotencyKey: `ativos-script-import-${currentUser.id}-${Date.now()}`,
-          });
-          if (!res.ok || !res.freight) {
-            throw new Error(res.error || 'Não foi possível importar o frete pelo script.');
-          }
-          await appQueryClient.invalidateQueries({ queryKey: freightQueryKeys.userRoot(currentUser.id) });
-          setToastMsg(
-            `Frete ${res.freight.protocol} importado para Meus Fretes — Comercial!`
-          );
-          setTimeout(() => setToastMsg(null), 5000);
-          if (onSwitchToComercial) {
-            onSwitchToComercial();
-          }
-        }}
-      />
     </div>
   );
 };

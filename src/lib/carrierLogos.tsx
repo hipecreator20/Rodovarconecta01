@@ -155,35 +155,23 @@ export async function getCarrierLogoPngDataUrl(brand: CarrierBrand = 'RODOVAR'):
 export interface ParsedTrafficScript {
   empresaMarca: CarrierBrand;
   dataCarregamento: string;
-  dataColetaIso: string;
   unidadeOperacional: OperationalUnit;
   comercialResponsavel: string;
   expedicaoResponsavel: string;
   cliente: string;
-  clienteCnpj: string;
   telefoneCliente: string;
   motoristaNome: string;
-  motoristaCpf: string;
   motoristaTelefone: string;
   emergenciaNome: string;
   emergenciaTelefone: string;
   origem: string;
-  enderecoColeta: string;
   destino: string;
-  enderecoEntrega: string;
-  tipoCarga: string;
-  pesoKg: number;
-  volumes: number;
-  veiculoNecessario: string;
-  placaVeiculo: string;
   valorFreteEmpresa: number;
   valorFreteMotorista: number;
   favorecido: string;
   tipoChavePix: 'CPF/CNPJ' | 'Celular' | 'E-mail' | 'Chave Aleatória';
   chavePix: string;
   banco: string;
-  observacoes: string;
-  condicoesPagamento: string;
 }
 
 export const SAMPLE_TRAFFIC_SCRIPT = `EMPRESA: RODOVAR
@@ -206,58 +194,9 @@ TIPO PIX: CPF/CNPJ
 CHAVE PIX: 14.528.901/0001-88
 BANCO: 260 - Nu Pagamentos`;
 
-function normalizeScriptKey(rawKey: string): string {
-  return String(rawKey || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^A-Z0-9\s]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
-}
-
-function parseBrOrIsoDateToIso(val: string): string {
-  const clean = String(val || '').trim();
-  if (!clean) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
-  const br = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(clean);
-  if (br) {
-    const day = br[1].padStart(2, '0');
-    const month = br[2].padStart(2, '0');
-    const year = br[3].length === 2 ? `20${br[3]}` : br[3];
-    return `${year}-${month}-${day}`;
-  }
-  return '';
-}
-
-function inferPixKeyType(pixKey: string): 'CPF/CNPJ' | 'Celular' | 'E-mail' | 'Chave Aleatória' {
-  const clean = String(pixKey || '').trim();
-  if (clean.includes('@')) return 'E-mail';
-  const digits = clean.replace(/\D/g, '');
-  if (digits.length === 14) return 'CPF/CNPJ';
-  if (digits.length === 10 || (digits.length === 11 && /^[1-9]{2}9/.test(digits))) {
-    return 'Celular';
-  }
-  if (digits.length === 11) return 'CPF/CNPJ';
-  if (clean.length >= 24) return 'Chave Aleatória';
-  return 'CPF/CNPJ';
-}
-
-function detectPaymentConditionFromObs(text: string): string {
-  const upper = String(text || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase();
-  if (!upper) return '';
-  if (upper.includes('INTEGRAL') || upper.includes('100%')) return 'Integral (100%)';
-  if (upper.includes('70') && upper.includes('30')) return '70% Adiantaento / 30% Saldo na Entrega';
-  if (upper.includes('80') && upper.includes('20')) return '80% Adiantamento / 20% Saldo';
-  return '';
-}
-
 export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTrafficScript> {
   const result: Partial<ParsedTrafficScript> = {};
-  const lines = String(rawText || '')
+  const lines = rawText
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -272,25 +211,20 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
   };
 
   for (const line of lines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx < 0) continue;
-    const rawKey = line.slice(0, colonIdx);
-    const key = normalizeScriptKey(rawKey);
-    const val = line.slice(colonIdx + 1).replace(/\s+/g, ' ').trim();
-    if (!key) continue;
+    const [rawKey, ...rest] = line.split(':');
+    if (!rawKey || rest.length === 0) continue;
+    const key = rawKey.toUpperCase().trim();
+    const val = rest.join(':').trim();
+    if (!val) continue;
 
     if (key.includes('EMPRESA') || key.includes('MARCA')) {
-      if (!val) continue;
       const upper = val.toUpperCase();
       if (upper.includes('VL')) result.empresaMarca = 'VL TRANSPORTES';
       else result.empresaMarca = 'RODOVAR';
     } else if (key.includes('DATA')) {
       result.dataCarregamento = val;
-      result.dataColetaIso = parseBrOrIsoDateToIso(val);
     } else if (key.includes('UNIDADE') || key.includes('FILIAL')) {
-      if (!val) continue;
-      const upper = val.toUpperCase();
-      if (upper.includes('SP') || upper.includes('GUARULHOS') || upper.includes('GRU')) {
+      if (val.toUpperCase().includes('SP') || val.toUpperCase().includes('GUARULHOS')) {
         result.unidadeOperacional = 'SP - Guarulhos';
       } else {
         result.unidadeOperacional = 'BA - Salvador';
@@ -301,62 +235,27 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
       result.expedicaoResponsavel = val;
     } else if (key.includes('TELEFONE CLIENTE') || key.includes('TEL CLIENTE')) {
       result.telefoneCliente = val;
-    } else if (key.includes('CNPJ')) {
-      result.clienteCnpj = val;
     } else if (key.includes('CLIENTE')) {
-      result.cliente = val ? val.toUpperCase() : '';
-    } else if (
-      key.includes('TELEFONE MOTORISTA') ||
-      key.includes('TEL MOTORISTA') ||
-      key.includes('CEL MOTORISTA')
-    ) {
+      result.cliente = val.toUpperCase();
+    } else if (key.includes('TELEFONE MOTORISTA') || key.includes('TEL MOTORISTA') || key.includes('CEL MOTORISTA')) {
       result.motoristaTelefone = val;
-    } else if (key === 'CPF' || key.includes('CPF MOTORISTA')) {
-      result.motoristaCpf = val;
     } else if (key.includes('MOTORISTA') && !key.includes('FRETE')) {
       result.motoristaNome = val;
     } else if (key.includes('TELEFONE EMERG') || key.includes('TEL EMERG')) {
       result.emergenciaTelefone = val;
     } else if (key.includes('EMERG')) {
       result.emergenciaNome = val;
-    } else if (key.includes('ENDERECO COLETA') || key.includes('LOCAL COLETA')) {
-      result.enderecoColeta = val;
-    } else if (key.includes('ENDERECO ENTREGA') || key.includes('LOCAL ENTREGA')) {
-      result.enderecoEntrega = val;
     } else if (key.includes('ORIGEM') || key.includes('COLETA')) {
-      result.origem = val ? val.toUpperCase() : '';
+      result.origem = val.toUpperCase();
     } else if (key.includes('DESTINO') || key.includes('ENTREGA')) {
-      result.destino = val ? val.toUpperCase() : '';
-    } else if (key.includes('PRODUTO') || key.includes('MATERIAL') || key === 'CARGA') {
-      result.tipoCarga = val;
-    } else if (key.includes('PESO')) {
-      const n = parseFloat(val.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
-      if (Number.isFinite(n) && n > 0) result.pesoKg = n;
-    } else if (key.includes('VOLUME')) {
-      const n = parseInt(val.replace(/\D/g, ''), 10);
-      if (Number.isFinite(n) && n > 0) result.volumes = n;
-    } else if (key.includes('VEICULO')) {
-      result.veiculoNecessario = val;
-    } else if (key === 'PLACA' || key.includes('PLACA VEICULO')) {
-      result.placaVeiculo = val.toUpperCase();
-    } else if (
-      key.includes('FRETE EMP') ||
-      key.includes('FRETE EMPRESA') ||
-      key.includes('VALOR EMPRESA') ||
-      key.includes('FRETE CLIENTE')
-    ) {
-      result.valorFreteEmpresa = val ? parseMoney(val) : 0;
-    } else if (
-      key.includes('FRETE MOT') ||
-      key.includes('FRETE MOTORISTA') ||
-      key.includes('VALOR MOTORISTA') ||
-      key.includes('VALOR FRETE')
-    ) {
-      result.valorFreteMotorista = val ? parseMoney(val) : 0;
+      result.destino = val.toUpperCase();
+    } else if (key.includes('FRETE EMPRESA') || key.includes('VALOR EMPRESA')) {
+      result.valorFreteEmpresa = parseMoney(val);
+    } else if (key.includes('FRETE MOTORISTA') || key.includes('VALOR MOTORISTA') || key.includes('VALOR FRETE')) {
+      result.valorFreteMotorista = parseMoney(val);
     } else if (key.includes('FAVORECIDO') || key.includes('RECEBEDOR')) {
       result.favorecido = val;
     } else if (key.includes('TIPO PIX') || key.includes('TIPO DE CHAVE')) {
-      if (!val) continue;
       const upper = val.toUpperCase();
       if (upper.includes('CELULAR') || upper.includes('TELEFONE')) result.tipoChavePix = 'Celular';
       else if (upper.includes('MAIL')) result.tipoChavePix = 'E-mail';
@@ -364,17 +263,8 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
       else result.tipoChavePix = 'CPF/CNPJ';
     } else if (key.includes('PIX')) {
       result.chavePix = val;
-      if (val && !result.tipoChavePix) {
-        result.tipoChavePix = inferPixKeyType(val);
-      }
     } else if (key.includes('BANCO') || key.includes('INSTITUI')) {
       result.banco = val;
-    } else if (key === 'OBS' || key.startsWith('OBS ') || key.includes('OBSERVA')) {
-      result.observacoes = val;
-      const paymentMode = detectPaymentConditionFromObs(val);
-      if (paymentMode) {
-        result.condicoesPagamento = paymentMode;
-      }
     }
   }
 

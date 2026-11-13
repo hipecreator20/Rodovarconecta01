@@ -2255,10 +2255,7 @@ export function registerUnifiedFreightRoutes(
     const enderecoColeta = String(body.enderecoColeta || '').trim().slice(0, 240);
     const enderecoEntrega = String(body.enderecoEntrega || '').trim().slice(0, 240);
     const tipoCarga = String(body.tipoCarga || '').trim().slice(0, 120);
-    const dataColetaIso =
-      body.dataColetaIso !== undefined
-        ? String(body.dataColetaIso || '').trim().slice(0, 10)
-        : sp.dateOnlyIso;
+    const dataColetaIso = String(body.dataColetaIso || sp.dateOnlyIso).slice(0, 10);
 
     // If confirming & sending immediately, validate minimum contracting data (never requiring driver or detailed delivery address if not yet informed)
     let assignedExpUser: Employee | undefined;
@@ -2332,46 +2329,20 @@ export function registerUnifiedFreightRoutes(
       volumes: Math.max(0, Math.round(Number(body.volumes) || 0)),
       veiculoNecessario: String(body.veiculoNecessario || '').trim().slice(0, 100),
       dataColetaIso,
-      janelaColetaInicio:
-        body.janelaColetaInicio !== undefined
-          ? String(body.janelaColetaInicio || '').trim().slice(0, 5)
-          : '08:00',
-      janelaColetaFim:
-        body.janelaColetaFim !== undefined
-          ? String(body.janelaColetaFim || '').trim().slice(0, 5)
-          : '12:00',
-      dataEntregaPrevistaIso:
-        body.dataEntregaPrevistaIso !== undefined
-          ? String(body.dataEntregaPrevistaIso || '').trim().slice(0, 10)
-          : sp.dateOnlyIso,
-      janelaEntregaInicio:
-        body.janelaEntregaInicio !== undefined
-          ? String(body.janelaEntregaInicio || '').trim().slice(0, 5)
-          : '14:00',
-      janelaEntregaFim:
-        body.janelaEntregaFim !== undefined
-          ? String(body.janelaEntregaFim || '').trim().slice(0, 5)
-          : '18:00',
+      janelaColetaInicio: String(body.janelaColetaInicio || '08:00').slice(0, 5),
+      janelaColetaFim: String(body.janelaColetaFim || '12:00').slice(0, 5),
+      dataEntregaPrevistaIso: String(body.dataEntregaPrevistaIso || sp.dateOnlyIso).slice(0, 10),
+      janelaEntregaInicio: String(body.janelaEntregaInicio || '14:00').slice(0, 5),
+      janelaEntregaFim: String(body.janelaEntregaFim || '18:00').slice(0, 5),
       comercialResponsavelId: user.id,
       comercialResponsavelNome: user.name,
-      comercialScriptRef: String(body.comercialScriptRef || '').trim().slice(0, 120) || undefined,
       expedicaoResponsavelId: confirmAndSendToExpedicao && assignedExpUser ? assignedExpUser.id : null,
       expedicaoResponsavelNome:
         confirmAndSendToExpedicao && assignedExpUser ? assignedExpUser.name : null,
       monitoramentoResponsavelId: null,
       monitoramentoResponsavelNome: null,
-      motoristaNome: String(body.motoristaNome || '').trim().slice(0, 140) || undefined,
-      motoristaCpf: String(body.motoristaCpf || '').trim().slice(0, 24) || undefined,
-      motoristaTelefone: String(body.motoristaTelefone || '').trim().slice(0, 40) || undefined,
-      emergenciaNome: String(body.emergenciaNome || '').trim().slice(0, 140) || undefined,
-      emergenciaTelefone: String(body.emergenciaTelefone || '').trim().slice(0, 40) || undefined,
-      placaVeiculo: String(body.placaVeiculo || '').trim().toUpperCase().slice(0, 16) || undefined,
       valorCobradoClienteCentavos: valorCobradoCentavos,
       valorContratadoCentavos,
-      favorecidoPagamento: String(body.favorecidoPagamento || '').trim().slice(0, 140) || undefined,
-      bancoPagamento: String(body.bancoPagamento || '').trim().slice(0, 120) || undefined,
-      tipoChavePix: String(body.tipoChavePix || '').trim().slice(0, 40) || undefined,
-      chavePix: String(body.chavePix || '').trim().slice(0, 160) || undefined,
       condicoesComerciais: String(body.condicoesComerciais || '').trim().slice(0, 1000),
       condicoesOperacionais: String(body.condicoesOperacionais || '').trim().slice(0, 1000),
       condicoesPagamento: String(body.condicoesPagamento || '').trim().slice(0, 600) || undefined,
@@ -2657,39 +2628,6 @@ export function registerUnifiedFreightRoutes(
       }
       if (body.observacoes !== undefined) {
         freight.observacoes = String(body.observacoes).trim().slice(0, 1000) || undefined;
-      }
-      if (body.comercialScriptRef !== undefined) {
-        freight.comercialScriptRef = String(body.comercialScriptRef).trim().slice(0, 120) || undefined;
-      }
-      if (body.motoristaNome !== undefined) {
-        freight.motoristaNome = String(body.motoristaNome).trim().slice(0, 140) || undefined;
-      }
-      if (body.motoristaTelefone !== undefined) {
-        freight.motoristaTelefone = String(body.motoristaTelefone).trim().slice(0, 40) || undefined;
-      }
-      if (body.emergenciaNome !== undefined) {
-        freight.emergenciaNome = String(body.emergenciaNome).trim().slice(0, 140) || undefined;
-      }
-      if (body.emergenciaTelefone !== undefined) {
-        freight.emergenciaTelefone = String(body.emergenciaTelefone).trim().slice(0, 40) || undefined;
-      }
-      if (body.valorContratadoCentavos !== undefined) {
-        freight.valorContratadoCentavos = Math.max(0, Math.round(Number(body.valorContratadoCentavos) || 0));
-      }
-      if (body.favorecidoPagamento !== undefined) {
-        freight.favorecidoPagamento = String(body.favorecidoPagamento).trim().slice(0, 140) || undefined;
-      }
-      if (body.bancoPagamento !== undefined) {
-        freight.bancoPagamento = String(body.bancoPagamento).trim().slice(0, 120) || undefined;
-      }
-      if (body.tipoChavePix !== undefined) {
-        freight.tipoChavePix = String(body.tipoChavePix).trim().slice(0, 40) || undefined;
-      }
-      if (body.chavePix !== undefined) {
-        freight.chavePix = String(body.chavePix).trim().slice(0, 160) || undefined;
-      }
-      if (body.condicoesPagamento !== undefined) {
-        freight.condicoesPagamento = String(body.condicoesPagamento).trim().slice(0, 600) || undefined;
       }
 
       const sp = formatSaoPauloDateTime();
