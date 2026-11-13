@@ -43,6 +43,8 @@ import {
   loadSystemConfigFromNeon,
   persistEconomicModeToNeon,
   loadEconomicModeFromNeon,
+  hasPendingNeonWrites,
+  flushPendingNeonWrites,
 } from './neon.ts';
 import { resolveDataRoot } from './src/server/dataRoot.ts';
 import express from 'express';
@@ -1097,20 +1099,48 @@ function loadOrInitDatabase(): ServerDatabase {
     }
   }
 
+  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
+    console.warn(
+      'Local DB seed absent in serverless/Neon environment; booting empty skeleton until Neon sync.'
+    );
+    return {
+      users: [],
+      loginLocks: {},
+      sessions: {},
+      passwordResetTokens: [],
+      accessDecisions: [],
+      auditLogs: [],
+      systemConfig: getDefaultSystemConfig(),
+      accessPolicy: {
+        protectedAdminUid: 'emp-admin-master',
+        authorizedUids: [],
+        version: 1,
+      },
+    };
+  }
+
   throw new Error('Banco ausente ou inválido. Restaure o banco existente; criação automática de contas desabilitada.');
 }
 
 function saveLocalDbFile(db: ServerDatabase): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
+    fs.renameSync(tmpFile, DB_FILE_PATH);
+  } catch (err) {
+    console.warn('saveLocalDbFile notice:', (err as Error).message);
   }
-  const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
-  fs.renameSync(tmpFile, DB_FILE_PATH);
 }
 
 function saveDatabase(db: ServerDatabase): void {
   saveLocalDbFile(db);
+
+  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
+    return;
+  }
 
   // Asynchronous replication of lean core operational state to Neon PostgreSQL
   // (Heavy modules like mural, drivers and customerCovers are replicated in dedicated snapshots)
@@ -1132,6 +1162,9 @@ function saveDatabase(db: ServerDatabase): void {
 
 async function saveDatabaseAsync(db: ServerDatabase): Promise<void> {
   saveLocalDbFile(db);
+  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
+    return;
+  }
   await Promise.allSettled([
     persistStateSnapshotToNeon('rodovar-core-state', {
       users: db.users,
@@ -1195,20 +1228,22 @@ let dbState: ServerDatabase = loadOrInitDatabase();
 const localNeonTimestamps: Record<string, number> = {};
 let lastNeonSyncCheckMs = 0;
 let lastFreightNeonSyncCheckMs = 0;
-let activeNeonSyncPromise: Promise<void> | null = null;
-let activeFreightNeonSyncPromise: Promise<void> | null = null;
+let activeNeonSyncPromise: Promise<boolean> | null = null;
+let activeFreightNeonSyncPromise: Promise<boolean> | null = null;
 let initialNeonBootDone = false;
 let initialNeonBootPromise: Promise<void> | null = null;
 let cachedEconomicMode: { value: boolean; fetchedAtMs: number } | null = null;
 
 async function ensureNeonBootstrapped(): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || initialNeonBootDone) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || (initialNeonBootDone && dbState.users.length > 0)) return;
   if (initialNeonBootPromise) return initialNeonBootPromise;
   initialNeonBootPromise = (async () => {
     try {
       await ensureNeonReady();
-      await syncAllModulesFromNeonIfNeeded(true);
-      initialNeonBootDone = true;
+      const syncOk = await syncAllModulesFromNeonIfNeeded(true);
+      if (syncOk && dbState.users.length > 0) {
+        initialNeonBootDone = true;
+      }
     } catch (err) {
       console.warn('Neon bootstrap notice:', (err as Error).message);
     } finally {
@@ -1218,11 +1253,20 @@ async function ensureNeonBootstrapped(): Promise<void> {
   return initialNeonBootPromise;
 }
 
-async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+async function syncAllModulesFromNeonIfNeeded(force = false): Promise<boolean> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
   const now = Date.now();
-  const minCooldownMs = cachedEconomicMode?.value ? 10000 : 5000;
-  if (!force && now - lastNeonSyncCheckMs < minCooldownMs) return;
+  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  const minCooldownMs = force
+    ? 0
+    : isVercelEnv
+      ? cachedEconomicMode?.value
+        ? 2500
+        : 1000
+      : cachedEconomicMode?.value
+        ? 10000
+        : 5000;
+  if (!force && now - lastNeonSyncCheckMs < minCooldownMs) return true;
   if (activeNeonSyncPromise) return activeNeonSyncPromise;
 
   activeNeonSyncPromise = (async () => {
@@ -1445,8 +1489,10 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
       if (tasks.length > 0) {
         await Promise.all(tasks);
       }
-    } catch {
-      // Non-blocking fallback to in-memory state
+      return true;
+    } catch (err) {
+      console.warn('Neon syncAll notice:', (err as Error).message);
+      return false;
     } finally {
       activeNeonSyncPromise = null;
     }
@@ -1455,11 +1501,20 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
   return activeNeonSyncPromise;
 }
 
-async function syncFreightsOnlyFromNeonIfNeeded(): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+async function syncFreightsOnlyFromNeonIfNeeded(force = false): Promise<boolean> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
   const now = Date.now();
-  const minCooldownMs = cachedEconomicMode?.value ? 15000 : 8000;
-  if (now - lastFreightNeonSyncCheckMs < minCooldownMs) return;
+  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  const minCooldownMs = force
+    ? 0
+    : isVercelEnv
+      ? cachedEconomicMode?.value
+        ? 2500
+        : 1000
+      : cachedEconomicMode?.value
+        ? 15000
+        : 8000;
+  if (!force && now - lastFreightNeonSyncCheckMs < minCooldownMs) return true;
   if (activeFreightNeonSyncPromise) return activeFreightNeonSyncPromise;
 
   activeFreightNeonSyncPromise = (async () => {
@@ -1467,13 +1522,15 @@ async function syncFreightsOnlyFromNeonIfNeeded(): Promise<void> {
       lastFreightNeonSyncCheckMs = Date.now();
       const remoteTs = await fetchNeonStateTimestamps();
       const freightTs = remoteTs['rodovar-freights-state'];
-      if (freightTs && localNeonTimestamps['rodovar-freights-state'] !== freightTs) {
+      if (freightTs && (force || localNeonTimestamps['rodovar-freights-state'] !== freightTs)) {
         const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
         if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
         localNeonTimestamps['rodovar-freights-state'] = freightTs;
       }
-    } catch {
-      // Non-blocking fallback to in-memory/Neon SQL query
+      return true;
+    } catch (err) {
+      console.warn('Neon syncFreights notice:', (err as Error).message);
+      return false;
     } finally {
       activeFreightNeonSyncPromise = null;
     }
@@ -1641,11 +1698,29 @@ function countActiveAdmins(): number {
   ).length;
 }
 
-const STATELESS_SESSION_SECRET = (process.env.SESSION_SECRET || '').trim();
+const rawSessionSecret = (process.env.SESSION_SECRET || '').trim();
+let STATELESS_SESSION_SECRET = rawSessionSecret;
 if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
-  throw new Error(
-    'Configuração ausente ou insegura: A variável de ambiente SESSION_SECRET é obrigatória e deve possuir no mínimo 32 caracteres.'
-  );
+  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
+    const seedMaterial = (
+      process.env.DATABASE_URL ||
+      process.env.POSTGRES_URL ||
+      process.env.POSTGRES_PRISMA_URL ||
+      process.env.VERCEL_PROJECT_ID ||
+      'rodovar-conecta-serverless-default-session-seed'
+    ).trim();
+    STATELESS_SESSION_SECRET = crypto
+      .createHash('sha256')
+      .update(`rodovar-session-secret:${seedMaterial}`)
+      .digest('hex');
+    console.warn(
+      'SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo determinístico derivado do ambiente.'
+    );
+  } else {
+    throw new Error(
+      'Configuração ausente ou insegura: A variável de ambiente SESSION_SECRET é obrigatória e deve possuir no mínimo 32 caracteres.'
+    );
+  }
 }
 const revokedSessionIds = new Set<string>();
 const revokedUserAfterMap = new Map<string, number>();
@@ -1859,13 +1934,60 @@ export function createExpressApp(): express.Express {
   }
 
   const app = express();
-  app.use('/api', async (req, res, next) => {
+  app.set('trust proxy', 1);
+
+  const installNeonWriteFlush = (req: Request, res: Response, next: NextFunction) => {
+    if (
+      !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ||
+      !isNeonConfigured ||
+      isIsolatedTestEnv()
+    ) {
+      return next();
+    }
+    const origEnd = res.end.bind(res);
+    let flushing = false;
+    let finished = false;
+    (res as any).end = (...args: any[]) => {
+      if (finished) return res;
+      if (!flushing && hasPendingNeonWrites()) {
+        flushing = true;
+        void flushPendingNeonWrites()
+          .catch((err) => console.warn('Neon flush on response end notice:', (err as Error).message))
+          .finally(() => {
+            finished = true;
+            origEnd(...args);
+          });
+        return res;
+      }
+      finished = true;
+      return origEnd(...args);
+    };
+    next();
+  };
+
+  app.use('/receber-comprovante', installNeonWriteFlush, async (req, _res, next) => {
+    if (req.method === 'POST' && isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonBootstrapped();
+      await syncAllModulesFromNeonIfNeeded(true);
+    }
+    next();
+  });
+
+  app.use('/api', installNeonWriteFlush, async (req, res, next) => {
     const isLightPath =
       req.path === '/health' ||
       req.path === '/neon/health' ||
       req.path.startsWith('/system-config/assets/') ||
       req.path === '/system-config/version';
     const isFreightPath = req.path.startsWith('/meus-fretes');
+    const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+    const forceSync =
+      isVercelEnv &&
+      (isMutation ||
+        req.path.startsWith('/auth') ||
+        req.path.startsWith('/pagamentos/shared-staging/'));
+
     if (isFreightPath) {
       res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
@@ -1874,9 +1996,18 @@ export function createExpressApp(): express.Express {
     if (!isLightPath) {
       await ensureNeonBootstrapped();
       if (isFreightPath) {
-        await syncFreightsOnlyFromNeonIfNeeded();
+        await syncFreightsOnlyFromNeonIfNeeded(forceSync);
       } else {
-        await syncAllModulesFromNeonIfNeeded(false);
+        await syncAllModulesFromNeonIfNeeded(forceSync);
+      }
+      if (isNeonConfigured && !isIsolatedTestEnv() && dbState.users.length === 0) {
+        res.status(503).json({
+          ok: false,
+          error:
+            'Banco de dados indisponível no momento. Verifique DATABASE_URL e a conexão com Neon PostgreSQL.',
+          code: 'DATABASE_UNAVAILABLE',
+        });
+        return;
       }
     }
     if (
@@ -1889,7 +2020,8 @@ export function createExpressApp(): express.Express {
           req.path === '/neon/health' ||
           req.path === '/health')) ||
       req.path === '/rh-external/webhook' ||
-      req.path === '/pagamentos/share-target'
+      req.path === '/pagamentos/share-target' ||
+      req.path.startsWith('/pagamentos/shared-staging/')
     ) {
       return next();
     }
@@ -1939,7 +2071,18 @@ export function createExpressApp(): express.Express {
     next();
   });
 
-  app.use(express.json({ limit: '20mb', verify: (req: any, _res, bytes) => { if (req.url === '/api/rh-external/webhook') req.rawBody = Buffer.from(bytes); } }));
+  app.use(
+    express.json({
+      limit: '20mb',
+      verify: (req: any, _res, bytes) => {
+        const cleanPath = String(req.originalUrl || req.url || '').split('?')[0];
+        if (cleanPath === '/api/rh-external/webhook') {
+          req.rawBody = Buffer.from(bytes);
+        }
+      },
+    })
+  );
+  app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
   // Neon Postgres background warm-up (idempotent)
   void ensureNeonBootstrapped();
@@ -2029,7 +2172,7 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   // REQUIREMENT 4 & 5: LOGIN WITH 5 FAILURES = 120 SECONDS LOCKOUT
   // --------------------------------------------------------------------------
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     const ip = req.ip || 'unknown';
     if (!checkIpRateLimit(ip, 'login_burst', 60)) {
       res.status(429).json({
@@ -2263,7 +2406,8 @@ export function createExpressApp(): express.Express {
       `Login autenticado com sucesso no servidor (${user.login} • ${user.accessLevel}).`,
       ip
     );
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
     setSessionCookie(res, sessionId, ttl, isSecure);
@@ -2459,7 +2603,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.post('/api/auth/logout', (req, res) => {
+  app.post('/api/auth/logout', async (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
     const headerSid = req.headers['x-rodovar-session'] as string | undefined;
     const sid = cookies.rodovar_sid || headerSid;
@@ -2481,8 +2625,9 @@ export function createExpressApp(): express.Express {
         );
       }
       delete dbState.sessions[sid];
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
     }
+    await flushPendingNeonWrites();
     clearSessionCookie(res);
     res.json({ ok: true });
   });
@@ -2491,7 +2636,7 @@ export function createExpressApp(): express.Express {
   // REQUIREMENT 4: PASSWORD RECOVERY WITH SINGLE-USE EXPIRING TOKEN
   // (Never unlocks RECUSADO, SUSPENSO, or PENDENTE accounts)
   // --------------------------------------------------------------------------
-  app.post('/api/auth/request-password-reset', requireAdminSession, (req, res) => {
+  app.post('/api/auth/request-password-reset', requireAdminSession, async (req, res) => {
     const ip = req.ip || 'unknown';
     if (!checkIpRateLimit(ip, 'pw_reset_req', 6)) {
       res.status(429).json({
@@ -2533,7 +2678,8 @@ export function createExpressApp(): express.Express {
         `Token único de recuperação de senha emitido com expiração de 15 minutos.`,
         ip
       );
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
 
       res.json({
         ok: true,
@@ -2553,7 +2699,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.post('/api/auth/reset-password', (req, res) => {
+  app.post('/api/auth/reset-password', async (req, res) => {
     const { token, newPassword } = req.body || {};
     const rawToken = String(token || '').trim().toUpperCase();
     if (!rawToken) {
@@ -2614,8 +2760,9 @@ export function createExpressApp(): express.Express {
       `Senha redefinida com sucesso via token único para ${user.login}.`,
       req.ip
     );
-    saveDatabase(dbState);
     void persistUserToNeon(user);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -2657,7 +2804,7 @@ export function createExpressApp(): express.Express {
   app.post(
     '/api/admin/access-requests/:userId/decision',
     requireAdminSession,
-    (req: AuthenticatedRequest, res) => {
+    async (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const targetUserId = String(req.params.userId || '');
       const { action, accessLevel, permissoesPaginas, reason, department, roleTitle, accessProfile } =
@@ -2809,8 +2956,9 @@ export function createExpressApp(): express.Express {
         `Administrador ${admin.login} executou ${action} na conta ${targetUser.name} (${targetUser.login}) -> Situação: ${newStatus}, Perfil: ${targetUser.accessLevel}.${cleanReason ? ` Motivo: ${cleanReason}` : ''}`,
         req.ip
       );
-      saveDatabase(dbState);
       void persistUserToNeon(targetUser);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
 
       const pendingCount = dbState.users.filter((u) => u.approvalStatus === 'PENDENTE').length;
       res.json({
@@ -2823,7 +2971,7 @@ export function createExpressApp(): express.Express {
   );
 
   // Admin direct account creation or update (preserving security rules)
-  app.post('/api/admin/users', requireAdminSession, (req: AuthenticatedRequest, res) => {
+  app.post('/api/admin/users', requireAdminSession, async (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
     const {
       name,
@@ -2913,8 +3061,9 @@ export function createExpressApp(): express.Express {
       `Criou conta aprovada para ${newUser.name} (${newUser.login} • ${newUser.accessLevel}).`,
       req.ip
     );
-    saveDatabase(dbState);
     void persistUserToNeon(newUser);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     res.status(201).json({
       ok: true,
@@ -2922,7 +3071,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.put('/api/admin/users/:userId', requireAdminSession, (req: AuthenticatedRequest, res) => {
+  app.put('/api/admin/users/:userId', requireAdminSession, async (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
     const targetId = String(req.params.userId || '');
     const target = dbState.users.find((u) => u.id === targetId);
@@ -3011,8 +3160,9 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     revokeAllSessionsForUser(target.id);
-    saveDatabase(dbState);
     void persistUserToNeon(target);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -3023,7 +3173,7 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   // REQUIREMENT 1: AVATAR UPLOAD, VALIDATION, METADATA REMOVAL & RESTORE DEFAULT
   // --------------------------------------------------------------------------
-  app.post('/api/profile/avatar', requireApprovedSession, (req: AuthenticatedRequest, res) => {
+  app.post('/api/profile/avatar', requireApprovedSession, async (req: AuthenticatedRequest, res) => {
     const actor = req.sessionUser!;
     const { dataUrl, targetUserId } = req.body || {};
 
@@ -3077,7 +3227,10 @@ export function createExpressApp(): express.Express {
     // Generate system storage filename with UUID
     const fileName = `avatar-${crypto.randomUUID()}.${validation.extension}`;
     const filePath = path.join(UPLOADS_DIR, fileName);
-    fs.writeFileSync(filePath, validation.sanitizedBuffer);
+    try {
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+      fs.writeFileSync(filePath, validation.sanitizedBuffer);
+    } catch {}
     void persistSystemAssetToNeon({
       id: fileName,
       slot: 'userAvatar',
@@ -3111,8 +3264,9 @@ export function createExpressApp(): express.Express {
       `Foto de perfil atualizada e sanitizada (${validation.mimeType}, ${validation.width}x${validation.height}px) para ${targetUser.login}.`,
       req.ip
     );
-    saveDatabase(dbState);
     void persistUserToNeon(targetUser);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -3124,7 +3278,7 @@ export function createExpressApp(): express.Express {
   app.post(
     '/api/profile/restore-default-avatar',
     requireApprovedSession,
-    (req: AuthenticatedRequest, res) => {
+    async (req: AuthenticatedRequest, res) => {
       const actor = req.sessionUser!;
       const { targetUserId } = req.body || {};
       const effectiveUserId = targetUserId ? String(targetUserId) : actor.id;
@@ -3167,8 +3321,9 @@ export function createExpressApp(): express.Express {
         `Avatar padrão neutro restaurado para a conta ${targetUser.login}.`,
         req.ip
       );
-      saveDatabase(dbState);
       void persistUserToNeon(targetUser);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
 
       res.json({
         ok: true,
@@ -3177,7 +3332,7 @@ export function createExpressApp(): express.Express {
     }
   );
 
-  app.put('/api/profile', requireApprovedSession, (req: AuthenticatedRequest, res) => {
+  app.put('/api/profile', requireApprovedSession, async (req: AuthenticatedRequest, res) => {
     const actor = req.sessionUser!;
     const { name, phoneExt, login, password } = req.body || {};
 
@@ -3232,8 +3387,9 @@ export function createExpressApp(): express.Express {
       `Titular ${actor.name} atualizou seus dados pessoais em Meu Perfil.`,
       req.ip
     );
-    saveDatabase(dbState);
     void persistUserToNeon(actor);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -3316,7 +3472,8 @@ export function createExpressApp(): express.Express {
       `Modo Econômico ${targetState ? 'ATIVADO' : 'DESATIVADO'} pelo Administrador.`,
       req.ip
     );
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       economicMode: targetState,
@@ -3647,7 +3804,7 @@ export function createExpressApp(): express.Express {
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
-  app.post('/api/admin/first-access/:uid', requireAdminSession, (req: AuthenticatedRequest, res) => {
+  app.post('/api/admin/first-access/:uid', requireAdminSession, async (req: AuthenticatedRequest, res) => {
     const user = dbState.users.find((u) => u.id === req.params.uid);
     const policy = (dbState as any).accessPolicy;
     if (!user || !policy?.authorizedUids.includes(user.id)) {
@@ -3670,7 +3827,8 @@ export function createExpressApp(): express.Express {
     dbState.passwordResetTokens.push(newTokenRecord as any);
     void persistPasswordResetTokenToNeon(newTokenRecord);
     revokeAllSessionsForUser(user.id);
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.setHeader('Cache-Control', 'no-store');
     res.json({ token, login: user.login, expiresInHours: 24 });
   });
@@ -3696,16 +3854,18 @@ export function createExpressApp(): express.Express {
   // CORPORATE DOCUMENTS ATTACHMENT UPLOAD & VALIDATION (REQUISITO 4)
   // --------------------------------------------------------------------------
   const DOCS_UPLOADS_DIR = path.join(UPLOADS_DIR, 'documents');
-  if (!fs.existsSync(DOCS_UPLOADS_DIR)) {
-    fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
-  }
+  try {
+    if (!fs.existsSync(DOCS_UPLOADS_DIR)) {
+      fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+    }
+  } catch {}
 
   const ALLOWED_DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx']);
 
   app.post(
     '/api/documentos/upload-anexos',
     requireApprovedSession,
-    (req: AuthenticatedRequest, res) => {
+    async (req: AuthenticatedRequest, res) => {
       const user = req.sessionUser!;
       const { files } = req.body || {};
 
@@ -3766,7 +3926,10 @@ export function createExpressApp(): express.Express {
         const fileId = `doc-att-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
         const fileName = `${fileId}.${ext}`;
         const filePath = path.join(DOCS_UPLOADS_DIR, fileName);
-        fs.writeFileSync(filePath, buffer);
+        try {
+          fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+          fs.writeFileSync(filePath, buffer);
+        } catch {}
         void persistSystemAssetToNeon({
           id: fileName,
           slot: 'documentAttachment',
@@ -3794,7 +3957,8 @@ export function createExpressApp(): express.Express {
         `Anexou ${attachments.length} arquivo(s) oficial(is) com validação de formato e tamanho no servidor.`,
         req.ip
       );
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
 
       res.json({
         ok: true,

@@ -144,6 +144,7 @@ let nextOrderSeqByBrand: Record<'RODOVAR' | 'VL TRANSPORTES', number> = {
   'VL TRANSPORTES': 1,
 };
 let freightsDataVersion = 1;
+let seededFromDefaultsOnly = false;
 
 export function getFreightsDataVersion(): number {
   return freightsDataVersion;
@@ -294,6 +295,11 @@ export function hydrateUnifiedFreightsFromPayload(payload: any): void {
     if (!Number.isNaN(rdv) && rdv > nextOrderSeqByBrand.RODOVAR) nextOrderSeqByBrand.RODOVAR = rdv;
     if (!Number.isNaN(vl) && vl > nextOrderSeqByBrand['VL TRANSPORTES']) nextOrderSeqByBrand['VL TRANSPORTES'] = vl;
   }
+  if (seededFromDefaultsOnly && Array.isArray(payload.freights) && payload.freights.length > 0) {
+    freightsIndex.clear();
+    freightSubDocs.clear();
+    seededFromDefaultsOnly = false;
+  }
   if (Array.isArray(payload.subDocs)) {
     for (const sub of payload.subDocs) {
       if (sub && sub.freightId) {
@@ -330,7 +336,8 @@ export function hydrateUnifiedFreightsFromPayload(payload: any): void {
 
 export function persistFreightAndSubDoc(
   freight: UnifiedFreightRecord,
-  sub?: FreightSubDocument
+  sub?: FreightSubDocument,
+  options?: { skipNeon?: boolean }
 ): void {
   const existingSub = sub ||
     freightSubDocs.get(freight.id) || {
@@ -343,12 +350,17 @@ export function persistFreightAndSubDoc(
   syncSubDocCounters(freight, existingSub);
   freightsIndex.set(freight.id, freight);
   freightSubDocs.set(freight.id, existingSub);
+  if (!options?.skipNeon) {
+    seededFromDefaultsOnly = false;
+  }
   bumpFreightsDataVersion();
   writeJsonAtomically(getFreightDocPath(freight.id), freight);
   writeJsonAtomically(getFreightSubDocPath(freight.id), existingSub);
   for (const listener of financeListeners) listener(freight);
-  void persistFreightToNeon(freight);
-  saveFreightsSnapshotToNeon();
+  if (!options?.skipNeon) {
+    void persistFreightToNeon(freight);
+    saveFreightsSnapshotToNeon();
+  }
 }
 
 function saveNotifications(): void {
@@ -357,9 +369,11 @@ function saveNotifications(): void {
   saveFreightsSnapshotToNeon();
 }
 
-function saveSequence(): void {
+function saveSequence(skipNeon = false): void {
   writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber, nextOrderSeqByBrand });
-  saveFreightsSnapshotToNeon();
+  if (!skipNeon) {
+    saveFreightsSnapshotToNeon();
+  }
 }
 
 export function allocateNextOrderNumber(
@@ -671,7 +685,7 @@ export function loadOrSeedUnifiedFreights(): void {
         console.error('Error loading freight doc:', file, err);
       }
     }
-    saveSequence();
+    saveSequence(true);
     return;
   }
 
@@ -1075,10 +1089,11 @@ export function loadOrSeedUnifiedFreights(): void {
     },
   ];
 
+  seededFromDefaultsOnly = true;
   for (const item of initialRecords) {
-    persistFreightAndSubDoc(item.freight, item.sub);
+    persistFreightAndSubDoc(item.freight, item.sub, { skipNeon: true });
   }
-  saveSequence();
+  saveSequence(true);
 }
 
 // Validate PDF / PNG / JPEG / WebP attachment magic bytes (blocking SVG, HTML, executables)

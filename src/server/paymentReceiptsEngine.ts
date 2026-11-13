@@ -29,6 +29,7 @@ import {
   persistPaymentReceiptToNeon,
   persistSystemAssetToNeon,
   getSystemAssetFromNeon,
+  flushPendingNeonWrites,
 } from '../../neon.ts';
 
 const ROOT_DIR = resolveDataRoot();
@@ -238,14 +239,25 @@ export function hydratePaymentReceiptsFromPayload(payload: any): void {
   }
 }
 
-function savePaymentStore(): void {
-  ensureDirectories();
-  fs.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), 'utf8');
-  fs.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), 'utf8');
-  fs.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), 'utf8');
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), 'utf8');
-  fs.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), 'utf8');
-  void persistStateSnapshotToNeon('rodovar-payments-state', paymentStoreState);
+function savePaymentStore(skipNeon = false): void {
+  try {
+    ensureDirectories();
+    fs.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), 'utf8');
+    fs.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), 'utf8');
+    fs.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), 'utf8');
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), 'utf8');
+    fs.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('paymentReceiptsEngine local save notice:', (err as Error).message);
+  }
+  if (!skipNeon) {
+    void persistStateSnapshotToNeon('rodovar-payments-state', paymentStoreState);
+  }
+}
+
+async function savePaymentStoreAsync(): Promise<void> {
+  savePaymentStore(false);
+  await flushPendingNeonWrites();
 }
 
 function enrichFreightWithReceipts(freight: FreightRecord): FreightRecord {
@@ -471,7 +483,7 @@ function loadOrSeedPaymentStore(): void {
       }
     }
 
-    savePaymentStore();
+    savePaymentStore(true);
   } else {
     // Fix frete-0841 rule consistency if loaded from older store
     paymentStoreState.freights = loadedFreights.map((f) => {
@@ -627,6 +639,29 @@ export function parseMultipartFormData(
 }
 
 function readRawRequestBody(req: Request, maxBytes: number): Promise<Buffer> {
+  const anyReq = req as any;
+  if (Buffer.isBuffer(anyReq.rawBody)) {
+    if (anyReq.rawBody.length > maxBytes) {
+      return Promise.reject(new Error('PAYLOAD_TOO_LARGE'));
+    }
+    return Promise.resolve(anyReq.rawBody);
+  }
+  if (Buffer.isBuffer(anyReq.body)) {
+    if (anyReq.body.length > maxBytes) {
+      return Promise.reject(new Error('PAYLOAD_TOO_LARGE'));
+    }
+    return Promise.resolve(anyReq.body);
+  }
+  if (typeof anyReq.body === 'string') {
+    const buf = Buffer.from(anyReq.body, 'utf8');
+    if (buf.length > maxBytes) {
+      return Promise.reject(new Error('PAYLOAD_TOO_LARGE'));
+    }
+    return Promise.resolve(buf);
+  }
+  if (anyReq.readableEnded) {
+    return Promise.resolve(Buffer.alloc(0));
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -656,16 +691,16 @@ export function registerPaymentReceiptRoutes(
   ) => void
 ): void {
   loadOrSeedPaymentStore();
-  const syncUnified=(freight:any)=>{
+  const syncUnified=(freight:any, skipNeon = false)=>{
     const index=paymentStoreState.freights.findIndex(f=>f.id===freight.id);
     const projected=financialProjection(freight,index<0?undefined:paymentStoreState.freights[index]);
     if(!projected)return;
     if(index>=0&&JSON.stringify(projected)===JSON.stringify(paymentStoreState.freights[index]))return;
     if(index<0)paymentStoreState.freights.push(projected);else paymentStoreState.freights[index]=projected;
-    savePaymentStore();
+    savePaymentStore(skipNeon);
   };
-  unifiedFinanceFreights().forEach(syncUnified);
-  subscribeUnifiedFinance(syncUnified);
+  unifiedFinanceFreights().forEach((freight)=>syncUnified(freight, true));
+  subscribeUnifiedFinance((freight)=>syncUnified(freight, false));
 
   function requireFinanceiroPermission(req: any, res: Response): Employee | null {
     const user = req.sessionUser as Employee | undefined;
@@ -759,7 +794,7 @@ export function registerPaymentReceiptRoutes(
         (s) => s.expiresAtMs > Date.now()
       );
       paymentStoreState.stagedShares.unshift(staged);
-      savePaymentStore();
+      await savePaymentStoreAsync();
 
       // If client explicitly wants JSON (e.g. automated test or API caller), return JSON; otherwise 303 redirect to SPA route
       if (String(req.headers.accept || '').includes('application/json') || req.query.format === 'json') {
@@ -794,6 +829,8 @@ export function registerPaymentReceiptRoutes(
 
   // Retrieve server-staged share target payload
   app.get('/api/pagamentos/shared-staging/:shareId', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
     const shareId = String(req.params.shareId || '');
     const found = paymentStoreState.stagedShares.find(
       (s) => s.id === shareId && s.expiresAtMs > Date.now()
@@ -833,7 +870,7 @@ export function registerPaymentReceiptRoutes(
   });
 
   // Create or update a financial freight record (e.g. New Freight modal or Confirm Delivery)
-  app.post('/api/pagamentos/fretes', requireApprovedSession, (req: any, res: Response) => {
+  app.post('/api/pagamentos/fretes', requireApprovedSession, async (req: any, res: Response) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
 
@@ -863,7 +900,7 @@ export function registerPaymentReceiptRoutes(
     const fresh={...incoming,adiantamentoPago:false,saldoPago:false,adiantamentoVerificacaoStatus:'SEM_COMPROVANTE' as const,saldoVerificacaoStatus:'SEM_COMPROVANTE' as const};
     for (const key of ['historicoPagamentos','comprovantesList','adiantamentoComprovanteId','saldoComprovanteId','adiantamentoConfirmadoPorId','saldoConfirmadoPorId','adiantamentoConfirmadoEm','saldoConfirmadoEm','codigoTransacaoAdiantamento','codigoTransacaoSaldo']) delete (fresh as any)[key];
     paymentStoreState.freights.unshift(fresh);
-    savePaymentStore();
+    await savePaymentStoreAsync();
 
     res.status(201).json({
       ok: true,
@@ -873,7 +910,7 @@ export function registerPaymentReceiptRoutes(
     });
   });
 
-  app.put('/api/pagamentos/fretes/:freightId', requireApprovedSession, (req: any, res: Response) => {
+  app.put('/api/pagamentos/fretes/:freightId', requireApprovedSession, async (req: any, res: Response) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
 
@@ -904,7 +941,7 @@ export function registerPaymentReceiptRoutes(
     };
 
     paymentStoreState.freights[existingIdx] = updated;
-    savePaymentStore();
+    await savePaymentStoreAsync();
 
     res.json({
       ok: true,
@@ -916,7 +953,7 @@ export function registerPaymentReceiptRoutes(
   // 3. PREPARE PAYMENT INTENT ("Preparar pagamento")
   // Requirement 2: Creates a payment intent linked to authenticated user with 30-min default TTL
   // --------------------------------------------------------------------------
-  app.post('/api/pagamentos/intencoes', requireApprovedSession, (req: any, res: Response) => {
+  app.post('/api/pagamentos/intencoes', requireApprovedSession, async (req: any, res: Response) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
 
@@ -1033,7 +1070,7 @@ export function registerPaymentReceiptRoutes(
       req.ip
     );
 
-    savePaymentStore();
+    await savePaymentStoreAsync();
 
     res.status(201).json({
       ok: true,
@@ -1081,7 +1118,7 @@ export function registerPaymentReceiptRoutes(
   app.post(
     '/api/pagamentos/intencoes/:intentId/cancel',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
 
@@ -1112,7 +1149,7 @@ export function registerPaymentReceiptRoutes(
         intentId: intent.id,
         amountBRL: intent.expectedAmountBRL,
       });
-      savePaymentStore();
+      await savePaymentStoreAsync();
 
       res.json({ ok: true, intent });
     }
@@ -1404,8 +1441,8 @@ export function registerPaymentReceiptRoutes(
         req.ip
       );
 
-      savePaymentStore();
       void persistPaymentReceiptToNeon(receiptRecord);
+      await savePaymentStoreAsync();
 
       res.status(201).json({
         ok: true,
@@ -1437,7 +1474,7 @@ export function registerPaymentReceiptRoutes(
   app.post(
     '/api/pagamentos/comprovantes/:receiptId/confirmar',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
 
@@ -1555,8 +1592,8 @@ export function registerPaymentReceiptRoutes(
         req.ip
       );
 
-      savePaymentStore();
       void persistPaymentReceiptToNeon(receipt);
+      await savePaymentStoreAsync();
 
       res.json({
         ok: true,

@@ -802,6 +802,9 @@ export interface UnifiedFreightRecord {
   motoristaRg?: string;
   motoristaCnh?: string;
   motoristaTelefone?: string;
+  emergenciaNome?: string;
+  emergenciaTelefone?: string;
+  comercialScriptRef?: string;
   placaVeiculo?: string;
   placaCarreta?: string;
   placaBitrem?: string;

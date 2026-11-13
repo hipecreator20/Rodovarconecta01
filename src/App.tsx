@@ -2436,6 +2436,7 @@ export default function App() {
           selectedFreightIdFromNotification={selectedNotificationFreightId}
           onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
           onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
+          onSwitchToComercial={() => setActiveSection('fretes_comercial')}
           onSyncNewFreightToFinanceiro={(item) => {
             const total = item.valorFreteMotorista || 6000;
             const adiant = Number((total * 0.7).toFixed(2));

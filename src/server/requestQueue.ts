@@ -5,7 +5,7 @@ import type { Express } from 'express';
 import type { Employee, InternalRequest, RequestAttachment, RequestStatus } from '../types/index.ts';
 import { hasPagePermission } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
-import { persistStateSnapshotToNeon, persistRequestToNeon, persistSystemAssetToNeon, getSystemAssetFromNeon } from '../../neon.ts';
+import { persistStateSnapshotToNeon, persistRequestToNeon, persistSystemAssetToNeon, getSystemAssetFromNeon, flushPendingNeonWrites } from '../../neon.ts';
 
 const DESTINATIONS = ['Recursos Humanos', 'Administrativo', 'Financeiro'];
 const STATUSES: RequestStatus[] = ['Aberta', 'Em análise', 'Em andamento', 'Aguardando funcionário', 'Concluída', 'Cancelada'];
@@ -34,11 +34,17 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
   const state: QueueState = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) :
     { requests: structuredClone(initial), notifications: [], keys: {} };
   activeQueueState = state;
-  const save = () => {
-    fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(file + '.tmp', JSON.stringify(state, null, 2));
-    fs.renameSync(file + '.tmp', file);
-    void persistStateSnapshotToNeon('rodovar-requests-state', state);
+  const save = (skipNeon = false) => {
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(file + '.tmp', JSON.stringify(state, null, 2));
+      fs.renameSync(file + '.tmp', file);
+    } catch (err) {
+      console.warn('requestQueue local save notice:', (err as Error).message);
+    }
+    if (!skipNeon) {
+      void persistStateSnapshotToNeon('rodovar-requests-state', state);
+    }
   };
   const visible = (u: Employee, r: InternalRequest) => r.requesterId === u.id || canHandleRequest(u, r);
   const notify = (r: InternalRequest, recipientId: string, title: string, eventId: string) => {
@@ -77,7 +83,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     r.attachmentName ||= attachment.name;
   };
   const fail = (res: any, message: string, status = 400) => res.status(status).json({ error: message });
-  if (!fs.existsSync(file)) save();
+  if (!fs.existsSync(file)) save(true);
 
   app.get('/api/requests', guard, (req: any, res) => {
     const u = req.sessionUser;
@@ -89,7 +95,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
       financeActive: activeUsers.filter(person => person.accessProfile === 'FINANCEIRO').length,
     } });
   });
-  app.post('/api/requests', guard, (req: any, res) => {
+  app.post('/api/requests', guard, async (req: any, res) => {
     const u = req.sessionUser;
     if (!hasPagePermission(u, 'solicitacoes')) return fail(res, 'Sem acesso.', 403);
     const { subject, description, targetDepartment, priority, attachment } = req.body || {};
@@ -107,7 +113,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     addAttachment(record, u, parsed);
     state.requests.unshift(record); state.keys[composite] = id;
     for (const recipient of users().filter(r => r.active && r.approvalStatus === 'APROVADO' && (targetDepartment === 'Financeiro' ? r.accessProfile === 'FINANCEIRO' : r.accessProfile === 'RH'))) notify(record, recipient.id, 'Nova solicitação ' + record.protocol, id);
-    save(); void persistRequestToNeon(record); res.status(201).json({ request: record });
+    save(); void persistRequestToNeon(record); await flushPendingNeonWrites(); res.status(201).json({ request: record });
   });
   app.get('/api/requests/:id/attachments/:attachmentId', guard, async (req: any, res) => {
     const u = req.sessionUser, r = state.requests.find(r => r.id === req.params.id);
@@ -130,7 +136,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     }
     return fail(res, 'Arquivo indisponível no servidor.', 404);
   });
-  app.post('/api/requests/:id/:action', guard, (req: any, res) => {
+  app.post('/api/requests/:id/:action', guard, async (req: any, res) => {
     const u = req.sessionUser, r = state.requests.find(r => r.id === req.params.id);
     if (!hasPagePermission(u, 'solicitacoes') || !r || !visible(u, r)) return fail(res, 'Solicitação não encontrada.', 404);
     const action = req.params.action, isHandler = canHandleRequest(u, r), assigned = r.assignedToId === u.id;
@@ -140,7 +146,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     if (actionKey && state.keys[composite]) return res.json({ request: r });
     if (action === 'read') {
       for (const n of state.notifications) if (n.targetId === r.id && n.recipientId === u.id) n.read = true;
-      save(); return res.json({ request: r });
+      save(); await flushPendingNeonWrites(); return res.json({ request: r });
     }
     if (terminal(r)) return fail(res, 'Protocolo encerrado. O histórico permanece disponível.', 409);
     if (action === 'assign') {
@@ -195,6 +201,6 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
       } else return fail(res, 'Ação inválida.', 404);
     }
     if (actionKey) state.keys[composite] = r.id;
-    save(); void persistRequestToNeon(r); res.json({ request: r });
+    save(); void persistRequestToNeon(r); await flushPendingNeonWrites(); res.json({ request: r });
   });
 }
