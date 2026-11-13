@@ -1800,7 +1800,11 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                   >
                     <option value="RODOVAR">RODOVAR LOGÍSTICA</option>
                     <option value="VL TRANSPORTES">VL TRANSPORTES</option>
-                    <option value="AXD">AXD LOGÍSTICA</option>
+                    {formState.empresaMarca === 'AXD' && (
+                      <option value="AXD" disabled>
+                        AXD (Histórico — selecione RODOVAR ou VL TRANSPORTES para alterar)
+                      </option>
+                    )}
                   </select>
                 </div>
                 <div>

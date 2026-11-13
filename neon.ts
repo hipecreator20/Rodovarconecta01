@@ -49,7 +49,7 @@ export const pool = new Pool({
 
 export const sql = isNeonConfigured ? neon(connectionString) : null;
 
-const NEON_SCHEMA_VERSION = '2027.05.v1';
+const NEON_SCHEMA_VERSION = '2027.06.v1';
 let neonSchemaInitialized = false;
 let neonSchemaInitPromise: Promise<void> | null = null;
 
@@ -349,9 +349,33 @@ export async function initializeNeonSchema(): Promise<void> {
         driver_phone VARCHAR(64),
         truck_plate VARCHAR(32),
         status VARCHAR(64) NOT NULL,
+        situacao_comercial VARCHAR(64),
+        situacao_operacional VARCHAR(64),
+        situacao_monitoramento VARCHAR(64),
+        comercial_responsavel_id VARCHAR(64),
+        expedicao_responsavel_id VARCHAR(64),
+        monitoramento_responsavel_id VARCHAR(64),
+        data_coleta_iso VARCHAR(32),
+        data_entrega_prevista_iso VARCHAR(32),
+        entrega_comprovada_em VARCHAR(64),
+        payload JSONB,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_comercial VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_operacional VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_monitoramento VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS comercial_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS expedicao_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS monitoramento_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS data_coleta_iso VARCHAR(32);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS data_entrega_prevista_iso VARCHAR(32);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS entrega_comprovada_em VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS payload JSONB;
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_mon_status_upd ON rodovar_fretes(situacao_monitoramento, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_mon_resp_status ON rodovar_fretes(monitoramento_responsavel_id, situacao_monitoramento, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_protocol ON rodovar_fretes(sequential_id);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_dates ON rodovar_fretes(data_coleta_iso, data_entrega_prevista_iso);
 
       CREATE TABLE IF NOT EXISTS rodovar_requests (
         id VARCHAR(64) PRIMARY KEY,
@@ -711,9 +735,22 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
         `INSERT INTO rodovar_fretes (
            id, sequential_id, client_name, client_cnpj, origin,
            destination_city, destination_state, destination_address, cargo_description,
-           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-         ON CONFLICT (id) DO NOTHING`,
+           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status,
+           situacao_comercial, situacao_operacional, situacao_monitoramento,
+           comercial_responsavel_id, expedicao_responsavel_id, monitoramento_responsavel_id,
+           data_coleta_iso, data_entrega_prevista_iso, entrega_comprovada_em, payload, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,COALESCE($26::timestamptz, CURRENT_TIMESTAMP))
+         ON CONFLICT (id) DO UPDATE SET
+           situacao_comercial = COALESCE(rodovar_fretes.situacao_comercial, EXCLUDED.situacao_comercial),
+           situacao_operacional = COALESCE(rodovar_fretes.situacao_operacional, EXCLUDED.situacao_operacional),
+           situacao_monitoramento = COALESCE(rodovar_fretes.situacao_monitoramento, EXCLUDED.situacao_monitoramento),
+           comercial_responsavel_id = COALESCE(rodovar_fretes.comercial_responsavel_id, EXCLUDED.comercial_responsavel_id),
+           expedicao_responsavel_id = COALESCE(rodovar_fretes.expedicao_responsavel_id, EXCLUDED.expedicao_responsavel_id),
+           monitoramento_responsavel_id = COALESCE(rodovar_fretes.monitoramento_responsavel_id, EXCLUDED.monitoramento_responsavel_id),
+           data_coleta_iso = COALESCE(rodovar_fretes.data_coleta_iso, EXCLUDED.data_coleta_iso),
+           data_entrega_prevista_iso = COALESCE(rodovar_fretes.data_entrega_prevista_iso, EXCLUDED.data_entrega_prevista_iso),
+           entrega_comprovada_em = COALESCE(rodovar_fretes.entrega_comprovada_em, EXCLUDED.entrega_comprovada_em),
+           payload = COALESCE(rodovar_fretes.payload, EXCLUDED.payload)`,
         [
           String(f.id),
           String(f.protocol),
@@ -730,6 +767,17 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
           f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null,
           f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null,
           String(f.situacaoMonitoramento !== 'NAO_LIBERADO' ? f.situacaoMonitoramento : f.situacaoOperacional !== 'NAO_ENVIADO' ? f.situacaoOperacional : f.situacaoComercial || 'EM_NEGOCIACAO').slice(0, 64),
+          f.situacaoComercial ? String(f.situacaoComercial).slice(0, 64) : null,
+          f.situacaoOperacional ? String(f.situacaoOperacional).slice(0, 64) : null,
+          f.situacaoMonitoramento ? String(f.situacaoMonitoramento).slice(0, 64) : null,
+          f.comercialResponsavelId ? String(f.comercialResponsavelId).slice(0, 64) : null,
+          f.expedicaoResponsavelId ? String(f.expedicaoResponsavelId).slice(0, 64) : null,
+          f.monitoramentoResponsavelId ? String(f.monitoramentoResponsavelId).slice(0, 64) : null,
+          f.dataColetaIso ? String(f.dataColetaIso).slice(0, 32) : null,
+          f.dataEntregaPrevistaIso ? String(f.dataEntregaPrevistaIso).slice(0, 32) : null,
+          f.entregaComprovadaEm ? String(f.entregaComprovadaEm).slice(0, 64) : null,
+          JSON.stringify(f),
+          f.updatedAtIso ? String(f.updatedAtIso) : null,
         ]
       ).catch(() => {});
     }
@@ -1282,11 +1330,17 @@ export async function persistFreightToNeon(f: any): Promise<void> {
         : f.situacaoComercial || f.status || 'EM_ANDAMENTO'
     ).slice(0, 64);
 
+    const payloadJson = JSON.stringify(f);
+    const updatedAtIso = f.updatedAtIso ? String(f.updatedAtIso) : null;
+
     await sql`
       INSERT INTO rodovar_fretes (
          id, sequential_id, client_name, client_cnpj, origin,
          destination_city, destination_state, destination_address, cargo_description,
-         agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status, updated_at
+         agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status,
+         situacao_comercial, situacao_operacional, situacao_monitoramento,
+         comercial_responsavel_id, expedicao_responsavel_id, monitoramento_responsavel_id,
+         data_coleta_iso, data_entrega_prevista_iso, entrega_comprovada_em, payload, updated_at
        ) VALUES (
          ${String(f.id).slice(0, 64)}, ${seqId}, ${String(f.cliente || 'Cliente').slice(0, 255)},
          ${f.clienteCnpj ? String(f.clienteCnpj).slice(0, 32) : null},
@@ -1297,7 +1351,18 @@ export async function persistFreightToNeon(f: any): Promise<void> {
          ${f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null},
          ${f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null},
          ${f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null},
-         ${status}, CURRENT_TIMESTAMP
+         ${status},
+         ${f.situacaoComercial ? String(f.situacaoComercial).slice(0, 64) : null},
+         ${f.situacaoOperacional ? String(f.situacaoOperacional).slice(0, 64) : null},
+         ${f.situacaoMonitoramento ? String(f.situacaoMonitoramento).slice(0, 64) : null},
+         ${f.comercialResponsavelId ? String(f.comercialResponsavelId).slice(0, 64) : null},
+         ${f.expedicaoResponsavelId ? String(f.expedicaoResponsavelId).slice(0, 64) : null},
+         ${f.monitoramentoResponsavelId ? String(f.monitoramentoResponsavelId).slice(0, 64) : null},
+         ${f.dataColetaIso ? String(f.dataColetaIso).slice(0, 32) : null},
+         ${f.dataEntregaPrevistaIso ? String(f.dataEntregaPrevistaIso).slice(0, 32) : null},
+         ${f.entregaComprovadaEm ? String(f.entregaComprovadaEm).slice(0, 64) : null},
+         ${payloadJson}::jsonb,
+         COALESCE(${updatedAtIso}::timestamptz, CURRENT_TIMESTAMP)
        )
        ON CONFLICT (id) DO UPDATE SET
          sequential_id = EXCLUDED.sequential_id,
@@ -1314,10 +1379,297 @@ export async function persistFreightToNeon(f: any): Promise<void> {
          driver_phone = EXCLUDED.driver_phone,
          truck_plate = EXCLUDED.truck_plate,
          status = EXCLUDED.status,
-         updated_at = CURRENT_TIMESTAMP
+         situacao_comercial = EXCLUDED.situacao_comercial,
+         situacao_operacional = EXCLUDED.situacao_operacional,
+         situacao_monitoramento = EXCLUDED.situacao_monitoramento,
+         comercial_responsavel_id = EXCLUDED.comercial_responsavel_id,
+         expedicao_responsavel_id = EXCLUDED.expedicao_responsavel_id,
+         monitoramento_responsavel_id = EXCLUDED.monitoramento_responsavel_id,
+         data_coleta_iso = EXCLUDED.data_coleta_iso,
+         data_entrega_prevista_iso = EXCLUDED.data_entrega_prevista_iso,
+         entrega_comprovada_em = EXCLUDED.entrega_comprovada_em,
+         payload = EXCLUDED.payload,
+         updated_at = EXCLUDED.updated_at
     `;
   } catch (err) {
     console.warn('Neon persistFreightToNeon notice:', (err as Error).message);
+  }
+}
+
+export interface NeonMonitoringQueryParams {
+  scope: 'MEUS' | 'EQUIPE';
+  userId: string;
+  isTesteLogin: boolean;
+  responsavelFilterId: string;
+  viewMode: 'ATIVOS' | 'FINALIZADOS' | 'ALL';
+  search: string;
+  periodo: string;
+  situacao: string;
+  includeCanceled: boolean;
+  todaySp: string;
+  weekStartIso: string;
+  weekEndIso: string;
+  monthPrefix: string;
+  page: number;
+  limit: number;
+  compact?: boolean;
+}
+
+export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQueryParams): Promise<{
+  items: any[];
+  totalMatched: number;
+  counters: {
+    NOVO_PARA_CARREGAR: number;
+    EM_DESLOCAMENTO_COLETA: number;
+    NO_LOCAL_COLETA: number;
+    CARREGADO_EM_TRANSPORTE: number;
+    NO_LOCAL_ENTREGA: number;
+    ENTREGUE: number;
+    FINALIZADO: number;
+    PENDENCIAS: number;
+    COLETAS_HOJE: number;
+    TOTAL_ATIVOS: number;
+    completedCount: number;
+  };
+} | null> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
+  try {
+    const searchLike = params.search ? `%${params.search.toLowerCase()}%` : '';
+    const offset = Math.max(0, (Math.max(1, params.page) - 1) * Math.max(1, params.limit));
+    const respFilter = params.responsavelFilterId || '';
+    const situacao = params.situacao || 'TODAS';
+    const periodo = params.periodo || 'TODOS';
+
+    const [counterRows, listRows] = await Promise.all([
+      sql`
+        SELECT
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR')::int AS novo_para_carregar,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA')::int AS em_deslocamento_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA')::int AS no_local_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE')::int AS carregado_em_transporte,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA')::int AS no_local_entrega,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE')::int AS entregue,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO')::int AS finalizado,
+          COUNT(*) FILTER (
+            WHERE data_coleta_iso = ${params.todaySp}
+              AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR','EM_DESLOCAMENTO_COLETA','NO_LOCAL_COLETA','CARREGADO_EM_TRANSPORTE','NO_LOCAL_ENTREGA')
+          )::int AS coletas_hoje,
+          COUNT(*) FILTER (
+            WHERE (
+              COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+              OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+              OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+            )
+          )::int AS pendencias
+        FROM rodovar_fretes
+        WHERE payload IS NOT NULL
+          AND situacao_monitoramento IS NOT NULL
+          AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
+          AND (
+            ${params.includeCanceled}::boolean = true
+            OR (
+              COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+            )
+          )
+          AND (
+            (
+              ${params.scope} = 'EQUIPE'
+              AND (
+                (${respFilter} <> '' AND ${respFilter} <> 'TODOS' AND monitoramento_responsavel_id = ${respFilter})
+                OR ((${respFilter} = '' OR ${respFilter} = 'TODOS') AND monitoramento_responsavel_id IS NOT NULL)
+              )
+            )
+            OR (
+              ${params.scope} <> 'EQUIPE'
+              AND (
+                monitoramento_responsavel_id = ${params.userId}
+                OR (${params.isTesteLogin}::boolean = true AND monitoramento_responsavel_id IN ('emp-teste-logistica', 'emp-4'))
+              )
+            )
+          )
+      `,
+      sql`
+        SELECT
+          COUNT(*) OVER()::int AS total_matched,
+          id,
+          sequential_id,
+          client_name,
+          origin,
+          destination_city,
+          destination_state,
+          driver_name,
+          situacao_monitoramento,
+          data_coleta_iso,
+          data_entrega_prevista_iso,
+          entrega_comprovada_em,
+          updated_at,
+          payload->>'protocol' AS p_protocol,
+          payload->>'origemCidadeUf' AS p_origem,
+          payload->>'destinoCidadeUf' AS p_destino,
+          payload->>'monitoramentoResponsavelNome' AS p_mon_resp_nome,
+          payload->>'monitoramentoResponsavelId' AS p_mon_resp_id,
+          payload->>'updatedAtIso' AS p_updated_at_iso,
+          payload->>'updatedAtFormatted' AS p_updated_at_fmt,
+          payload->>'comprovanteEntregaConferido' AS p_comp_conferido,
+          payload->>'revision' AS p_revision,
+          CASE WHEN ${Boolean(params.compact)}::boolean = true THEN NULL::jsonb ELSE payload END AS full_payload
+        FROM rodovar_fretes
+        WHERE payload IS NOT NULL
+          AND situacao_monitoramento IS NOT NULL
+          AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
+          AND (
+            ${params.includeCanceled}::boolean = true
+            OR (
+              COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+            )
+          )
+          AND (
+            (
+              ${params.scope} = 'EQUIPE'
+              AND (
+                (${respFilter} <> '' AND ${respFilter} <> 'TODOS' AND monitoramento_responsavel_id = ${respFilter})
+                OR ((${respFilter} = '' OR ${respFilter} = 'TODOS') AND monitoramento_responsavel_id IS NOT NULL)
+              )
+            )
+            OR (
+              ${params.scope} <> 'EQUIPE'
+              AND (
+                monitoramento_responsavel_id = ${params.userId}
+                OR (${params.isTesteLogin}::boolean = true AND monitoramento_responsavel_id IN ('emp-teste-logistica', 'emp-4'))
+              )
+            )
+          )
+          AND (
+            ${params.viewMode} = 'ALL'
+            OR (
+              ${params.viewMode} = 'ATIVOS'
+              AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR', 'EM_DESLOCAMENTO_COLETA', 'NO_LOCAL_COLETA', 'CARREGADO_EM_TRANSPORTE', 'NO_LOCAL_ENTREGA')
+            )
+            OR (
+              ${params.viewMode} = 'FINALIZADOS'
+              AND situacao_monitoramento IN ('ENTREGUE', 'FINALIZADO')
+            )
+          )
+          AND (
+            ${situacao} = 'TODAS'
+            OR situacao_monitoramento = ${situacao}
+          )
+          AND (
+            ${searchLike} = ''
+            OR LOWER(COALESCE(sequential_id, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(client_name, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(origin, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(destination_city, '') || '/' || COALESCE(destination_state, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(driver_name, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(truck_plate, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(payload->>'ultimaLocalizacaoInformada', '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(payload->>'monitoramentoResponsavelNome', '')) LIKE ${searchLike}
+          )
+          AND (
+            ${periodo} = 'TODOS'
+            OR (
+              ${periodo} = 'HOJE'
+              AND (
+                data_coleta_iso = ${params.todaySp}
+                OR data_entrega_prevista_iso = ${params.todaySp}
+                OR SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10) = ${params.todaySp}
+              )
+            )
+            OR (
+              ${periodo} = 'SEMANA'
+              AND COALESCE(NULLIF(data_coleta_iso, ''), SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10)) BETWEEN ${params.weekStartIso} AND ${params.weekEndIso}
+            )
+            OR (
+              ${periodo} = 'MES'
+              AND SUBSTRING(COALESCE(NULLIF(data_coleta_iso, ''), SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10)), 1, 7) = ${params.monthPrefix}
+            )
+            OR (
+              ${periodo} = 'ATRASADOS'
+              AND (
+                (data_coleta_iso < ${params.todaySp} AND situacao_comercial NOT IN ('EM_MONITORAMENTO', 'EM_TRANSPORTE', 'FINALIZADO', 'CANCELADO'))
+                OR (data_entrega_prevista_iso < ${params.todaySp} AND situacao_comercial <> 'FINALIZADO')
+                OR COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+              )
+            )
+          )
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ${params.limit}
+        OFFSET ${offset}
+      `,
+    ]);
+
+    const c = counterRows[0];
+    if (!c) return null;
+    const totalCheck =
+      Number(c.novo_para_carregar || 0) +
+      Number(c.em_deslocamento_coleta || 0) +
+      Number(c.no_local_coleta || 0) +
+      Number(c.carregado_em_transporte || 0) +
+      Number(c.no_local_entrega || 0) +
+      Number(c.entregue || 0) +
+      Number(c.finalizado || 0);
+    if (totalCheck === 0 && listRows.length === 0) {
+      // Check whether Neon fretes table actually has any payloads yet
+      const anyPayloads = await sql`SELECT 1 FROM rodovar_fretes WHERE payload IS NOT NULL LIMIT 1`;
+      if (anyPayloads.length === 0) return null;
+    }
+
+    const totalAtivos =
+      Number(c.novo_para_carregar || 0) +
+      Number(c.em_deslocamento_coleta || 0) +
+      Number(c.no_local_coleta || 0) +
+      Number(c.carregado_em_transporte || 0) +
+      Number(c.no_local_entrega || 0);
+    const completedCount = Number(c.entregue || 0) + Number(c.finalizado || 0);
+
+    const items = listRows.map((r: any) => {
+      if (r.full_payload) return r.full_payload;
+      return {
+        id: String(r.id),
+        protocol: String(r.p_protocol || r.sequential_id || ''),
+        cliente: String(r.client_name || ''),
+        motoristaNome: r.driver_name ? String(r.driver_name) : '',
+        origemCidadeUf: String(r.p_origem || r.origin || ''),
+        destinoCidadeUf: String(
+          r.p_destino || `${r.destination_city || ''}/${r.destination_state || ''}`
+        ),
+        dataColetaIso: String(r.data_coleta_iso || ''),
+        dataEntregaPrevistaIso: String(r.data_entrega_prevista_iso || ''),
+        entregaComprovadaEm: r.entrega_comprovada_em ? String(r.entrega_comprovada_em) : undefined,
+        situacaoMonitoramento: String(r.situacao_monitoramento || 'FINALIZADO'),
+        monitoramentoResponsavelId: r.p_mon_resp_id ? String(r.p_mon_resp_id) : undefined,
+        monitoramentoResponsavelNome: r.p_mon_resp_nome ? String(r.p_mon_resp_nome) : undefined,
+        comprovanteEntregaConferido: r.p_comp_conferido === 'true',
+        updatedAtIso: String(r.p_updated_at_iso || r.updated_at || ''),
+        updatedAtFormatted: String(r.p_updated_at_fmt || ''),
+        revision: Number(r.p_revision || 1),
+      };
+    });
+
+    return {
+      items,
+      totalMatched: listRows[0] ? Number(listRows[0].total_matched || 0) : 0,
+      counters: {
+        NOVO_PARA_CARREGAR: Number(c.novo_para_carregar || 0),
+        EM_DESLOCAMENTO_COLETA: Number(c.em_deslocamento_coleta || 0),
+        NO_LOCAL_COLETA: Number(c.no_local_coleta || 0),
+        CARREGADO_EM_TRANSPORTE: Number(c.carregado_em_transporte || 0),
+        NO_LOCAL_ENTREGA: Number(c.no_local_entrega || 0),
+        ENTREGUE: Number(c.entregue || 0),
+        FINALIZADO: Number(c.finalizado || 0),
+        PENDENCIAS: Number(c.pendencias || 0),
+        COLETAS_HOJE: Number(c.coletas_hoje || 0),
+        TOTAL_ATIVOS: totalAtivos,
+        completedCount,
+      },
+    };
+  } catch (err) {
+    console.warn('Neon queryMonitoringFreightsFromNeon notice:', (err as Error).message);
+    return null;
   }
 }
 

@@ -14,6 +14,7 @@ import './ProfileView.css';
 import {RhRequestsWorkspace} from './RhRequestsWorkspace';
 import './PortalModernizacao.css';
 import { SharedRequestsView } from './SharedRequestsView';
+import { HelpCenterPremium } from './HelpCenterPremium';
 import React, { useCallback, useMemo, useState, useEffect, useLayoutEffect } from 'react';
 import {
   AlertTriangle,
@@ -32,7 +33,6 @@ import {
   Eye,
   FileText,
   Folder,
-  HelpCircle,
   Heart,
   History,
   Image as ImageIcon,
@@ -241,7 +241,6 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   onTogglePinAnnouncement,
   onToggleArchiveAnnouncement,
   onDeleteAnnouncement,
-  onCreateRequest,
   onUpdateRequestStatus,
   onAddRequestResponse,
   onEscalateRequestToDiretoria,
@@ -345,6 +344,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   const [receiptDeptFilter, setReceiptDeptFilter] = useState<string>('Todos');
   const [inspectEditHistoryAnn, setInspectEditHistoryAnn] = useState<Announcement | null>(null);
   const [attachmentInputName, setAttachmentInputName] = useState('');
+  const [coverUploadError, setCoverUploadError] = useState<string | null>(null);
 
   const [newAnnForm, setNewAnnForm] = useState({
     title: '',
@@ -378,17 +378,24 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
     setShowNewAnnModal(true);
   };
 
-  const handleCoverFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCoverFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setNewAnnForm((prev) => ({ ...prev, coverImage: reader.result as string }));
-      }
-    };
-    reader.readAsDataURL(file);
+    setCoverUploadError(null);
+    try {
+      const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
+      const processed = await processImageFileForUpload(file, {
+        maxWidth: 1600,
+        maxHeight: 900,
+        maxDataUrlBytes: 1_500_000,
+      });
+      setNewAnnForm((prev) => ({ ...prev, coverImage: processed.dataUrl }));
+    } catch (err) {
+      setCoverUploadError(
+        err instanceof Error ? err.message : 'Não foi possível carregar a imagem de capa.'
+      );
+    }
   };
 
   const handleAttachmentFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -579,16 +586,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
     return defaults;
   });
 
-  // --- AJUDA & SUPORTE INTERNO + EXPORTAÇÃO GERENCIAL STATE (FASE 7 COMPLETA) ---
-  const [helpSearch, setHelpSearch] = useState('');
-  const [helpCategory, setHelpCategory] = useState<string>('Todas');
-  const [supportForm, setSupportForm] = useState({
-    targetDepartment: 'Administrativo' as Department,
-    subject: '',
-    description: '',
-    priority: 'Alta' as 'Baixa' | 'Média' | 'Alta' | 'Urgente',
-  });
-  const [supportSuccessToast, setSupportSuccessToast] = useState<string | null>(null);
+  // --- EXPORTAÇÃO GERENCIAL STATE ---
   const [exportReportToast, setExportReportToast] = useState<string | null>(null);
 
   // --- FASE 10: DOSSIÊ EXECUTIVO DA DIRETORIA, VALIDADOR DE HASH & FILTRO DE AUDITORIA ---
@@ -1249,18 +1247,6 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
       '✓ Relatório de Grupos e Canais de Comunicação (.CSV) exportado com sucesso!'
     );
     setTimeout(() => setExportReportToast(null), 4000);
-  };
-
-  // Fase 19: Download do Manual Rápido Operacional & Guia de Governança do Colaborador (PDF 2027)
-  const handleDownloadUserGuideManualTxt = () => {
-    const a = document.createElement('a');
-    a.href = '/assets/aistudio/06_Comprovantes_e_Guias_de_Trabalho_2027_d375a1ec.pdf';
-    a.download = '06_Comprovantes_e_Guias_de_Trabalho_2027.pdf';
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
   };
 
   const handleDownloadExecutiveDossierTxt = () => {
@@ -2746,7 +2732,10 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                       <button
                         key={preset.url}
                         type="button"
-                        onClick={() => setNewAnnForm({ ...newAnnForm, coverImage: preset.url })}
+                        onClick={() => {
+                          setCoverUploadError(null);
+                          setNewAnnForm({ ...newAnnForm, coverImage: preset.url });
+                        }}
                         className={`text-[11px] font-bold px-2.5 py-1 rounded border cursor-pointer ${
                           newAnnForm.coverImage === preset.url
                             ? 'bg-[#080B0D] text-[#FFD400] border-[#080B0D]'
@@ -2757,6 +2746,11 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                       </button>
                     ))}
                   </div>
+                  {coverUploadError && (
+                    <p role="alert" className="text-xs font-semibold text-red-600">
+                      {coverUploadError}
+                    </p>
+                  )}
                 </div>
 
                 {/* Attachments Manager */}
@@ -5742,495 +5736,9 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   }
 
   // ============================================================================
-  // 9. AJUDA & SUPORTE INTERNO (FASE 7 A 25 COMPLETA)
+  // 9. CENTRAL DE AJUDA PREMIUM
   // ============================================================================
-  const faqItems = [
-    {
-      id: 'faq-1',
-      category: 'Mural & Leituras',
-      question: '1. Como funciona a Confirmação de Leitura Obrigatória no Mural?',
-      answer:
-        'Comunicados oficiais marcados com a exigência de leitura obrigatória requerem que o colaborador clique explicitamente no botão "Confirmar leitura". A simples visualização da página não registra confirmação na auditoria da Diretoria.',
-    },
-    {
-      id: 'faq-2',
-      category: 'Solicitações & SLA 48h',
-      question: '2. Qual é o prazo de atendimento das Solicitações Internas (SLA de 48h)?',
-      answer:
-        'Toda solicitação gera um protocolo único auditável (ex: #RDV-2027-0192) com prazo padrão de 48 horas corridas. Caso se aproxime do vencimento sem conclusão, o sistema emite alerta preventivo e permite escalonamento direto à Diretoria.',
-    },
-    {
-      id: 'faq-3',
-      category: 'Acesso & Segurança',
-      question: '3. Como obter e acessar minha conta no portal RODOVAR CONECTA?',
-      answer:
-        'O acesso ao RODOVAR CONECTA é realizado através de Login e Senha corporativos gerados pelo Administrador Geral / RH. Ao receber sua credencial, acesse a tela de login com seu e-mail/login e senha corporativa de acesso.',
-    },
-    {
-      id: 'faq-4',
-      category: 'Mensagens & Grupos',
-      question: '4. Quem pode criar Grupos Corporativos e fixar avisos operacionais?',
-      answer:
-        'A criação de grupos por setor ou unidade e a fixação de avisos no topo das conversas são atribuições exclusivas dos perfis ADMINISTRADOR e DIRETORIA, garantindo organização e foco operacional.',
-    },
-    {
-      id: 'faq-5',
-      category: 'Documentos & Normas',
-      question: '5. Como consultar versões anteriores de POPs e Manuais da Frota?',
-      answer:
-        'No módulo Documentos, cada manual ou Procedimento Operacional Padrão (POP) exibe sua versão vigente (ex: v3.2) e permite leitura integral em tela ou download oficial homologado pela RODOVAR.',
-    },
-    {
-      id: 'faq-6',
-      category: 'Acesso & Segurança',
-      question:
-        '6. Como validar Hashes de Autenticidade (AUTH-RDV, SLA48H, CERT-RDV, POP-ACK e FICHA-RDV)?',
-      answer:
-        'No módulo Administração & Diretoria, utilize o Verificador Unificado de Autenticidade e Governança para conferir em tempo real qualquer código emitido pelo portal (Recibos de Leitura, Protocolos SLA 48h, Certificados SSMA, Termos POP e Fichas Funcionais).',
-    },
-  ];
-
-  const filteredFaq = faqItems.filter((item) => {
-    const matchesCat = helpCategory === 'Todas' || item.category === helpCategory;
-    const matchesSearch =
-      !helpSearch.trim() ||
-      item.question.toLowerCase().includes(helpSearch.toLowerCase()) ||
-      item.answer.toLowerCase().includes(helpSearch.toLowerCase());
-    return matchesCat && matchesSearch;
-  });
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-white rounded-xl p-6 border border-gray-200/80 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl bg-[#FFD400] flex items-center justify-center text-[#080B0D] shrink-0">
-            <HelpCircle className="w-6 h-6 stroke-[2.2]" />
-          </div>
-          <div>
-            <h1 className="text-xl font-extrabold text-[#15191D]">
-              Central de Ajuda & Suporte ao Colaborador — RODOVAR CONECTA
-            </h1>
-            <p className="text-xs text-gray-500">
-              Base de conhecimento oficial, política de SLA de 48h, segurança LGPD e abertura rápida de chamado
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <button
-            type="button"
-            onClick={handleDownloadUserGuideManualTxt}
-            className="px-3 py-1.5 rounded-lg bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold inline-flex items-center gap-1.5 shadow-2xs cursor-pointer transition"
-            title="Baixar Manual Operacional Completo do Colaborador RODOVAR CONECTA 2027 em formato PDF"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Baixar Manual do Colaborador (PDF)</span>
-          </button>
-          <span className="px-3 py-1.5 rounded-lg bg-[#080B0D] text-[#FFD400] font-mono font-bold">
-            Telefone Suporte TI: 71 9 9920-2476
-          </span>
-          <span className="px-3 py-1.5 rounded-lg bg-[#F3F5F7] text-[#15191D] font-bold border border-gray-200">
-            Plantão RH: Telefone: 71 9 9920-2476
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left 7 cols: Searchable FAQ Knowledge Base */}
-        <div className="lg:col-span-7 bg-white rounded-xl p-6 border border-gray-200/80 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-extrabold text-[#15191D]">
-                Perguntas Frequentes & Guia Rápido
-              </h2>
-              <button
-                type="button"
-                onClick={() => {
-                  const fullFaqText = [
-                    'BASE DE CONHECIMENTO OFICIAL (FAQ) — RODOVAR CONECTA',
-                    '------------------------------------------------------------',
-                    ...filteredFaq.map((f) => `${f.question}\nR: ${f.answer}\n`),
-                  ].join('\n');
-                  navigator.clipboard?.writeText(fullFaqText);
-                  setCopiedIdentifier('copy-full-faq');
-                  setTimeout(() => setCopiedIdentifier(null), 2500);
-                }}
-                className="px-2.5 py-1 rounded-lg bg-[#F3F5F7] hover:bg-[#FFD400] text-[#15191D] text-[11px] font-bold border border-gray-200 inline-flex items-center gap-1 transition cursor-pointer"
-                title="Copiar todas as perguntas e respostas filtradas do Guia Rápido"
-              >
-                <Copy className="w-3 h-3" />
-                <span>{copiedIdentifier === 'copy-full-faq' ? '✓ FAQ Copiado' : 'Copiar FAQ'}</span>
-              </button>
-            </div>
-            <div className="relative flex-1 max-w-xs">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={helpSearch}
-                onChange={(e) => setHelpSearch(e.target.value)}
-                placeholder="Buscar dúvida (ex: prazo, senha, leitura)..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-[#F3F5F7] border border-gray-200 rounded-lg focus:outline-none focus:border-[#FFD400]"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5">
-            {[
-              'Todas',
-              'Mural & Leituras',
-              'Solicitações & SLA 48h',
-              'Acesso & Segurança',
-              'Mensagens & Grupos',
-              'Documentos & Normas',
-            ].map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setHelpCategory(cat)}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  helpCategory === cat
-                    ? 'bg-[#FFD400] text-[#080B0D]'
-                    : 'bg-[#F3F5F7] text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-
-          <div className="space-y-3 text-xs text-gray-700">
-            {filteredFaq.length === 0 ? (
-              <div className="p-6 text-center text-gray-400 bg-[#F3F5F7] rounded-xl">
-                Nenhum tópico encontrado para &ldquo;{helpSearch}&rdquo;. Utilize o formulário ao lado para acionar o suporte.
-              </div>
-            ) : (
-              filteredFaq.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-4 rounded-xl bg-[#F3F5F7] border border-gray-200/60"
-                >
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-[#080B0D] text-[#FFD400]">
-                      {item.category}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const faqText = `[RODOVAR CONECTA — ORIENTAÇÃO OFICIAL]\n${item.question}\nResposta: ${item.answer}`;
-                        navigator.clipboard?.writeText(faqText);
-                        setCopiedIdentifier(`faq-copy-${item.id}`);
-                        setTimeout(() => setCopiedIdentifier(null), 2500);
-                      }}
-                      className="bg-white hover:bg-[#FFD400]/30 text-[#15191D] border border-gray-200 text-[10px] font-bold px-2 py-0.5 rounded inline-flex items-center gap-1 cursor-pointer"
-                      title="Copiar orientação oficial para área de transferência"
-                    >
-                      <Copy className="w-3 h-3" />
-                      <span>
-                        {copiedIdentifier === `faq-copy-${item.id}` ? '✓ Copiado' : 'Copiar Resposta'}
-                      </span>
-                    </button>
-                  </div>
-                  <h3 className="font-extrabold text-[#15191D] text-sm mt-1">{item.question}</h3>
-                  <p className="mt-1.5 leading-relaxed text-gray-600">{item.answer}</p>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Right 5 cols: Direct Support Ticket Creation (SLA 48h) */}
-        <div className="lg:col-span-5 bg-white rounded-xl p-6 border border-gray-200/80 shadow-xs flex flex-col justify-between space-y-4">
-          <div className="space-y-4">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-lg bg-[#080B0D] text-[#FFD400] flex items-center justify-center shrink-0">
-                <Send className="w-4 h-4" />
-              </div>
-              <div>
-                <h2 className="text-base font-extrabold text-[#15191D]">
-                  Acionar Suporte Interno (SLA 48h)
-                </h2>
-                <p className="text-xs text-gray-500">
-                  Abra um chamado oficial com protocolo imediato para TI, RH ou Administração
-                </p>
-              </div>
-            </div>
-
-            {/* Fase 14: Atalhos Rápidos de Chamado Técnico / Operacional (1-Clique) */}
-            <div className="bg-[#F3F5F7] rounded-xl p-3 border border-gray-200/80">
-              <span className="block text-[10px] font-extrabold uppercase tracking-wider text-gray-500 mb-2">
-                Preenchimento Rápido de Suporte (1-Clique)
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSupportForm({
-                      targetDepartment: 'Administrativo',
-                      priority: 'Alta',
-                      subject: 'Redefinição de Credencial / Acesso ao Portal RODOVAR',
-                      description:
-                        'Solicito apoio do Service Desk TI para validação de acesso corporativo e sincronização de perfil no RODOVAR CONECTA.',
-                    })
-                  }
-                  className="text-[11px] font-bold bg-white hover:bg-[#FFD400]/20 text-[#15191D] border border-gray-200 px-2.5 py-1 rounded-lg transition cursor-pointer"
-                >
-                  🔑 Acesso / Credencial TI
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSupportForm({
-                      targetDepartment: 'Segurança',
-                      priority: 'Urgente',
-                      subject: 'Dúvida Normativa sobre Leitura Obrigatória / POP SSMA',
-                      description:
-                        'Preciso de orientação técnica da equipe SSMA sobre aplicação operacional de norma publicada no Mural / Central POP.',
-                    })
-                  }
-                  className="text-[11px] font-bold bg-white hover:bg-[#FFD400]/20 text-[#15191D] border border-gray-200 px-2.5 py-1 rounded-lg transition cursor-pointer"
-                >
-                  🦺 Dúvida POP / SSMA
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSupportForm({
-                      targetDepartment: 'Operacional',
-                      priority: 'Urgente',
-                      subject: 'Apoio CCO / Escala e Liberação de Viagem',
-                      description:
-                        'Solicito alinhamento com a Coordenação Operacional (CCO) referente a manifesto, checklist pré-viagem ou escala de frota.',
-                    })
-                  }
-                  className="text-[11px] font-bold bg-white hover:bg-[#FFD400]/20 text-[#15191D] border border-gray-200 px-2.5 py-1 rounded-lg transition cursor-pointer"
-                >
-                  🚛 Plantão CCO / Frota
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSupportForm({
-                      targetDepartment: 'Recursos Humanos',
-                      priority: 'Média',
-                      subject: 'Atualização Cadastral / Comprovante de Treinamento',
-                      description:
-                        'Solicito apoio do RH para conferência de certificado de treinamento obrigatório e atualização de dados no Diretório.',
-                    })
-                  }
-                  className="text-[11px] font-bold bg-white hover:bg-[#FFD400]/20 text-[#15191D] border border-gray-200 px-2.5 py-1 rounded-lg transition cursor-pointer"
-                >
-                  📋 RH / Certificados
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">
-                  Setor Responsável pelo Atendimento
-                </label>
-                <select
-                  value={supportForm.targetDepartment}
-                  onChange={(e) =>
-                    setSupportForm({
-                      ...supportForm,
-                      targetDepartment: e.target.value as Department,
-                    })
-                  }
-                  className="w-full px-3 py-2 bg-[#F3F5F7] border border-gray-200 rounded-lg font-semibold text-[#15191D]"
-                >
-                  <option value="Administrativo">Suporte Técnico / TI & Acessos</option>
-                  <option value="Recursos Humanos">Recursos Humanos / Benefícios</option>
-                  <option value="Operacional">Coordenação Operacional & Frota</option>
-                  <option value="Segurança">Segurança do Trabalho (SSMA)</option>
-                  <option value="Financeiro">Financeiro / Reembolsos</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-gray-700 mb-1"> Prioridade</label>
-                <select
-                  value={supportForm.priority}
-                  onChange={(e) =>
-                    setSupportForm({
-                      ...supportForm,
-                      priority: e.target.value as 'Baixa' | 'Média' | 'Alta' | 'Urgente',
-                    })
-                  }
-                  className="w-full px-3 py-2 bg-[#F3F5F7] border border-gray-200 rounded-lg font-semibold text-[#15191D]"
-                >
-                  <option value="Baixa">Baixa</option>
-                  <option value="Média">Média</option>
-                  <option value="Alta">Alta</option>
-                  <option value="Urgente">Urgente</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Assunto do Chamado *</label>
-                <input
-                  type="text"
-                  value={supportForm.subject}
-                  onChange={(e) => setSupportForm({ ...supportForm, subject: e.target.value })}
-                  placeholder="Ex: Dúvida sobre confirmação de leitura ou acesso..."
-                  className="w-full px-3 py-2 bg-[#F3F5F7] border border-gray-200 rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">
-                  Descrição Detalhada da Necessidade *
-                </label>
-                <textarea
-                  rows={4}
-                  value={supportForm.description}
-                  onChange={(e) => setSupportForm({ ...supportForm, description: e.target.value })}
-                  placeholder="Descreva sua dúvida técnica ou solicitação administrativa..."
-                  className="w-full px-3 py-2 bg-[#F3F5F7] border border-gray-200 rounded-lg"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-3 pt-2">
-            {supportSuccessToast && (
-              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
-                {supportSuccessToast}
-              </div>
-            )}
-
-            <button
-              onClick={() => {
-                if (!supportForm.subject.trim() || !supportForm.description.trim()) return;
-                onCreateRequest({
-                  targetDepartment: supportForm.targetDepartment,
-                  subject: `[Suporte Central de Ajuda] ${supportForm.subject.trim()}`,
-                  description: supportForm.description.trim(),
-                  priority: supportForm.priority,
-                });
-                setSupportForm({
-                  targetDepartment: 'Administrativo',
-                  subject: '',
-                  description: '',
-                  priority: 'Alta',
-                });
-                setSupportSuccessToast(
-                  '✓ Chamado registrado com sucesso com SLA de 48h! Acompanhe em "Minhas Solicitações".'
-                );
-                setTimeout(() => setSupportSuccessToast(null), 5000);
-              }}
-              className="w-full bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold text-xs py-3 rounded-xl shadow-xs transition cursor-pointer"
-            >
-              Registrar Chamado Oficial (SLA 48h)
-            </button>
-
-            {/* Fase 14: Escala de Plantão & Contatos de Emergência 24h RODOVAR */}
-            <div className="bg-[#080B0D] text-[#F3F5F7] rounded-xl p-3.5 border border-gray-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-extrabold text-[#FFD400] uppercase tracking-wider">
-                  Plantão de Emergência 24h RODOVAR
-                </span>
-                <span className="font-mono text-[10px] bg-[#E5252A] text-white px-2 py-0.5 rounded font-bold">
-                  ACIONAMENTO IMEDIATO
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div className="bg-[#15191D] p-2 rounded-lg border border-gray-800 flex items-center justify-between gap-1">
-                  <div>
-                    <span className="text-gray-400 block text-[10px]">CCO / Monitoramento</span>
-                    <span className="font-mono font-bold text-white">Telefone: 71 9 9920-2476</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard?.writeText('CCO RODOVAR 24h: Telefone: 71 9 9920-2476');
-                      setCopiedIdentifier('emerg-cco');
-                      setTimeout(() => setCopiedIdentifier(null), 2500);
-                    }}
-                    className="bg-white/10 hover:bg-[#FFD400] hover:text-[#080B0D] text-gray-300 p-1.5 rounded transition cursor-pointer"
-                    title="Copiar telefone do Plantão CCO 24h"
-                  >
-                    <Copy className="w-3 h-3" />
-                  </button>
-                </div>
-                <div className="bg-[#15191D] p-2 rounded-lg border border-gray-800 flex items-center justify-between gap-1">
-                  <div>
-                    <span className="text-gray-400 block text-[10px]">Emergência SSMA / PGR</span>
-                    <span className="font-mono font-bold text-[#FFD400]">Telefone: 71 9 9920-2476</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard?.writeText(
-                        'Emergência SSMA / PGR RODOVAR 24h: Telefone: 71 9 9920-2476'
-                      );
-                      setCopiedIdentifier('emerg-ssma');
-                      setTimeout(() => setCopiedIdentifier(null), 2500);
-                    }}
-                    className="bg-white/10 hover:bg-[#FFD400] hover:text-[#080B0D] text-gray-300 p-1.5 rounded transition cursor-pointer"
-                    title="Copiar telefone de Emergência SSMA 24h"
-                  >
-                    <Copy className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-              {(copiedIdentifier === 'emerg-cco' || copiedIdentifier === 'emerg-ssma') && (
-                <p className="text-[10px] font-bold text-[#FFD400] text-center">
-                  ✓ Contato de emergência copiado para a área de transferência!
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Fase 30: Selo Oficial de Homologação e Fechamento 100% da Plataforma RODOVAR CONECTA */}
-      <div className="bg-[#080B0D] text-[#F3F5F7] rounded-xl p-4 border border-gray-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[#FFD400] text-[#080B0D] flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-5 h-5 stroke-[2.3]" />
-          </div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-extrabold text-white">
-                GOVERNANÇA CORPORATIVA 100% HOMOLOGADA — TRANSPORTADORA RODOVAR
-              </span>
-              <span className="text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded">
-                FASES 1 A 30 CONCLUÍDAS
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mt-0.5">
-              Rastreabilidade integral de leituras obrigatórias (AUTH-RDV), protocolos SLA 48h (SLA48H), termos normativos (POP-ACK), certificados SSMA (CERT-RDV) e fichas funcionais (FICHA-RDV).
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            const certText = [
-              'CERTIFICADO DE CONFORMIDADE E GOVERNANÇA DIGITAL — RODOVAR CONECTA',
-              '===================================================================',
-              `Emitido em: ${new Date().toLocaleString('pt-BR')}`,
-              `Operador Autenticado: ${currentUser.name} (${currentUser.role} - ${currentUser.department})`,
-              'Status da Plataforma: 100% HOMOLOGADA (Fases 1 a 30 Concluídas)',
-              'Módulos Auditados: Mural Oficial, Solicitações SLA 48h, Mensagens & Grupos, Agenda, Documentos POP, Diretório, Administração RBAC, Perfil Funcional e Central de Ajuda.',
-              'Hash de Integridade do Sistema: SYS-RDV-CONECTA-2025-V30-OK',
-            ].join('\n');
-            navigator.clipboard?.writeText(certText);
-            setCopiedIdentifier('copy-gov-seal');
-            setTimeout(() => setCopiedIdentifier(null), 2500);
-          }}
-          className="px-3 py-2 rounded-lg bg-[#15191D] hover:bg-[#FFD400] hover:text-[#080B0D] text-[#FFD400] border border-gray-700 font-mono text-[11px] font-bold inline-flex items-center gap-1.5 shrink-0 transition cursor-pointer"
-          title="Copiar Certificado de Conformidade e Governança Digital do Sistema"
-        >
-          <Copy className="w-3.5 h-3.5" />
-          <span>
-            {copiedIdentifier === 'copy-gov-seal'
-              ? '✓ Certificado Copiado'
-              : 'SYS-RDV-V30 • Copiar Selo'}
-          </span>
-        </button>
-      </div>
-    </div>
-  );
+  return <HelpCenterPremium currentUser={currentUser} onNavigate={onNavigate} />;
 };
 
 function AdministrationDataBoundary(props:ModulesViewProps){
@@ -6257,6 +5765,9 @@ function AdministrationDataBoundary(props:ModulesViewProps){
 }
 
 export const ModulesView: React.FC<ModulesViewProps> = (props) => {
+  if (props.activeSection === 'ajuda') {
+    return <HelpCenterPremium currentUser={props.currentUser} onNavigate={props.onNavigate} />;
+  }
   return <>
     {props.activeSection === 'comunicados' ? <MuralPremium currentUser={props.currentUser} initial={props.announcements} onHydrated={props.onMuralHydrated} economicMode={props.economicMode}/> : props.activeSection==='administracao'?<AdministrationDataBoundary {...props}/>:<ModulesViewContent {...props} />}
   </>;

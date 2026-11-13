@@ -1,7 +1,7 @@
 import React from 'react';
-import { CarrierBrand, OperationalUnit } from '../types';
+import { ActiveCarrierBrand, CarrierBrand, OperationalUnit } from '../types';
 
-export const CARRIER_BRANDS: CarrierBrand[] = ['RODOVAR', 'VL TRANSPORTES', 'AXD'];
+export const CARRIER_BRANDS: ActiveCarrierBrand[] = ['RODOVAR', 'VL TRANSPORTES'];
 
 export const OPERATIONAL_UNITS: { value: OperationalUnit; tag: 'SSA-BA' | 'GRU-SP'; label: string }[] = [
   { value: 'BA - Salvador', tag: 'SSA-BA', label: 'BA - Salvador (SSA-BA)' },
@@ -41,41 +41,10 @@ export const CarrierBrandLogo: React.FC<{
   if (brand === 'AXD') {
     return (
       <div
-        className={`inline-flex items-center justify-center bg-white px-2.5 py-1 rounded-lg border border-gray-200/80 shadow-2xs select-none ${heightClass} ${className}`}
-        title="AXD Logística & Transportes"
+        className={`inline-flex items-center justify-center bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-300 text-slate-600 text-[10px] font-bold uppercase tracking-wider select-none ${heightClass} ${className}`}
+        title="Registro Histórico — AXD (somente leitura)"
       >
-        <svg
-          viewBox="0 0 270 100"
-          className="h-full w-auto"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          {/* Letter A */}
-          <polygon points="42,10 64,10 96,90 72,90 65,70 35,70 43,52 59,52 52,32 32,90 10,90" fill="#1E293B" />
-          {/* Orange bottom-left leg of A */}
-          <polygon points="23,55 44,55 31,90 10,90" fill="#F97316" />
-
-          {/* Diamond Dot between A and X */}
-          <polygon points="105,53 116,64 105,75 94,64" fill="#1E293B" />
-
-          {/* Letter X main diagonal (top-left to bottom-right) */}
-          <polygon points="88,10 114,10 176,90 150,90" fill="#1E293B" />
-          {/* Orange top-right arm of X */}
-          <polygon points="156,10 180,10 148,44 135,31" fill="#F97316" />
-          {/* Orange bottom-right tip of X */}
-          <polygon points="154,72 167,72 180,90 154,90" fill="#F97316" />
-
-          {/* Letter D */}
-          <path
-            d="M188,10 H226 C250,10 264,28 264,50 C264,72 250,90 226,90 H188 V10 Z M210,28 V72 H224 C237,72 244,63 244,50 C244,37 237,28 224,28 H210 Z"
-            fill="#334155"
-          />
-          {/* Orange bottom curve of D */}
-          <path
-            d="M210,72 H225 C236,72 242,65 244,56 H263 C260,76 246,90 225,90 H196 L210,72 Z"
-            fill="#F97316"
-          />
-        </svg>
+        AXD (Histórico)
       </div>
     );
   }
@@ -251,7 +220,6 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
     if (key.includes('EMPRESA') || key.includes('MARCA')) {
       const upper = val.toUpperCase();
       if (upper.includes('VL')) result.empresaMarca = 'VL TRANSPORTES';
-      else if (upper.includes('AXD')) result.empresaMarca = 'AXD';
       else result.empresaMarca = 'RODOVAR';
     } else if (key.includes('DATA')) {
       result.dataCarregamento = val;

@@ -1130,10 +1130,36 @@ function saveDatabase(db: ServerDatabase): void {
   });
 }
 
+async function saveDatabaseAsync(db: ServerDatabase): Promise<void> {
+  saveLocalDbFile(db);
+  await Promise.allSettled([
+    persistStateSnapshotToNeon('rodovar-core-state', {
+      users: db.users,
+      accessPolicy: db.accessPolicy,
+      archivedUsers: db.archivedUsers,
+      accessDecisions: db.accessDecisions,
+      systemConfig: db.systemConfig,
+      updatedAtIso: new Date().toISOString(),
+    }),
+    persistStateSnapshotToNeon('rodovar-server-db', {
+      systemConfig: db.systemConfig,
+      accessPolicy: db.accessPolicy,
+      userCount: db.users?.length,
+      updatedAt: new Date().toISOString(),
+    }),
+  ]);
+}
+
 function saveMuralState(db: ServerDatabase): void {
   saveLocalDbFile(db);
   const rawDb = db as any;
   void persistStateSnapshotToNeon('rodovar-mural-state', rawDb.mural);
+}
+
+async function saveMuralStateAsync(db: ServerDatabase): Promise<void> {
+  saveLocalDbFile(db);
+  const rawDb = db as any;
+  await persistStateSnapshotToNeon('rodovar-mural-state', rawDb.mural).catch(() => {});
 }
 
 function saveDriversState(db: ServerDatabase): void {
@@ -1155,11 +1181,22 @@ function saveCustomerCoversState(db: ServerDatabase): void {
   });
 }
 
+async function saveCustomerCoversStateAsync(db: ServerDatabase): Promise<void> {
+  saveLocalDbFile(db);
+  const rawDb = db as any;
+  await persistStateSnapshotToNeon('rodovar-covers-state', {
+    customerCovers: rawDb.customerCovers,
+    updatedAtIso: new Date().toISOString(),
+  }).catch(() => {});
+}
+
 let dbState: ServerDatabase = loadOrInitDatabase();
 
 const localNeonTimestamps: Record<string, number> = {};
 let lastNeonSyncCheckMs = 0;
+let lastFreightNeonSyncCheckMs = 0;
 let activeNeonSyncPromise: Promise<void> | null = null;
+let activeFreightNeonSyncPromise: Promise<void> | null = null;
 let initialNeonBootDone = false;
 let initialNeonBootPromise: Promise<void> | null = null;
 let cachedEconomicMode: { value: boolean; fetchedAtMs: number } | null = null;
@@ -1416,6 +1453,33 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
   })();
 
   return activeNeonSyncPromise;
+}
+
+async function syncFreightsOnlyFromNeonIfNeeded(): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+  const now = Date.now();
+  const minCooldownMs = cachedEconomicMode?.value ? 15000 : 8000;
+  if (now - lastFreightNeonSyncCheckMs < minCooldownMs) return;
+  if (activeFreightNeonSyncPromise) return activeFreightNeonSyncPromise;
+
+  activeFreightNeonSyncPromise = (async () => {
+    try {
+      lastFreightNeonSyncCheckMs = Date.now();
+      const remoteTs = await fetchNeonStateTimestamps();
+      const freightTs = remoteTs['rodovar-freights-state'];
+      if (freightTs && localNeonTimestamps['rodovar-freights-state'] !== freightTs) {
+        const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
+        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+        localNeonTimestamps['rodovar-freights-state'] = freightTs;
+      }
+    } catch {
+      // Non-blocking fallback to in-memory/Neon SQL query
+    } finally {
+      activeFreightNeonSyncPromise = null;
+    }
+  })();
+
+  return activeFreightNeonSyncPromise;
 }
 
 function resolveUserAvatarUrl(user: ServerUserRecord, config: SystemConfig): string {
@@ -1801,9 +1865,19 @@ export function createExpressApp(): express.Express {
       req.path === '/neon/health' ||
       req.path.startsWith('/system-config/assets/') ||
       req.path === '/system-config/version';
+    const isFreightPath = req.path.startsWith('/meus-fretes');
+    if (isFreightPath) {
+      res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Vary', 'Authorization, Cookie');
+    }
     if (!isLightPath) {
       await ensureNeonBootstrapped();
-      await syncAllModulesFromNeonIfNeeded(false);
+      if (isFreightPath) {
+        await syncFreightsOnlyFromNeonIfNeeded();
+      } else {
+        await syncAllModulesFromNeonIfNeeded(false);
+      }
     }
     if (
       req.path.startsWith('/auth') ||
@@ -1828,7 +1902,7 @@ export function createExpressApp(): express.Express {
       if (req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
         const p = req.path, profile = user.accessProfile;
         const isManagerOrAdmin = user.accessLevel === 'ADMINISTRADOR' || user.accessLevel === 'DIRETORIA';
-        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate)$/.test(p);
+        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate|reopen)$/.test(p);
         const permitted =
           isManagerOrAdmin ||
           (isSharedAction &&
@@ -1843,7 +1917,7 @@ export function createExpressApp(): express.Express {
           (profile === 'EXPEDICAO' &&
             /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p)) ||
           (canOperateMonitoring(user) &&
-            /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve)$/.test(p));
+            /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p));
         if (!permitted) {
           res.status(403).json({error:'Etapa exclusiva de outro perfil.'});
           return;
@@ -3191,7 +3265,15 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.get('/api/system-config/version', (_req, res) => {
+  app.get('/api/system-config/version', async (_req, res) => {
+    if (isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonReady().catch(() => {});
+      const neonCfg = await loadSystemConfigFromNeon().catch(() => null);
+      if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+        dbState.systemConfig = neonCfg;
+      }
+    }
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       revision: dbState.systemConfig.revision,
       updatedAtIso: dbState.systemConfig.updatedAtIso,
@@ -3260,7 +3342,10 @@ export function createExpressApp(): express.Express {
         return res.sendFile(diskPath);
       }
 
-      // 2. Query Neon PostgreSQL for permanent serverless storage
+      // 2. Ensure Neon pool/schema initialized on cold serverless invocation before querying asset
+      if (isNeonConfigured && !isIsolatedTestEnv()) {
+        await ensureNeonReady().catch(() => {});
+      }
       const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
       const asset =
         (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
@@ -3539,12 +3624,11 @@ export function createExpressApp(): express.Express {
         `Configuração visual do sistema publicada (Revisão #${nextRevision}) por ${admin.login}. Banners no carrossel: ${sanitizedBannerItems.length}.`,
         req.ip
       );
-      saveDatabase(dbState);
-
-      // Persist state to Neon PostgreSQL
-      await persistSystemConfigToNeon(nextConfig).catch((err) =>
-        console.warn('Neon persistSystemConfigToNeon warn:', err)
-      );
+      // Persist state to Neon PostgreSQL synchronously before responding
+      await Promise.all([
+        saveDatabaseAsync(dbState),
+        persistSystemConfigToNeon(nextConfig),
+      ]).catch((err) => console.warn('Neon persistSystemConfigToNeon warn:', err));
 
       res.json({
         ok: true,
@@ -3559,7 +3643,7 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   registerAccountDeletionRoutes(app, requireAdminSession, dbState, saveDatabase);
   registerAgenda(app, requireApprovedSession, () => dbState.users);
-  registerMural(app, requireApprovedSession, dbState, () => saveMuralState(dbState), INITIAL_ANNOUNCEMENTS);
+  registerMural(app, requireApprovedSession, dbState, () => saveMuralStateAsync(dbState), INITIAL_ANNOUNCEMENTS);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
@@ -3590,7 +3674,7 @@ export function createExpressApp(): express.Express {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ token, login: user.login, expiresInHours: 24 });
   });
-  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveCustomerCoversState(dbState));
+  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveCustomerCoversStateAsync(dbState));
   registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDriversState(dbState));
   registerUnifiedFreightRoutes(
     app,

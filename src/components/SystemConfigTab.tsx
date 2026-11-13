@@ -22,6 +22,7 @@ import {
   apiUploadSystemConfigImage,
   withRevisionParam,
 } from '../lib/serverApi';
+import { processImageFileForUpload } from '../lib/imageUploadUtils';
 
 interface SystemConfigTabProps {
   systemConfig: SystemConfig;
@@ -85,25 +86,21 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savingOverlayMessage, setSavingOverlayMessage] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState<boolean>(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
+  const [lastUploadNotice, setLastUploadNotice] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetchSystemConfig()
       .then((res) => {
-        if (res.systemConfig) setDraft(structuredClone(res.systemConfig));
+        if (res.systemConfig) {
+          setDraft((prev) => (hasUnsavedChanges ? prev : structuredClone(res.systemConfig)));
+        }
         if (res.defaults) setDefaults(res.defaults);
       })
       .catch(() => {
         // fallback to prop
       });
   }, []);
-
-  const readFileAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error('Falha ao ler arquivo selecionado.'));
-      reader.readAsDataURL(file);
-    });
 
   const handleUploadSingleSlot = async (
     slot: 'sidebarPoster' | 'topHeader' | 'defaultAvatar',
@@ -114,10 +111,16 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
     if (!file) return;
 
     setErrorMsg(null);
+    setLastUploadNotice(null);
     setUploadingSlot(slot);
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const res = await apiUploadSystemConfigImage(slot, dataUrl);
+      const processed = await processImageFileForUpload(file, {
+        maxWidth: slot === 'topHeader' || slot === 'defaultAvatar' ? 1920 : 1200,
+        maxHeight: slot === 'topHeader' ? 720 : 1400,
+        maxDataUrlBytes: 1_500_000,
+        preferPng: file.type === 'image/png' && slot === 'defaultAvatar',
+      });
+      const res = await apiUploadSystemConfigImage(slot, processed.dataUrl);
       if (!res.ok || !res.imageUrl) {
         setErrorMsg(res.error || 'O servidor rejeitou o arquivo enviado.');
         return;
@@ -168,8 +171,12 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
           },
         }));
       }
-    } catch {
-      setErrorMsg('Erro ao enviar imagem para validação no servidor.');
+      setHasUnsavedChanges(true);
+      setLastUploadNotice('Nova imagem carregada na prévia. Clique em "Salvar e atualizar" abaixo para aplicar no sistema.');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Erro ao enviar imagem para validação no servidor.'
+      );
     } finally {
       setUploadingSlot(null);
     }
@@ -190,10 +197,15 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
     }
 
     setErrorMsg(null);
+    setLastUploadNotice(null);
     setUploadingSlot(replaceIndex === null ? 'welcomeBanner-add' : `welcomeBanner-${replaceIndex}`);
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const res = await apiUploadSystemConfigImage('welcomeBanner', dataUrl);
+      const processed = await processImageFileForUpload(file, {
+        maxWidth: 1920,
+        maxHeight: 960,
+        maxDataUrlBytes: 1_500_000,
+      });
+      const res = await apiUploadSystemConfigImage('welcomeBanner', processed.dataUrl);
       if (!res.ok || !res.imageUrl) {
         setErrorMsg(res.error || 'Arquivo inválido para o Banner de boas-vindas.');
         return;
@@ -205,6 +217,12 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
           welcomeBanner: `Uma imagem do banner (${res.width}×${res.height}px) está abaixo da dimensão recomendada (1920×360px).`,
         }));
         setConfirmedLowRes(false);
+      } else {
+        setLowResWarnings((prev) => {
+          const next = { ...prev };
+          delete next.welcomeBanner;
+          return next;
+        });
       }
 
       const newItem: WelcomeBannerItem = {
@@ -239,8 +257,17 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
           },
         };
       });
-    } catch {
-      setErrorMsg('Falha ao enviar imagem do banner.');
+      if (replaceIndex !== null) {
+        setActiveBannerPreviewIdx(replaceIndex);
+      } else {
+        setActiveBannerPreviewIdx(draft.welcomeBanner.items.length);
+      }
+      setHasUnsavedChanges(true);
+      setLastUploadNotice('Imagem do banner carregada na prévia. Clique em "Salvar e atualizar" abaixo para publicar.');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Falha ao enviar imagem do banner.'
+      );
     } finally {
       setUploadingSlot(null);
     }
@@ -298,6 +325,8 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
       ...prev,
       [section]: structuredClone(defaults[section]),
     }));
+    setHasUnsavedChanges(true);
+    setLastUploadNotice('Imagem padrão restaurada na prévia. Clique em "Salvar e atualizar" para publicar.');
     if (section === 'welcomeBanner') {
       setActiveBannerPreviewIdx(0);
     }
@@ -332,6 +361,12 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
       });
 
       if (!res.ok || !res.systemConfig) {
+        if (res.status === 409 && res.currentRevision) {
+          const fresh = await apiFetchSystemConfig().catch(() => null);
+          if (fresh?.systemConfig) {
+            setDraft((prev) => ({ ...prev, revision: fresh.systemConfig.revision }));
+          }
+        }
         setErrorMsg(
           res.error || 'Não foi possível salvar as configurações no servidor.'
         );
@@ -339,6 +374,9 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
         return;
       }
 
+      setHasUnsavedChanges(false);
+      setLastUploadNotice(null);
+      setDraft(structuredClone(res.systemConfig));
       onSystemConfigPublished?.(res.systemConfig);
       setSavingOverlayMessage('Configurações salvas. Atualizando o sistema…');
 
@@ -1089,6 +1127,64 @@ export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Sticky Bottom Action Bar: ensures Save, Errors and Low-Res Confirmation are always visible wherever the admin scrolled */}
+      {(hasUnsavedChanges || hasLowResWarnings || Boolean(errorMsg) || Boolean(lastUploadNotice)) && (
+        <div
+          data-testid="system-config-sticky-bar"
+          className="sticky bottom-3 z-30 bg-[#080B0D] text-white rounded-2xl p-4 border-2 border-[#FFD400] shadow-2xl space-y-2.5"
+        >
+          {errorMsg && (
+            <div className="p-2.5 rounded-xl bg-red-950/90 border border-red-400 text-xs font-bold text-red-100 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-300 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {hasLowResWarnings && (
+            <label className="flex items-start gap-2 text-xs font-bold text-amber-200 bg-amber-950/60 border border-amber-400/50 rounded-xl p-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={confirmedLowRes}
+                onChange={(e) => setConfirmedLowRes(e.target.checked)}
+                className="mt-0.5 rounded text-[#FFD400]"
+              />
+              <span>
+                Aviso de resolução inferior ao recomendado — marque esta caixa para confirmar a publicação desta imagem.
+              </span>
+            </label>
+          )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs">
+              <p className="font-extrabold text-[#FFD400]">
+                {hasUnsavedChanges
+                  ? 'Alterações pendentes na pré-visualização'
+                  : 'Pronto para publicar'}
+              </p>
+              <p className="text-[11px] text-gray-300">
+                {lastUploadNotice ||
+                  'Clique em "Salvar e atualizar" para gravar no Neon e aplicar a nova capa em todo o sistema.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isPublishing || Boolean(uploadingSlot)}
+              onClick={handleSaveAndRefresh}
+              className="bg-[#FFD400] hover:bg-[#ffdf33] disabled:opacity-60 text-[#080B0D] font-extrabold text-xs px-5 py-2.5 rounded-xl inline-flex items-center justify-center gap-2 shadow-lg cursor-pointer shrink-0 transition"
+            >
+              <Save className="w-4 h-4 stroke-[2.4]" />
+              <span>
+                {uploadingSlot
+                  ? 'Processando imagem…'
+                  : isPublishing
+                    ? 'Publicando…'
+                    : 'Salvar e atualizar'}
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

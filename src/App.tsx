@@ -1,4 +1,5 @@
 import {HomePremium} from './components/HomePremium';
+import {clearPrivateFreightCache} from './lib/freightQueryCache';
 import {validatePortalBackup} from './lib/adminBackup';
 import {portalLoading} from './lib/portalLoading';
 import {usePortalInitialized, useAuthenticatedPanelLoading} from './components/GlobalLoading';
@@ -978,6 +979,9 @@ export default function App() {
           ? cleanPrev.map((e) => (e.id === emp.id ? { ...e, ...emp } : e))
           : [emp, ...cleanPrev];
       });
+      if (emp.id !== currentUserId) {
+        clearPrivateFreightCache();
+      }
       setCurrentUserId(emp.id);
       setIsAuthenticated(true);
 
@@ -1035,6 +1039,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      clearPrivateFreightCache();
       await apiLogout();
       await clearSensitiveDataOnLogout();
       await clearSharedReceiptDraft();
