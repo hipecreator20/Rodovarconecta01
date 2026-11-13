@@ -9,5 +9,3 @@ coverage/
 .aistudio/
 .vercel/
 data/
-src/server/embeddedDataSeed.ts
-api/index.js
