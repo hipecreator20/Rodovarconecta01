@@ -29,6 +29,7 @@ import {
   User,
   Video,
   X,
+  ClipboardPaste,
 } from 'lucide-react';
 import {
   Employee,
@@ -69,6 +70,8 @@ import {
 import { FreightDocumentsManager } from './FreightDocumentsManager';
 import { CorporateModal } from './ui/CorporateModal';
 import { OrdemColetaModal, printCollectionOrderViaIframe } from './OrdemColetaDocument';
+import { ImportFreightScriptModal } from './ImportFreightScriptModal';
+import { ParsedTrafficScript } from '../lib/carrierLogos';
 import {
   COMPANY_LEGAL_PROFILES,
   extractOrderDisplayNumber,
@@ -345,10 +348,11 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnObservation, setReturnObservation] = useState('');
 
-  // Printable Order Modal & "Ignorar por enquanto" Modal
+  // Printable Order Modal & "Ignorar por enquanto" Modal & Script Import Modal
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [showSkipOrderModal, setShowSkipOrderModal] = useState(false);
   const [skipOrderReason, setSkipOrderReason] = useState('');
+  const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
 
   // Occurrence creation state
   const [occTitulo, setOccTitulo] = useState('');
@@ -1884,6 +1888,20 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
             {/* TAB 1: PREPARAÇÃO OPERACIONAL (CARDS 1 A 4 IGUAIS AO COMERCIAL) */}
             {activeDetailTab === 'PREPARACAO' && (
               <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-amber-950">
+                    <strong>Preencher por Script (WhatsApp):</strong> Importe motorista, telefone, frete motorista, favorecido, PIX, banco e observações (campos ausentes permanecem em branco).
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsScriptModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#080B0D] text-[#FFD400] font-extrabold text-xs hover:bg-slate-800 cursor-pointer"
+                  >
+                    <ClipboardPaste className="w-3.5 h-3.5" />
+                    Importar Script
+                  </button>
+                </div>
+
                 {/* CARD 1: ROTA, COLETA, ENTREGA E CARGA */}
                 <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
                   <div className="flex items-center justify-between pb-2 border-b border-gray-200">
@@ -3178,6 +3196,38 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
           </div>
         </CorporateModal>
       )}
+
+      <ImportFreightScriptModal
+        isOpen={isScriptModalOpen}
+        onClose={() => setIsScriptModalOpen(false)}
+        title="Importar Script para Dados Operacionais"
+        subtitle="Preenche motorista, frete motorista, PIX, banco e condições; campos ausentes permanecem em branco."
+        fillFormLabel="Preencher dados operacionais"
+        onFillForm={(parsed: Partial<ParsedTrafficScript>) => {
+          setOpEnderecoColeta(parsed.enderecoColeta || opEnderecoColeta || '');
+          setOpClienteContato(parsed.telefoneCliente || '');
+          setOpTipoCarga(parsed.tipoCarga || opTipoCarga || '');
+          if (parsed.pesoKg && parsed.pesoKg > 0) setOpPesoKg(String(parsed.pesoKg));
+          if (parsed.volumes && parsed.volumes > 0) setOpVolumes(String(parsed.volumes));
+          if (parsed.veiculoNecessario) setOpVeiculoNecessario(parsed.veiculoNecessario);
+          setOpMotoristaNome(parsed.motoristaNome || '');
+          setOpMotoristaCpf(parsed.motoristaCpf || '');
+          setOpMotoristaTelefone(parsed.motoristaTelefone || '');
+          if (parsed.placaVeiculo) setOpPlacaVeiculo(parsed.placaVeiculo);
+          setOpValorContratadoReais(
+            parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
+              ? parsed.valorFreteMotorista.toFixed(2).replace('.', ',')
+              : ''
+          );
+          setOpFavorecidoPagamento(parsed.favorecido || '');
+          setOpBancoPagamento(parsed.banco || '');
+          setOpTipoChavePix(parsed.tipoChavePix || 'CPF/CNPJ');
+          setOpChavePix(parsed.chavePix || '');
+          setOpCondicoesPagamento(parsed.condicoesPagamento || '');
+          setOpObservacoes(parsed.observacoes || '');
+          showToast('Script aplicado aos dados operacionais! Campos ausentes permaneceram em branco.');
+        }}
+      />
     </div>
   );
 };
