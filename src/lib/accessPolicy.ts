@@ -1,5 +1,5 @@
 export type AccessProfile = 'RH' | 'DIRETORIA' | 'MONITORAMENTO' | 'COMERCIAL' | 'EXPEDICAO' | 'FINANCEIRO';
-export const BUSINESS_MODULES = ['inicio', 'comunicados', 'fretes_ativos', 'solicitacoes', 'financeiro', 'agenda', 'documentos', 'mensagens', 'grupos', 'diretorio'];
+export const BUSINESS_MODULES = ['inicio', 'comunicados', 'fretes_ativos', 'solicitacoes', 'financeiro', 'agenda', 'documentos', 'diretorio'];
 export const PROFILE_MODULES: Record<AccessProfile, readonly string[]> = {
   RH: ['solicitacoes'],
   DIRETORIA: BUSINESS_MODULES,

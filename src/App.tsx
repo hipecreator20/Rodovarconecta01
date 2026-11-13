@@ -9,7 +9,7 @@ import './components/NotificationsClean.css';
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { Suspense, lazy, useEffect, useState, useRef } from 'react';
 import { FirstAccessPassword } from './components/FirstAccessPassword';
 import {
   Activity,
@@ -44,14 +44,36 @@ import {
   X,
 } from 'lucide-react';
 import { RodovarLogo } from './components/RodovarLogo';
-import { MobileDeviceView } from './components/MobileSimulatorModal';
-import { SectorNotificationFlowView } from './components/SectorNotificationFlowView';
-import { ModulesView } from './components/ModulesView';
 import { LoginScreen } from './components/LoginScreen';
-import { FinanceiroFretesView } from './components/FinanceiroFretesView';
-import { FretesAtivosView } from './components/FretesAtivosView';
-import { MeusFretesComercialView } from './components/MeusFretesComercialView';
-import { MeusFretesExpedicaoView } from './components/MeusFretesExpedicaoView';
+const MobileDeviceView = lazy(() =>
+  import('./components/MobileSimulatorModal').then((m) => ({ default: m.MobileDeviceView }))
+);
+const SectorNotificationFlowView = lazy(() =>
+  import('./components/SectorNotificationFlowView').then((m) => ({
+    default: m.SectorNotificationFlowView,
+  }))
+);
+const ModulesView = lazy(() =>
+  import('./components/ModulesView').then((m) => ({ default: m.ModulesView }))
+);
+const FinanceiroFretesView = lazy(() =>
+  import('./components/FinanceiroFretesView').then((m) => ({
+    default: m.FinanceiroFretesView,
+  }))
+);
+const FretesAtivosView = lazy(() =>
+  import('./components/FretesAtivosView').then((m) => ({ default: m.FretesAtivosView }))
+);
+const MeusFretesComercialView = lazy(() =>
+  import('./components/MeusFretesComercialView').then((m) => ({
+    default: m.MeusFretesComercialView,
+  }))
+);
+const MeusFretesExpedicaoView = lazy(() =>
+  import('./components/MeusFretesExpedicaoView').then((m) => ({
+    default: m.MeusFretesExpedicaoView,
+  }))
+);
 import { hasPagePermission, permittedHome, getDefaultPermissionsForDepartment } from './lib/permissions';
 import {
   INITIAL_FREIGHTS,
@@ -127,8 +149,6 @@ const SECTION_TO_PATH: Record<MenuSection, string> = {
   financeiro: '/financeiro',
   agenda: '/agenda',
   documentos: '/documentos',
-  mensagens: '/mensagens',
-  grupos: '/grupos',
   diretorio: '/diretorio',
   perfil: '/perfil',
   administracao: '/administracao',
@@ -146,9 +166,8 @@ function getSectionFromPathname(pathname: string): MenuSection | null {
   if (clean === '/solicitacoes') return 'solicitacoes';
   if (clean === '/financeiro' || clean === '/receber-comprovante') return 'financeiro';
   if (clean === '/agenda') return 'agenda';
-  if (clean === '/documentos') return 'comunicados';
-  if (clean === '/mensagens') return 'mensagens';
-  if (clean === '/grupos') return 'grupos';
+  if (clean === '/documentos') return 'documentos';
+  if (clean === '/mensagens' || clean === '/grupos') return 'inicio';
   if (clean === '/diretorio') return 'diretorio';
   if (clean === '/perfil') return 'perfil';
   if (clean === '/administracao' || clean === '/liberacao') return 'administracao';
@@ -157,7 +176,23 @@ function getSectionFromPathname(pathname: string): MenuSection | null {
   return null;
 }
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = () => setIsMobile(mq.matches);
+    setIsMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return isMobile;
+}
+
 export default function App() {
+  const isMobile = useIsMobile();
   useEffect(() => {
     const receive = (event: Event) => {
       const notices = (event as CustomEvent).detail;
@@ -216,24 +251,11 @@ export default function App() {
   const [authSessionNotice, setAuthSessionNotice] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(true);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    const controller = new AbortController();
-    const update = async () => {
-      try { const response = await fetch('/api/agenda', {headers:getAuthHeaders(),signal:controller.signal});
-        if (!response.ok) return;
-        const data = await response.json();
-        if (!controller.signal.aborted) window.dispatchEvent(new CustomEvent('rodovar:agenda-notifications',{detail:data.notifications}));
-      } catch { /* Existing notification state remains available on network failure. */ }
-    };
-    void update();
-    if (!economicMode) {
-      const interval = setInterval(update, 15000);
-      return () => { controller.abort(); clearInterval(interval); };
-    }
-    return () => { controller.abort(); };
-  }, [isAuthenticated, economicMode]);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
+  const systemConfigRevisionRef = useRef<number>(0);
+  useEffect(() => {
+    systemConfigRevisionRef.current = systemConfig?.revision ?? 0;
+  }, [systemConfig?.revision]);
   const [pendingAccessRequestsCount, setPendingAccessRequestsCount] = useState<number>(0);
   const [notificationNavigationError,setNotificationNavigationError]=useState('');
   const [selectedNotificationFreightId, setSelectedNotificationFreightId] = useState<string | null>(
@@ -675,20 +697,54 @@ export default function App() {
     }
   }, [activeSection, isAuthenticated, pendingSharedDraft]);
 
-  // The server owns the user directory; browser caches cannot restore deleted accounts.
+  // Agenda notifications sync (only if user has agenda permission)
   useEffect(() => {
-    if(!isAuthenticated || currentUser.mustChangePassword)return;
-    const controller=new AbortController();
-    const load=async()=>{try{const response=await fetch('/api/employees',{headers:getAuthHeaders(),signal:controller.signal});if(response.ok){const data=await response.json();if(!controller.signal.aborted)setEmployees(data.employees);}}catch{}};
-    load();
+    if (!isAuthenticated || currentUser.mustChangePassword || !hasPagePermission(currentUser, 'agenda')) return;
+    const controller = new AbortController();
+    const update = async () => {
+      try {
+        const response = await fetch('/api/agenda', { headers: getAuthHeaders(), signal: controller.signal });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!controller.signal.aborted) {
+          window.dispatchEvent(new CustomEvent('rodovar:agenda-notifications', { detail: data.notifications }));
+        }
+      } catch { /* Existing notification state remains available on network failure. */ }
+    };
+    void update();
     if (!economicMode) {
-      const timer=setInterval(load,10000);
-      return()=>{controller.abort();clearInterval(timer);};
+      const interval = setInterval(() => {
+        if (document.visibilityState === 'visible') void update();
+      }, 20000);
+      return () => { controller.abort(); clearInterval(interval); };
     }
     return () => { controller.abort(); };
-  },[isAuthenticated,currentUserId,currentUser.mustChangePassword,economicMode]);
+  }, [isAuthenticated, currentUser.id, currentUser.mustChangePassword, economicMode]);
 
-  // Poll systemConfig revision periodically so other active tabs/sessions stay updated (only in standard mode)
+  // The server owns the user directory; browser caches cannot restore deleted accounts.
+  useEffect(() => {
+    if (!isAuthenticated || currentUser.mustChangePassword) return;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch('/api/employees', { headers: getAuthHeaders(), signal: controller.signal });
+        if (response.ok) {
+          const data = await response.json();
+          if (!controller.signal.aborted) setEmployees(data.employees);
+        }
+      } catch {}
+    };
+    load();
+    if (!economicMode) {
+      const timer = setInterval(() => {
+        if (document.visibilityState === 'visible') void load();
+      }, 30000);
+      return () => { controller.abort(); clearInterval(timer); };
+    }
+    return () => { controller.abort(); };
+  }, [isAuthenticated, currentUserId, currentUser.mustChangePassword, economicMode]);
+
+  // Poll systemConfig revision & freight notifications periodically (standard mode only for background polling)
   useEffect(() => {
     if (!isAuthenticated) return;
     const loadConfigAndNotifs = async () => {
@@ -699,8 +755,8 @@ export default function App() {
           if (
             data &&
             typeof data.revision === 'number' &&
-            systemConfig &&
-            data.revision > systemConfig.revision
+            systemConfigRevisionRef.current > 0 &&
+            data.revision > systemConfigRevisionRef.current
           ) {
             const fresh = await apiFetchSystemConfig();
             if (fresh?.systemConfig) {
@@ -726,16 +782,19 @@ export default function App() {
         // ignore
       }
     };
-    loadConfigAndNotifs();
+    void loadConfigAndNotifs();
     if (!economicMode) {
-      const interval = setInterval(loadConfigAndNotifs, 10000);
+      const interval = setInterval(() => {
+        if (document.visibilityState === 'visible') void loadConfigAndNotifs();
+      }, 20000);
       return () => clearInterval(interval);
     }
-  }, [isAuthenticated, systemConfig, economicMode]);
+  }, [isAuthenticated, economicMode]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const timer = setInterval(async () => {
+    const checkSession = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const session = await apiFetchSession();
         if (session.authenticated === false) {
@@ -745,31 +804,58 @@ export default function App() {
       } catch {
         /* A temporary connection failure does not revoke the server session. */
       }
-    }, 30000);
+    };
+    const timer = setInterval(checkSession, economicMode ? 120000 : 30000);
     return () => clearInterval(timer);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, economicMode]);
 
-  useEffect(()=>{
-    if(!isAuthenticated || !hasPagePermission(currentUser,'solicitacoes')) {setRequests([]);return;}
-    let cancelled=false;
-    const load=async()=>{try{const r=await fetch('/api/requests',{headers:getAuthHeaders()});if(r.ok){const d=await r.json();if(!cancelled){
-          setRequests(d.requests);
-          setNotifications(prev => [...prev.filter(n => n.type!=='solicitacao'), ...d.notifications.map((n:any) => ({id:'queue:'+n.id,type:'solicitacao' as const,dotColor:'blue' as const,title:n.title,subtitle:'Atualização no atendimento interno',timeLabel:'Solicitações',read:n.read,targetSection:'solicitacoes' as const,targetId:n.targetId,recipientId:n.recipientId,publicationId:'queue:'+n.id,createdAtIso:n.createdAtIso}))]);
-        }}}catch{}};
-    load();
-    if (!economicMode) {
-      const timer=setInterval(load,5000);
-      return()=>{cancelled=true;clearInterval(timer);};
-    }
-    return () => { cancelled = true; };
-  },[isAuthenticated,currentUser.id,currentUser.accessProfile,economicMode]);
-
-  // Redirecionamento automático caso a página ativa seja desabilitada nas permissões do colaborador ou em modo econômico
   useEffect(() => {
-    if (economicMode && (activeSection === 'mensagens' || activeSection === 'grupos')) {
-      setActiveSection(permittedHome(currentUser) as MenuSection);
+    if (!isAuthenticated || currentUser.mustChangePassword || !hasPagePermission(currentUser, 'solicitacoes')) {
+      setRequests([]);
       return;
     }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch('/api/requests', { headers: getAuthHeaders() });
+        if (r.ok) {
+          const d = await r.json();
+          if (!cancelled) {
+            setRequests(d.requests);
+            setNotifications((prev) => [
+              ...prev.filter((n) => n.type !== 'solicitacao'),
+              ...d.notifications.map((n: any) => ({
+                id: 'queue:' + n.id,
+                type: 'solicitacao' as const,
+                dotColor: 'blue' as const,
+                title: n.title,
+                subtitle: 'Atualização no atendimento interno',
+                timeLabel: 'Solicitações',
+                read: n.read,
+                targetSection: 'solicitacoes' as const,
+                targetId: n.targetId,
+                recipientId: n.recipientId,
+                publicationId: 'queue:' + n.id,
+                createdAtIso: n.createdAtIso,
+              })),
+            ]);
+          }
+        }
+      } catch {}
+    };
+    void load();
+    if (!economicMode) {
+      const intervalMs = activeSection === 'solicitacoes' ? 10000 : 20000;
+      const timer = setInterval(() => {
+        if (document.visibilityState === 'visible') void load();
+      }, intervalMs);
+      return () => { cancelled = true; clearInterval(timer); };
+    }
+    return () => { cancelled = true; };
+  }, [isAuthenticated, currentUser.id, currentUser.accessProfile, currentUser.mustChangePassword, economicMode, activeSection]);
+
+  // Redirecionamento automático caso a página ativa seja desabilitada nas permissões do colaborador
+  useEffect(() => {
     if (activeSection === 'administracao' || activeSection === 'fluxo_notificacoes') {
       if (
         !hasPagePermission(currentUser, 'administracao')
@@ -2088,45 +2174,9 @@ export default function App() {
     setShowProfileDropdown(false);
   };
 
-  const handleStartDirectChat = async (emp: Employee) => {
-    const existing = chats.find((c) => !c.isGroup && c.name === emp.name);
-    if (!existing) {
-      const chatId = `chat-${Date.now()}`;
-      const newChat: ChatThread = {
-        id: chatId,
-        isGroup: false,
-        name: emp.name,
-        roleOrDept: `${emp.roleTitle} • ${emp.department}`,
-        department: emp.department,
-        avatar: emp.avatar,
-        unreadCount: 0,
-        participantsCount: 2,
-        participantIds: [currentUser.id, emp.id],
-        messages: [
-          {
-            id: `m-${Date.now()}`,
-            senderId: currentUser.id,
-            senderName: currentUser.name,
-            senderRole: currentUser.roleTitle,
-            text: `Olá ${emp.name.split(' ')[0]}, tudo bem?`,
-            timestamp: 'Agora',
-            status: 'delivered',
-          },
-        ],
-      };
-      setChats((prev) => [newChat, ...prev]);
-
-    }
-    setActiveSection('mensagens');
+  const handleStartDirectChat = async (_emp: Employee) => {
+    setActiveSection('diretorio');
   };
-
-  const unreadDirectMessagesCount = chats
-    .filter((c) => !c.isGroup)
-    .reduce((acc, c) => acc + (c.unreadCount || 0), 0);
-
-  const unreadGroupMessagesCount = chats
-    .filter((c) => c.isGroup)
-    .reduce((acc, c) => acc + (c.unreadCount || 0), 0);
 
   // Sidebar Menu Items matching Section 4 & Reference Screenshot
   const sidebarItems: {
@@ -2153,22 +2203,6 @@ export default function App() {
       icon: Wallet,
     },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
-    ...(!economicMode
-      ? [
-          {
-            id: 'mensagens' as MenuSection,
-            label: 'Mensagens',
-            icon: MessageSquare,
-            badge: unreadDirectMessagesCount || undefined,
-          },
-          {
-            id: 'grupos' as MenuSection,
-            label: 'Grupos',
-            icon: Users,
-            badge: unreadGroupMessagesCount || undefined,
-          },
-        ]
-      : []),
     { id: 'diretorio', label: 'Colaboradores', icon: Users },
     { id: 'perfil', label: 'Meu Perfil', icon: User },
     {
@@ -2194,7 +2228,8 @@ export default function App() {
       if (serverShareId) {
         try {
           const res = await fetch(
-            `/api/pagamentos/shared-staging/${encodeURIComponent(serverShareId)}`
+            `/api/pagamentos/shared-staging/${encodeURIComponent(serverShareId)}`,
+            { headers: getAuthHeaders(), credentials: 'include' }
           );
           if (res.ok) {
             const data = await res.json();
@@ -2357,213 +2392,243 @@ export default function App() {
     );
   }
 
+  const sectionLoadingFallback = (
+    <div className="flex items-center justify-center py-16 text-sm font-bold text-gray-500">
+      Carregando módulo...
+    </div>
+  );
+
+  const renderActiveSection = () => (
+    <Suspense fallback={sectionLoadingFallback}>
+      {activeSection === 'fluxo_notificacoes' ? (
+        <SectorNotificationFlowView
+          currentUser={currentUser}
+          onNavigate={(s) => setActiveSection(s)}
+          economicMode={economicMode}
+          onToggleEconomicMode={handleToggleEconomicMode}
+          realNotifications={sortedUniqueNotifications}
+          onMarkAllRead={handleMarkAllNotificationsRead}
+          onAccessNotification={handleAccessNotification}
+        />
+      ) : activeSection === 'fretes_comercial' ? (
+        <MeusFretesComercialView
+          currentUser={currentUser}
+          selectedFreightIdFromNotification={selectedNotificationFreightId}
+          onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
+          onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
+        />
+      ) : activeSection === 'fretes_expedicao' ? (
+        <MeusFretesExpedicaoView
+          currentUser={currentUser}
+          selectedFreightIdFromNotification={selectedNotificationFreightId}
+          onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
+          onSwitchToComercial={() => setActiveSection('fretes_comercial')}
+        />
+      ) : activeSection === 'fretes_ativos' ? (
+        <FretesAtivosView
+          currentUser={currentUser}
+          financialFreights={freights}
+          selectedFreightIdFromNotification={selectedNotificationFreightId}
+          onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
+          onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
+          onSyncNewFreightToFinanceiro={(item) => {
+            const total = item.valorFreteMotorista || 6000;
+            const adiant = Number((total * 0.7).toFixed(2));
+            const saldo = Number((total - adiant).toFixed(2));
+            handleAddFreight({
+              id: `frete-${Date.now()}`,
+              code: item.code,
+              createdAtDate: item.createdAtDate,
+              createdAtIso: new Date().toISOString(),
+              empresaMarca: item.empresaMarca,
+              dataCarregamento: item.dataCarregamento,
+              unidadeOperacional: item.unidadeOperacional,
+              comercialResponsavel: item.comercialResponsavel,
+              expedicaoResponsavel: item.expedicaoResponsavel,
+              cliente: item.cliente,
+              telefoneCliente: item.telefoneCliente,
+              motoristaNome: item.motoristaNome,
+              motoristaTelefone: item.motoristaTelefone,
+              emergenciaNome: item.emergenciaNome,
+              emergenciaTelefone: item.emergenciaTelefone,
+              origem: item.origem,
+              destino: item.destino,
+              dataColeta: item.dataColeta,
+              dataEntrega: item.dataPrevisaoOuEntrega,
+              valorFreteEmpresa: item.valorFreteEmpresa,
+              valorFreteMotorista: total,
+              regraTipo: '70_30',
+              regraLabel: '70% / 30%',
+              percentualAdiantamento: 70,
+              percentualSaldo: 30,
+              valorTotal: total,
+              valorAdiantamento: adiant,
+              valorSaldo: saldo,
+              favorecido: item.favorecido,
+              banco: item.banco,
+              agencia: '0001',
+              conta: '18670000-5',
+              tipoChavePix: item.tipoChavePix,
+              chavePix: item.chavePix,
+              status: 'Pendente Adiantamento',
+              adiantamentoPago: false,
+              entregaConfirmada: item.stage === 'Entrega Concluída',
+              saldoPago: false,
+              solicitanteNome: `${currentUser.name} (${currentUser.department})`,
+              docs: {},
+            });
+          }}
+        />
+      ) : activeSection === 'financeiro' ? (
+        <FinanceiroFretesView
+          onHydrateFreights={(records) =>
+            setFreights((prev) => {
+              const merged = new Map(prev.map((f) => [f.id, f]));
+              records.forEach((f) => merged.set(f.id, f));
+              const next = [...merged.values()];
+              return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+            })
+          }
+          freights={freights}
+          currentUser={currentUser}
+          onAddFreight={handleAddFreight}
+          onUpdateFreight={handleUpdateFreight}
+          initialSharedDraft={pendingSharedDraft}
+          onClearInitialSharedDraft={() => setPendingSharedDraft(null)}
+        />
+      ) : activeSection !== 'inicio' ? (
+        <ModulesView
+          onMuralHydrated={(records, notices) => {
+            setAnnouncements(records);
+            setNotifications((prev) => {
+              const merged = new Map(prev.map((n) => [n.id, n]));
+              notices.forEach((n) => merged.set(n.id, n));
+              return [...merged.values()];
+            });
+          }}
+          economicMode={economicMode}
+          activeSection={activeSection}
+          currentUser={currentUser}
+          employees={employees}
+          announcements={announcements}
+          requests={requests}
+          events={events}
+          documents={documents}
+          chats={chats}
+          invites={invites}
+          auditLogs={auditLogs}
+          systemConfig={systemConfig || undefined}
+          pendingAccessRequestsCount={pendingAccessRequestsCount}
+          onPendingCountChange={setPendingAccessRequestsCount}
+          onAccountsUpdated={setEmployees}
+          onSystemConfigPublished={setSystemConfig}
+          onConfirmRead={handleConfirmRead}
+          onToggleLike={handleToggleLike}
+          onAddComment={handleAddComment}
+          onDeleteComment={handleDeleteComment}
+          onCreateAnnouncement={handleCreateAnnouncement}
+          onUpdateAnnouncement={handleUpdateAnnouncement}
+          onTogglePinAnnouncement={handleTogglePinAnnouncement}
+          onToggleArchiveAnnouncement={handleToggleArchiveAnnouncement}
+          onDeleteAnnouncement={handleDeleteAnnouncement}
+          onCreateRequest={handleCreateRequest}
+          onUpdateRequestStatus={handleUpdateRequestStatus}
+          onExtendRequestDeadline={handleExtendRequestDeadline}
+          onAddRequestResponse={handleAddRequestResponse}
+          onEscalateRequestToDiretoria={handleEscalateRequestToDiretoria}
+          onDeleteRequest={handleDeleteRequest}
+          onSendMessage={handleSendMessage}
+          onMarkThreadRead={handleMarkThreadRead}
+          onCreateGroupChat={handleCreateGroupChat}
+          onUpdateThreadPinnedNotice={handleUpdateThreadPinnedNotice}
+          onTogglePinMessage={handleTogglePinMessage}
+          onDeleteMessage={handleDeleteMessage}
+          onManageGroupParticipants={handleManageGroupParticipants}
+          onToggleEventRsvp={handleToggleEventRsvp}
+          onCreateEvent={handleCreateEvent}
+          onUpdateEvent={handleUpdateEvent}
+          onDeleteEvent={handleDeleteEvent}
+          onUploadDocument={handleUploadDocument}
+          onUpdateDocumentVersion={handleUpdateDocumentVersion}
+          onDeleteDocument={handleDeleteDocument}
+          onCreateInvite={handleCreateInvite}
+          onActivateInviteToken={handleActivateInviteToken}
+          onToggleEmployeeActive={handleToggleEmployeeActive}
+          onCreateEmployeeDirect={handleCreateEmployeeDirect}
+          onUpdateEmployeeAdmin={handleUpdateEmployeeAdmin}
+          onUpdateMyProfile={handleUpdateMyProfile}
+          onRestorePortalDefaults={handleRestorePortalDefaults}
+          onImportPortalBackup={handleImportPortalBackup}
+          onStartDirectChat={handleStartDirectChat}
+          onNavigate={setActiveSection}
+          initialOpenRequestModal={openRequestModalOnLoad}
+          onClearInitialModal={() => setOpenRequestModalOnLoad(false)}
+        />
+      ) : (
+        <HomePremium
+          user={currentUser}
+          config={systemConfig}
+          notifications={sortedUniqueNotifications}
+          navigate={setActiveSection}
+          openAnnouncement={setSelectedAnnouncementModal}
+          openNotifications={() => setShowNotificationsCenterModal(true)}
+          accessNotification={handleAccessNotification}
+          openContacts={() =>
+            setQuickAccessModal({
+              title: 'Contatos Oficiais RODOVAR',
+              subtitle: 'Central de Atendimento RODOVAR • Sua Carga em Primeiro Lugar!',
+              body: '• Telefone / WhatsApp Oficial: 71 9 9920-2476\n• Instagram Oficial: @rodovartransportadora\n• Site Institucional: www.rodovar.com.br\n• Recursos Humanos (Folha e Benefícios): Telefone: 71 9 9920-2476 | rh@rodovar.com.br\n• Plantão Operacional e Tráfego 24h: Telefone: 71 9 9920-2476 | operacoes@rodovar.com.br\n• Engenharia de Segurança do Trabalho (SST): Telefone: 71 9 9920-2476 | seguranca@rodovar.com.br\n• Financeiro e Faturamento: Telefone: 71 9 9920-2476 | financeiro@rodovar.com.br',
+            })
+          }
+        />
+      )}
+    </Suspense>
+  );
+
   return (
     <div className="min-h-screen bg-[#080B0D] text-[#15191D] flex flex-col">
-      {/* =====================================================================
-          MOBILE NATIVE VIEWPORT (< 768px)
-      ===================================================================== */}
-      <div className="block md:hidden">
-        <MobileDeviceView
-          onNavigate={setActiveSection}
-          onOpenAnnouncement={(ann) => setSelectedAnnouncementModal(ann)}
-          featuredAnnouncement={featuredAnnouncement}
-          notifications={sortedUniqueNotifications}
-          unreadAnnouncementsCount={unreadAnnouncementsCount}
-          openRequestsCount={openRequestsCount}
-          unreadNotificationsCount={unreadNotificationsCount}
-          activeSection={activeSection}
-          isEmbedded={false}
-          currentUser={currentUser}
-          systemConfig={systemConfig || undefined}
-          onLogout={handleLogout}
-          onSwitchUserRole={handleSwitchUserRole}
-          onOpenSearch={() => {
-            setGlobalSearchQuery('');
-            setShowCommandPalette(true);
-          }}
-          onOpenNotificationsCenter={() => setShowNotificationsCenterModal(true)}
-          onAccessNotification={handleAccessNotification}
-          onOpenInstallModal={() => {
-            resetInstallOutcome();
-            setShowPWAInstallGuideModal(true);
-          }}
-          isInstalled={isInstalled}
-          canPromptInstall={canPromptInstall}
-        >
-          {activeSection === 'fluxo_notificacoes' ? (
-            <SectorNotificationFlowView
-              currentUser={currentUser}
-              onNavigate={(s) => setActiveSection(s)}
-              economicMode={economicMode}
-              onToggleEconomicMode={handleToggleEconomicMode}
-              realNotifications={sortedUniqueNotifications}
-              onMarkAllRead={handleMarkAllNotificationsRead}
-              onAccessNotification={handleAccessNotification}
-            />
-          ) : activeSection === 'fretes_comercial' ? (
-            <MeusFretesComercialView
-              currentUser={currentUser}
-              selectedFreightIdFromNotification={selectedNotificationFreightId}
-              onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-              onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
-            />
-          ) : activeSection === 'fretes_expedicao' ? (
-            <MeusFretesExpedicaoView
-              currentUser={currentUser}
-              selectedFreightIdFromNotification={selectedNotificationFreightId}
-              onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-              onSwitchToComercial={() => setActiveSection('fretes_comercial')}
-            />
-          ) : activeSection === 'fretes_ativos' ? (
-            <FretesAtivosView
-              currentUser={currentUser}
-              financialFreights={freights}
-              selectedFreightIdFromNotification={selectedNotificationFreightId}
-              onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-              onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
-              onSyncNewFreightToFinanceiro={(item) => {
-                const total = item.valorFreteMotorista || 6000;
-                const adiant = Number((total * 0.7).toFixed(2));
-                const saldo = Number((total - adiant).toFixed(2));
-                handleAddFreight({
-                  id: `frete-${Date.now()}`,
-                  code: item.code,
-                  createdAtDate: item.createdAtDate,
-                  createdAtIso: new Date().toISOString(),
-                  empresaMarca: item.empresaMarca,
-                  dataCarregamento: item.dataCarregamento,
-                  unidadeOperacional: item.unidadeOperacional,
-                  comercialResponsavel: item.comercialResponsavel,
-                  expedicaoResponsavel: item.expedicaoResponsavel,
-                  cliente: item.cliente,
-                  telefoneCliente: item.telefoneCliente,
-                  motoristaNome: item.motoristaNome,
-                  motoristaTelefone: item.motoristaTelefone,
-                  emergenciaNome: item.emergenciaNome,
-                  emergenciaTelefone: item.emergenciaTelefone,
-                  origem: item.origem,
-                  destino: item.destino,
-                  dataColeta: item.dataColeta,
-                  dataEntrega: item.dataPrevisaoOuEntrega,
-                  valorFreteEmpresa: item.valorFreteEmpresa,
-                  valorFreteMotorista: total,
-                  regraTipo: '70_30',
-                  regraLabel: '70% / 30%',
-                  percentualAdiantamento: 70,
-                  percentualSaldo: 30,
-                  valorTotal: total,
-                  valorAdiantamento: adiant,
-                  valorSaldo: saldo,
-                  favorecido: item.favorecido,
-                  banco: item.banco,
-                  agencia: '0001',
-                  conta: '18670000-5',
-                  tipoChavePix: item.tipoChavePix,
-                  chavePix: item.chavePix,
-                  status: 'Pendente Adiantamento',
-                  adiantamentoPago: false,
-                  entregaConfirmada: item.stage === 'Entrega Concluída',
-                  saldoPago: false,
-                  solicitanteNome: `${currentUser.name} (${currentUser.department})`,
-                  docs: {},
-                });
-              }}
-            />
-          ) : activeSection === 'financeiro' ? (
-            <FinanceiroFretesView
-              onHydrateFreights={(records) => setFreights(prev => { const merged = new Map(prev.map(f => [f.id, f])); records.forEach(f => merged.set(f.id, f)); const next = [...merged.values()]; return JSON.stringify(prev) === JSON.stringify(next) ? prev : next; })}
-              freights={freights}
-              currentUser={currentUser}
-              onAddFreight={handleAddFreight}
-              onUpdateFreight={handleUpdateFreight}
-              initialSharedDraft={pendingSharedDraft}
-              onClearInitialSharedDraft={() => setPendingSharedDraft(null)}
-            />
-          ) : activeSection !== 'inicio' ? (
-            <ModulesView
-              onMuralHydrated={(records, notices) => {setAnnouncements(records);setNotifications(prev => {const merged=new Map(prev.map(n=>[n.id,n]));notices.forEach(n=>merged.set(n.id,n));return [...merged.values()];});}}
-              activeSection={activeSection}
-              currentUser={currentUser}
-              employees={employees}
-              announcements={announcements}
-              requests={requests}
-              events={events}
-              documents={documents}
-              chats={chats}
-              invites={invites}
-              auditLogs={auditLogs}
-              systemConfig={systemConfig || undefined}
-              pendingAccessRequestsCount={pendingAccessRequestsCount}
-              onPendingCountChange={setPendingAccessRequestsCount}
-              onAccountsUpdated={setEmployees}
-              onSystemConfigPublished={setSystemConfig}
-              onConfirmRead={handleConfirmRead}
-              onToggleLike={handleToggleLike}
-              onAddComment={handleAddComment}
-              onDeleteComment={handleDeleteComment}
-              onCreateAnnouncement={handleCreateAnnouncement}
-              onUpdateAnnouncement={handleUpdateAnnouncement}
-              onTogglePinAnnouncement={handleTogglePinAnnouncement}
-              onToggleArchiveAnnouncement={handleToggleArchiveAnnouncement}
-              onDeleteAnnouncement={handleDeleteAnnouncement}
-              onCreateRequest={handleCreateRequest}
-              onUpdateRequestStatus={handleUpdateRequestStatus}
-              onExtendRequestDeadline={handleExtendRequestDeadline}
-              onAddRequestResponse={handleAddRequestResponse}
-              onEscalateRequestToDiretoria={handleEscalateRequestToDiretoria}
-              onDeleteRequest={handleDeleteRequest}
-              onSendMessage={handleSendMessage}
-              onMarkThreadRead={handleMarkThreadRead}
-              onCreateGroupChat={handleCreateGroupChat}
-              onUpdateThreadPinnedNotice={handleUpdateThreadPinnedNotice}
-              onTogglePinMessage={handleTogglePinMessage}
-              onDeleteMessage={handleDeleteMessage}
-              onManageGroupParticipants={handleManageGroupParticipants}
-              onToggleEventRsvp={handleToggleEventRsvp}
-              onCreateEvent={handleCreateEvent}
-              onUpdateEvent={handleUpdateEvent}
-              onDeleteEvent={handleDeleteEvent}
-              onUploadDocument={handleUploadDocument}
-              onUpdateDocumentVersion={handleUpdateDocumentVersion}
-              onDeleteDocument={handleDeleteDocument}
-              onCreateInvite={handleCreateInvite}
-              onActivateInviteToken={handleActivateInviteToken}
-              onToggleEmployeeActive={handleToggleEmployeeActive}
-              onCreateEmployeeDirect={handleCreateEmployeeDirect}
-              onUpdateEmployeeAdmin={handleUpdateEmployeeAdmin}
-              onUpdateMyProfile={handleUpdateMyProfile}
-              onRestorePortalDefaults={handleRestorePortalDefaults}
-              onImportPortalBackup={handleImportPortalBackup}
-              onStartDirectChat={handleStartDirectChat}
+      {isMobile ? (
+        /* =====================================================================
+            MOBILE NATIVE VIEWPORT (< 768px)
+        ===================================================================== */
+        <div>
+          <Suspense fallback={sectionLoadingFallback}>
+            <MobileDeviceView
               onNavigate={setActiveSection}
-              initialOpenRequestModal={openRequestModalOnLoad}
-              onClearInitialModal={() => setOpenRequestModalOnLoad(false)}
-            />
-          ) : (
-            <HomePremium
-              user={currentUser}
-              config={systemConfig}
+              onOpenAnnouncement={(ann) => setSelectedAnnouncementModal(ann)}
+              featuredAnnouncement={featuredAnnouncement}
               notifications={sortedUniqueNotifications}
-              navigate={setActiveSection}
-              openAnnouncement={setSelectedAnnouncementModal}
-              openNotifications={() => setShowNotificationsCenterModal(true)}
-              accessNotification={handleAccessNotification}
-              openContacts={() =>
-                setQuickAccessModal({
-                  title: 'Contatos Oficiais RODOVAR',
-                  subtitle: 'Central de Atendimento RODOVAR • Sua Carga em Primeiro Lugar!',
-                  body: '• Telefone / WhatsApp Oficial: 71 9 9920-2476\n• Instagram Oficial: @rodovartransportadora\n• Site Institucional: www.rodovar.com.br\n• Recursos Humanos (Folha e Benefícios): Telefone: 71 9 9920-2476 | rh@rodovar.com.br\n• Plantão Operacional e Tráfego 24h: Telefone: 71 9 9920-2476 | operacoes@rodovar.com.br\n• Engenharia de Segurança do Trabalho (SST): Telefone: 71 9 9920-2476 | seguranca@rodovar.com.br\n• Financeiro e Faturamento: Telefone: 71 9 9920-2476 | financeiro@rodovar.com.br',
-                })
-              }
-            />
-          )}
-        </MobileDeviceView>
-      </div>
-
-      {/* =====================================================================
-          DESKTOP & TABLET VIEWPORT (>= 768px)
-      ===================================================================== */}
-      <div className="hidden md:flex md:flex-col min-h-screen max-w-[1600px] w-full mx-auto relative">
+              unreadAnnouncementsCount={unreadAnnouncementsCount}
+              openRequestsCount={openRequestsCount}
+              unreadNotificationsCount={unreadNotificationsCount}
+              activeSection={activeSection}
+              isEmbedded={false}
+              currentUser={currentUser}
+              systemConfig={systemConfig || undefined}
+              onLogout={handleLogout}
+              onSwitchUserRole={handleSwitchUserRole}
+              onOpenSearch={() => {
+                setGlobalSearchQuery('');
+                setShowCommandPalette(true);
+              }}
+              onOpenNotificationsCenter={() => setShowNotificationsCenterModal(true)}
+              onAccessNotification={handleAccessNotification}
+              onOpenInstallModal={() => {
+                resetInstallOutcome();
+                setShowPWAInstallGuideModal(true);
+              }}
+              isInstalled={isInstalled}
+              canPromptInstall={canPromptInstall}
+            >
+              {renderActiveSection()}
+            </MobileDeviceView>
+          </Suspense>
+        </div>
+      ) : (
+        /* =====================================================================
+            DESKTOP & TABLET VIEWPORT (>= 768px)
+        ===================================================================== */
+        <div className="flex flex-col min-h-screen max-w-[1600px] w-full mx-auto relative">
         {/* 1. TOP PANORAMIC HEADER */}
         <header className="relative h-[112px] w-full flex items-center justify-between px-6 select-none shrink-0 z-30">
           {/* Panoramic Header Background from SystemConfig */}
@@ -2992,173 +3057,12 @@ export default function App() {
           {/* MAIN WORKSPACE */}
           <div className="flex-1 flex items-start gap-4 min-w-0">
             <main className="flex-1 bg-[#F3F5F7] rounded-[22px] p-4 lg:p-5 shadow-2xl min-w-0">
-              {activeSection === 'fluxo_notificacoes' ? (
-                <SectorNotificationFlowView
-                  currentUser={currentUser}
-                  onNavigate={(s) => setActiveSection(s)}
-                  economicMode={economicMode}
-                  onToggleEconomicMode={handleToggleEconomicMode}
-                  realNotifications={sortedUniqueNotifications}
-                  onMarkAllRead={handleMarkAllNotificationsRead}
-                  onAccessNotification={handleAccessNotification}
-                />
-              ) : activeSection === 'fretes_comercial' ? (
-                <MeusFretesComercialView
-                  currentUser={currentUser}
-                  selectedFreightIdFromNotification={selectedNotificationFreightId}
-                  onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-                  onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
-                />
-              ) : activeSection === 'fretes_expedicao' ? (
-                <MeusFretesExpedicaoView
-                  currentUser={currentUser}
-                  selectedFreightIdFromNotification={selectedNotificationFreightId}
-                  onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-                  onSwitchToComercial={() => setActiveSection('fretes_comercial')}
-                />
-              ) : activeSection === 'fretes_ativos' ? (
-                <FretesAtivosView
-                  currentUser={currentUser}
-                  financialFreights={freights}
-                  selectedFreightIdFromNotification={selectedNotificationFreightId}
-                  onClearSelectedNotificationFreight={() => setSelectedNotificationFreightId(null)}
-                  onSwitchToExpedicao={() => setActiveSection('fretes_expedicao')}
-                  onSyncNewFreightToFinanceiro={(item) => {
-                    const total = item.valorFreteMotorista || 6000;
-                    const adiant = Number((total * 0.7).toFixed(2));
-                    const saldo = Number((total - adiant).toFixed(2));
-                    handleAddFreight({
-                      id: `frete-${Date.now()}`,
-                      code: item.code,
-                      createdAtDate: item.createdAtDate,
-                      createdAtIso: new Date().toISOString(),
-                      empresaMarca: item.empresaMarca,
-                      dataCarregamento: item.dataCarregamento,
-                      unidadeOperacional: item.unidadeOperacional,
-                      comercialResponsavel: item.comercialResponsavel,
-                      expedicaoResponsavel: item.expedicaoResponsavel,
-                      cliente: item.cliente,
-                      telefoneCliente: item.telefoneCliente,
-                      motoristaNome: item.motoristaNome,
-                      motoristaTelefone: item.motoristaTelefone,
-                      emergenciaNome: item.emergenciaNome,
-                      emergenciaTelefone: item.emergenciaTelefone,
-                      origem: item.origem,
-                      destino: item.destino,
-                      dataColeta: item.dataColeta,
-                      dataEntrega: item.dataPrevisaoOuEntrega,
-                      valorFreteEmpresa: item.valorFreteEmpresa,
-                      valorFreteMotorista: total,
-                      regraTipo: '70_30',
-                      regraLabel: '70% / 30%',
-                      percentualAdiantamento: 70,
-                      percentualSaldo: 30,
-                      valorTotal: total,
-                      valorAdiantamento: adiant,
-                      valorSaldo: saldo,
-                      favorecido: item.favorecido,
-                      banco: item.banco,
-                      agencia: '0001',
-                      conta: '18670000-5',
-                      tipoChavePix: item.tipoChavePix,
-                      chavePix: item.chavePix,
-                      status: 'Pendente Adiantamento',
-                      adiantamentoPago: false,
-                      entregaConfirmada: item.stage === 'Entrega Concluída',
-                      saldoPago: false,
-                      solicitanteNome: `${currentUser.name} (${currentUser.department})`,
-                      docs: {},
-                    });
-                  }}
-                />
-              ) : activeSection === 'financeiro' ? (
-                <FinanceiroFretesView
-              onHydrateFreights={(records) => setFreights(prev => { const merged = new Map(prev.map(f => [f.id, f])); records.forEach(f => merged.set(f.id, f)); const next = [...merged.values()]; return JSON.stringify(prev) === JSON.stringify(next) ? prev : next; })}
-                  freights={freights}
-                  currentUser={currentUser}
-                  onAddFreight={handleAddFreight}
-                  onUpdateFreight={handleUpdateFreight}
-                  initialSharedDraft={pendingSharedDraft}
-                  onClearInitialSharedDraft={() => setPendingSharedDraft(null)}
-                />
-              ) : activeSection !== 'inicio' ? (
-                <ModulesView
-              onMuralHydrated={(records, notices) => {setAnnouncements(records);setNotifications(prev => {const merged=new Map(prev.map(n=>[n.id,n]));notices.forEach(n=>merged.set(n.id,n));return [...merged.values()];});}}
-                  activeSection={activeSection}
-                  currentUser={currentUser}
-                  employees={employees}
-                  announcements={announcements}
-                  requests={requests}
-                  events={events}
-                  documents={documents}
-                  chats={chats}
-                  invites={invites}
-                  auditLogs={auditLogs}
-                  systemConfig={systemConfig || undefined}
-                  pendingAccessRequestsCount={pendingAccessRequestsCount}
-                  onPendingCountChange={setPendingAccessRequestsCount}
-                  onAccountsUpdated={setEmployees}
-                  onSystemConfigPublished={setSystemConfig}
-                  onConfirmRead={handleConfirmRead}
-                  onToggleLike={handleToggleLike}
-                  onAddComment={handleAddComment}
-                  onDeleteComment={handleDeleteComment}
-                  onCreateAnnouncement={handleCreateAnnouncement}
-                  onUpdateAnnouncement={handleUpdateAnnouncement}
-                  onTogglePinAnnouncement={handleTogglePinAnnouncement}
-                  onToggleArchiveAnnouncement={handleToggleArchiveAnnouncement}
-                  onDeleteAnnouncement={handleDeleteAnnouncement}
-                  onCreateRequest={handleCreateRequest}
-                  onUpdateRequestStatus={handleUpdateRequestStatus}
-                  onExtendRequestDeadline={handleExtendRequestDeadline}
-                  onAddRequestResponse={handleAddRequestResponse}
-                  onEscalateRequestToDiretoria={handleEscalateRequestToDiretoria}
-                  onDeleteRequest={handleDeleteRequest}
-                  onSendMessage={handleSendMessage}
-                  onMarkThreadRead={handleMarkThreadRead}
-                  onCreateGroupChat={handleCreateGroupChat}
-                  onUpdateThreadPinnedNotice={handleUpdateThreadPinnedNotice}
-                  onTogglePinMessage={handleTogglePinMessage}
-                  onDeleteMessage={handleDeleteMessage}
-                  onManageGroupParticipants={handleManageGroupParticipants}
-                  onToggleEventRsvp={handleToggleEventRsvp}
-                  onCreateEvent={handleCreateEvent}
-                  onUpdateEvent={handleUpdateEvent}
-                  onDeleteEvent={handleDeleteEvent}
-                  onUploadDocument={handleUploadDocument}
-                  onUpdateDocumentVersion={handleUpdateDocumentVersion}
-                  onDeleteDocument={handleDeleteDocument}
-                  onCreateInvite={handleCreateInvite}
-                  onActivateInviteToken={handleActivateInviteToken}
-                  onToggleEmployeeActive={handleToggleEmployeeActive}
-                  onCreateEmployeeDirect={handleCreateEmployeeDirect}
-                  onUpdateEmployeeAdmin={handleUpdateEmployeeAdmin}
-                  onUpdateMyProfile={handleUpdateMyProfile}
-                  onRestorePortalDefaults={handleRestorePortalDefaults}
-                  onImportPortalBackup={handleImportPortalBackup}
-                  onStartDirectChat={handleStartDirectChat}
-                  onNavigate={setActiveSection}
-                  initialOpenRequestModal={openRequestModalOnLoad}
-                  onClearInitialModal={() => setOpenRequestModalOnLoad(false)}
-                />
-              ) : (
-                /* =============================================================
-                   DASHBOARD PRINCIPAL (INÍCIO) — FIEL À IMAGEM DE REFERÊNCIA
-                ============================================================= */
-                <HomePremium user={currentUser} config={systemConfig} notifications={sortedUniqueNotifications}
-                  navigate={setActiveSection} openAnnouncement={setSelectedAnnouncementModal}
-                  openNotifications={()=>setShowNotificationsCenterModal(true)} accessNotification={handleAccessNotification}
-                  openContacts={()=>setQuickAccessModal({
-                                title: 'Contatos Oficiais RODOVAR',
-                                subtitle: 'Central de Atendimento RODOVAR • Sua Carga em Primeiro Lugar!',
-                                body: '• Telefone / WhatsApp Oficial: 71 9 9920-2476\n• Instagram Oficial: @rodovartransportadora\n• Site Institucional: www.rodovar.com.br\n• Recursos Humanos (Folha e Benefícios): Telefone: 71 9 9920-2476 | rh@rodovar.com.br\n• Plantão Operacional e Tráfego 24h: Telefone: 71 9 9920-2476 | operacoes@rodovar.com.br\n• Engenharia de Segurança do Trabalho (SST): Telefone: 71 9 9920-2476 | seguranca@rodovar.com.br\n• Financeiro e Faturamento: Telefone: 71 9 9920-2476 | financeiro@rodovar.com.br',
-                  })}/>
-
-              )}
+              {renderActiveSection()}
             </main>
           </div>
         </div>
       </div>
+      )}
 
       {/* =====================================================================
           MODAL: CENTRAL DE NOTIFICAÇÕES INTELIGENTES COMPLETA (FASE 7)
@@ -3621,7 +3525,7 @@ export default function App() {
                           key={d.id}
                           onClick={() => {
                             setShowCommandPalette(false);
-                            setActiveSection('comunicados');
+                            setActiveSection('documentos');
                           }}
                           className="w-full text-left p-2.5 rounded-xl hover:bg-[#F3F5F7] flex items-center justify-between gap-3 border border-gray-100 cursor-pointer"
                         >

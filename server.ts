@@ -1,9 +1,10 @@
+import 'dotenv/config';
 import { registerCustomerCovers } from './src/server/customerCovers.ts';
 import { registerDrivers } from './src/server/drivers.ts';
 import { registerAgenda, hydrateAgendaFromPayload } from './src/server/agenda.ts';
 import { registerMural } from './src/server/mural.ts';
-import { registerChats } from './src/server/chats.ts';
-import { registerExternalRh } from './src/server/externalRh.ts';
+import { registerExternalRh, hydrateExternalRhFromPayload } from './src/server/externalRh.ts';
+import { hydrateMuralPollsFromPayload } from './src/server/muralPolls.ts';
 import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
 import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
@@ -15,9 +16,24 @@ import {
   isIsolatedTestEnv,
   testNeonConnection,
   initializeNeonSchema,
+  ensureNeonReady,
   getNeonHealthStats,
   persistAuditLogToNeon,
+  loadAuditLogsFromNeon,
   persistUserToNeon,
+  loadAllUsersFromNeon,
+  persistAccessPolicyToNeon,
+  loadAccessPolicyFromNeon,
+  persistLoginLockToNeon,
+  loadLoginLocksFromNeon,
+  persistPasswordResetTokenToNeon,
+  markUserPasswordResetTokensUsedInNeon,
+  loadPasswordResetTokensFromNeon,
+  persistAccessDecisionToNeon,
+  loadAccessDecisionsFromNeon,
+  persistSessionRevocationToNeon,
+  persistUserSessionsRevocationToNeon,
+  loadSessionRevocationsFromNeon,
   persistStateSnapshotToNeon,
   loadStateSnapshotFromNeon,
   fetchNeonStateTimestamps,
@@ -1084,25 +1100,25 @@ function loadOrInitDatabase(): ServerDatabase {
   throw new Error('Banco ausente ou inválido. Restaure o banco existente; criação automática de contas desabilitada.');
 }
 
-function saveDatabase(db: ServerDatabase): void {
+function saveLocalDbFile(db: ServerDatabase): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
   fs.renameSync(tmpFile, DB_FILE_PATH);
+}
 
-  // Asynchronous replication of full operational core state to Neon PostgreSQL
-  const rawDb = db as any;
+function saveDatabase(db: ServerDatabase): void {
+  saveLocalDbFile(db);
+
+  // Asynchronous replication of lean core operational state to Neon PostgreSQL
+  // (Heavy modules like mural, drivers and customerCovers are replicated in dedicated snapshots)
   void persistStateSnapshotToNeon('rodovar-core-state', {
     users: db.users,
     accessPolicy: db.accessPolicy,
     archivedUsers: db.archivedUsers,
     accessDecisions: db.accessDecisions,
-    mural: rawDb.mural,
-    drivers: rawDb.drivers,
-    driverAudit: rawDb.driverAudit,
-    customerCovers: rawDb.customerCovers,
     systemConfig: db.systemConfig,
     updatedAtIso: new Date().toISOString(),
   });
@@ -1114,94 +1130,283 @@ function saveDatabase(db: ServerDatabase): void {
   });
 }
 
+function saveMuralState(db: ServerDatabase): void {
+  saveLocalDbFile(db);
+  const rawDb = db as any;
+  void persistStateSnapshotToNeon('rodovar-mural-state', rawDb.mural);
+}
+
+function saveDriversState(db: ServerDatabase): void {
+  saveLocalDbFile(db);
+  const rawDb = db as any;
+  void persistStateSnapshotToNeon('rodovar-drivers-state', {
+    drivers: rawDb.drivers,
+    driverAudit: rawDb.driverAudit,
+    updatedAtIso: new Date().toISOString(),
+  });
+}
+
+function saveCustomerCoversState(db: ServerDatabase): void {
+  saveLocalDbFile(db);
+  const rawDb = db as any;
+  void persistStateSnapshotToNeon('rodovar-covers-state', {
+    customerCovers: rawDb.customerCovers,
+    updatedAtIso: new Date().toISOString(),
+  });
+}
+
 let dbState: ServerDatabase = loadOrInitDatabase();
 
 const localNeonTimestamps: Record<string, number> = {};
 let lastNeonSyncCheckMs = 0;
 let activeNeonSyncPromise: Promise<void> | null = null;
+let initialNeonBootDone = false;
+let initialNeonBootPromise: Promise<void> | null = null;
+let cachedEconomicMode: { value: boolean; fetchedAtMs: number } | null = null;
+
+async function ensureNeonBootstrapped(): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || initialNeonBootDone) return;
+  if (initialNeonBootPromise) return initialNeonBootPromise;
+  initialNeonBootPromise = (async () => {
+    try {
+      await ensureNeonReady();
+      await syncAllModulesFromNeonIfNeeded(true);
+      initialNeonBootDone = true;
+    } catch (err) {
+      console.warn('Neon bootstrap notice:', (err as Error).message);
+    } finally {
+      initialNeonBootPromise = null;
+    }
+  })();
+  return initialNeonBootPromise;
+}
 
 async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv()) return;
   const now = Date.now();
-  if (!force && now - lastNeonSyncCheckMs < 1500) return;
+  const minCooldownMs = cachedEconomicMode?.value ? 10000 : 5000;
+  if (!force && now - lastNeonSyncCheckMs < minCooldownMs) return;
   if (activeNeonSyncPromise) return activeNeonSyncPromise;
 
   activeNeonSyncPromise = (async () => {
     try {
       lastNeonSyncCheckMs = Date.now();
       const remoteTs = await fetchNeonStateTimestamps();
-      if (!remoteTs || Object.keys(remoteTs).length === 0) return;
 
       const shouldPull = (key: string) =>
         Boolean(remoteTs[key] && (force || localNeonTimestamps[key] !== remoteTs[key]));
 
-      if (shouldPull('rodovar-core-state')) {
-        const coreSnap = await loadStateSnapshotFromNeon<any>('rodovar-core-state');
-        const core = coreSnap?.payload;
-        if (core && typeof core === 'object') {
-          if (Array.isArray(core.users) && core.users.length > 0) dbState.users = core.users;
-          if (core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
-          if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
-          if (Array.isArray(core.accessDecisions)) dbState.accessDecisions = core.accessDecisions;
-          if (Array.isArray(core.mural)) (dbState as any).mural = core.mural;
-          if (Array.isArray(core.drivers)) (dbState as any).drivers = core.drivers;
-          if (Array.isArray(core.driverAudit)) (dbState as any).driverAudit = core.driverAudit;
-          if (core.customerCovers && typeof core.customerCovers === 'object') {
-            (dbState as any).customerCovers = core.customerCovers;
-          }
-          if (
-            core.systemConfig &&
-            typeof core.systemConfig.revision === 'number' &&
-            core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
-          ) {
-            if (core.systemConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
-              core.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
+      const tasks: Promise<void>[] = [];
+
+      if (force || shouldPull('rodovar-core-state')) {
+        tasks.push(
+          (async () => {
+            const [
+              neonUsers,
+              neonPolicy,
+              neonLocks,
+              neonTokens,
+              neonDecisions,
+              neonAuditLogs,
+              neonRevocations,
+              coreSnap,
+            ] = await Promise.all([
+              loadAllUsersFromNeon(),
+              loadAccessPolicyFromNeon(),
+              loadLoginLocksFromNeon(),
+              loadPasswordResetTokensFromNeon(),
+              loadAccessDecisionsFromNeon(100),
+              loadAuditLogsFromNeon(150),
+              loadSessionRevocationsFromNeon(),
+              loadStateSnapshotFromNeon<any>('rodovar-core-state'),
+            ]);
+
+            if (Array.isArray(neonUsers) && neonUsers.length > 0) {
+              dbState.users = neonUsers;
             }
-            dbState.systemConfig = core.systemConfig;
-          }
-        }
-        localNeonTimestamps['rodovar-core-state'] = remoteTs['rodovar-core-state'];
+            if (neonPolicy) {
+              dbState.accessPolicy = neonPolicy;
+            }
+            if (neonLocks && Object.keys(neonLocks).length > 0) {
+              dbState.loginLocks = { ...dbState.loginLocks, ...neonLocks };
+            }
+            if (Array.isArray(neonTokens) && neonTokens.length > 0) {
+              dbState.passwordResetTokens = neonTokens;
+            }
+            if (Array.isArray(neonDecisions) && neonDecisions.length > 0) {
+              dbState.accessDecisions = neonDecisions;
+            }
+            if (Array.isArray(neonAuditLogs) && neonAuditLogs.length > 0) {
+              dbState.auditLogs = neonAuditLogs;
+            }
+            if (neonRevocations) {
+              for (const sid of neonRevocations.revokedSessions) {
+                revokedSessionIds.add(sid);
+              }
+              for (const [uid, ts] of Object.entries(neonRevocations.userRevocations)) {
+                revokedUserAfterMap.set(uid, ts);
+              }
+            }
+
+            const core = coreSnap?.payload;
+            if (core && typeof core === 'object') {
+              if (
+                (!Array.isArray(neonUsers) || neonUsers.length === 0) &&
+                Array.isArray(core.users) &&
+                core.users.length > 0
+              ) {
+                dbState.users = core.users;
+              }
+              if (!neonPolicy && core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
+              if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
+              if (
+                (!Array.isArray(neonDecisions) || neonDecisions.length === 0) &&
+                Array.isArray(core.accessDecisions)
+              ) {
+                dbState.accessDecisions = core.accessDecisions;
+              }
+              // Backward compatibility if dedicated keys do not exist yet
+              if (!remoteTs['rodovar-mural-state'] && core.mural) {
+                (dbState as any).mural = core.mural;
+              }
+              if (!remoteTs['rodovar-drivers-state'] && Array.isArray(core.drivers)) {
+                (dbState as any).drivers = core.drivers;
+              }
+              if (!remoteTs['rodovar-drivers-state'] && Array.isArray(core.driverAudit)) {
+                (dbState as any).driverAudit = core.driverAudit;
+              }
+              if (!remoteTs['rodovar-covers-state'] && core.customerCovers && typeof core.customerCovers === 'object') {
+                (dbState as any).customerCovers = core.customerCovers;
+              }
+              if (
+                core.systemConfig &&
+                typeof core.systemConfig.revision === 'number' &&
+                core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
+              ) {
+                if (core.systemConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+                  core.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
+                }
+                dbState.systemConfig = core.systemConfig;
+              }
+            }
+            if (remoteTs['rodovar-core-state']) {
+              localNeonTimestamps['rodovar-core-state'] = remoteTs['rodovar-core-state'];
+            }
+          })()
+        );
+      }
+
+      if (shouldPull('rodovar-mural-state')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-mural-state').then((snap) => {
+            if (snap?.payload) (dbState as any).mural = snap.payload;
+            localNeonTimestamps['rodovar-mural-state'] = remoteTs['rodovar-mural-state'];
+          })
+        );
+      }
+
+      if (shouldPull('rodovar-drivers-state')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-drivers-state').then((snap) => {
+            if (snap?.payload && typeof snap.payload === 'object') {
+              if (Array.isArray(snap.payload.drivers)) (dbState as any).drivers = snap.payload.drivers;
+              if (Array.isArray(snap.payload.driverAudit)) (dbState as any).driverAudit = snap.payload.driverAudit;
+            }
+            localNeonTimestamps['rodovar-drivers-state'] = remoteTs['rodovar-drivers-state'];
+          })
+        );
+      }
+
+      if (shouldPull('rodovar-covers-state')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-covers-state').then((snap) => {
+            if (snap?.payload?.customerCovers && typeof snap.payload.customerCovers === 'object') {
+              (dbState as any).customerCovers = snap.payload.customerCovers;
+            }
+            localNeonTimestamps['rodovar-covers-state'] = remoteTs['rodovar-covers-state'];
+          })
+        );
+      }
+
+      if (shouldPull('rodovar-mural-polls')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-mural-polls').then((snap) => {
+            if (snap?.payload) hydrateMuralPollsFromPayload(snap.payload);
+            localNeonTimestamps['rodovar-mural-polls'] = remoteTs['rodovar-mural-polls'];
+          })
+        );
+      }
+
+      if (shouldPull('rodovar-external-rh')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-external-rh').then((snap) => {
+            if (snap?.payload) hydrateExternalRhFromPayload(snap.payload);
+            localNeonTimestamps['rodovar-external-rh'] = remoteTs['rodovar-external-rh'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-system-config')) {
-        const neonCfg = await loadSystemConfigFromNeon();
-        if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
-          if (neonCfg.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
-            neonCfg.topHeader.imageUrl = '/assets/header-sunset.jpg';
-          }
-          dbState.systemConfig = neonCfg;
-        }
-        localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
+        tasks.push(
+          loadSystemConfigFromNeon().then((neonCfg) => {
+            if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+              if (neonCfg.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+                neonCfg.topHeader.imageUrl = '/assets/header-sunset.jpg';
+              }
+              dbState.systemConfig = neonCfg;
+            }
+            localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-freights-state')) {
-        const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
-        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
-        localNeonTimestamps['rodovar-freights-state'] = remoteTs['rodovar-freights-state'];
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-freights-state').then((freightsSnap) => {
+            if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+            localNeonTimestamps['rodovar-freights-state'] = remoteTs['rodovar-freights-state'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-payments-state')) {
-        const paymentsSnap = await loadStateSnapshotFromNeon<any>('rodovar-payments-state');
-        if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
-        localNeonTimestamps['rodovar-payments-state'] = remoteTs['rodovar-payments-state'];
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-payments-state').then((paymentsSnap) => {
+            if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
+            localNeonTimestamps['rodovar-payments-state'] = remoteTs['rodovar-payments-state'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-requests-state')) {
-        const requestsSnap = await loadStateSnapshotFromNeon<any>('rodovar-requests-state');
-        if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
-        localNeonTimestamps['rodovar-requests-state'] = remoteTs['rodovar-requests-state'];
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-requests-state').then((requestsSnap) => {
+            if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
+            localNeonTimestamps['rodovar-requests-state'] = remoteTs['rodovar-requests-state'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-agenda')) {
-        const agendaSnap = await loadStateSnapshotFromNeon<any>('rodovar-agenda');
-        if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
-        localNeonTimestamps['rodovar-agenda'] = remoteTs['rodovar-agenda'];
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-agenda').then((agendaSnap) => {
+            if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
+            localNeonTimestamps['rodovar-agenda'] = remoteTs['rodovar-agenda'];
+          })
+        );
       }
 
       if (shouldPull('rodovar-social')) {
-        const socialSnap = await loadStateSnapshotFromNeon<any>('rodovar-social');
-        if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
-        localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-social').then((socialSnap) => {
+            if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+            localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
+          })
+        );
+      }
+
+      if (tasks.length > 0) {
+        await Promise.all(tasks);
       }
     } catch {
       // Non-blocking fallback to in-memory state
@@ -1261,10 +1466,12 @@ function appendAuditLog(
 ) {
   const now = new Date();
   const logId = `aud-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const timestampIso = now.toISOString();
+  const timestampFormatted = now.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   dbState.auditLogs.unshift({
     id: logId,
-    timestampIso: now.toISOString(),
-    timestampFormatted: now.toLocaleString('pt-BR'),
+    timestampIso,
+    timestampFormatted,
     actorId,
     actorName,
     actorRole,
@@ -1281,9 +1488,12 @@ function appendAuditLog(
     id: logId,
     actorId,
     actorName,
+    actorRole,
     action,
     details,
     ip,
+    timestampIso,
+    timestampFormatted,
   });
 }
 
@@ -1367,8 +1577,12 @@ function countActiveAdmins(): number {
   ).length;
 }
 
-const STATELESS_SESSION_SECRET =
-  process.env.SESSION_SECRET || 'rodovar-conecta-stateless-session-key-2027-v1';
+const STATELESS_SESSION_SECRET = (process.env.SESSION_SECRET || '').trim();
+if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
+  throw new Error(
+    'Configuração ausente ou insegura: A variável de ambiente SESSION_SECRET é obrigatória e deve possuir no mínimo 32 caracteres.'
+  );
+}
 const revokedSessionIds = new Set<string>();
 const revokedUserAfterMap = new Map<string, number>();
 
@@ -1455,11 +1669,14 @@ function resolveSessionRecord(sid?: string): ServerSessionRecord | undefined {
 }
 
 function revokeAllSessionsForUser(userId: string): number {
-  revokedUserAfterMap.set(userId, Date.now());
+  const revokedAt = Date.now();
+  revokedUserAfterMap.set(userId, revokedAt);
+  void persistUserSessionsRevocationToNeon(userId, revokedAt);
   let count = 0;
   for (const [sid, sess] of Object.entries(dbState.sessions)) {
     if (sess.userId === userId) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, userId);
       delete dbState.sessions[sid];
       count++;
     }
@@ -1579,13 +1796,22 @@ export function createExpressApp(): express.Express {
 
   const app = express();
   app.use('/api', async (req, res, next) => {
-    await syncAllModulesFromNeonIfNeeded(false);
+    const isLightPath =
+      req.path === '/health' ||
+      req.path === '/neon/health' ||
+      req.path.startsWith('/system-config/assets/') ||
+      req.path === '/system-config/version';
+    if (!isLightPath) {
+      await ensureNeonBootstrapped();
+      await syncAllModulesFromNeonIfNeeded(false);
+    }
     if (
       req.path.startsWith('/auth') ||
       req.path.startsWith('/profile') ||
       (req.method === 'GET' &&
         (req.path === '/system-config' ||
           req.path === '/system-config/version' ||
+          req.path === '/economic-mode' ||
           req.path === '/neon/health' ||
           req.path === '/health')) ||
       req.path === '/rh-external/webhook' ||
@@ -1599,13 +1825,29 @@ export function createExpressApp(): express.Express {
       if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method) && user.accessProfile !== 'FINANCEIRO' && user.accessLevel !== 'ADMINISTRADOR') {
         res.status(403).json({error:'Ação exclusiva do Financeiro.'}); return;
       }
-      if(req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
-        const p=req.path, profile=user.accessProfile;
-        const permitted=user.accessLevel==='ADMINISTRADOR' ||
-          (profile==='COMERCIAL' && (p==='/meus-fretes' || /\/(comercial|commercial|comercial-transition|commercial-transition|comments|attachments)$/.test(p))) ||
-          (profile==='EXPEDICAO' && /\/(claim|operational-data|operational|expedicao-action|comments|attachments)$/.test(p)) ||
-          (canOperateMonitoring(user) && /\/(monitoramento-action|occurrences|resolve|comments|attachments|verify)$/.test(p));
-        if(!permitted) {res.status(403).json({error:'Etapa exclusiva de outro perfil.'});return;}
+      if (req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
+        const p = req.path, profile = user.accessProfile;
+        const isManagerOrAdmin = user.accessLevel === 'ADMINISTRADOR' || user.accessLevel === 'DIRETORIA';
+        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate)$/.test(p);
+        const permitted =
+          isManagerOrAdmin ||
+          (isSharedAction &&
+            (profile === 'COMERCIAL' ||
+              profile === 'EXPEDICAO' ||
+              canOperateMonitoring(user) ||
+              hasPagePermission(user, 'fretes_transferir') ||
+              hasPagePermission(user, 'fretes_cancelar'))) ||
+          (profile === 'COMERCIAL' &&
+            (p === '/meus-fretes' ||
+              /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p))) ||
+          (profile === 'EXPEDICAO' &&
+            /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p)) ||
+          (canOperateMonitoring(user) &&
+            /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve)$/.test(p));
+        if (!permitted) {
+          res.status(403).json({error:'Etapa exclusiva de outro perfil.'});
+          return;
+        }
       }
       next();
     });
@@ -1615,7 +1857,7 @@ export function createExpressApp(): express.Express {
   app.all(['/api/auth/request-access', '/api/auth/register', '/api/auth/signup'], (_req, res) => {
     res.status(403).json({error: 'Cadastro público desabilitado. Procure o administrador.', code:'PUBLIC_REGISTRATION_DISABLED'});
   });
-  app.use('/uploads/documents', requireAdminSession);
+  app.use('/uploads/documents', requireApprovedSession);
   // Security headers
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -1625,11 +1867,13 @@ export function createExpressApp(): express.Express {
 
   app.use(express.json({ limit: '20mb', verify: (req: any, _res, bytes) => { if (req.url === '/api/rh-external/webhook') req.rawBody = Buffer.from(bytes); } }));
 
-  // Neon Postgres initialization & health check
-  initializeNeonSchema().then(async () => {
-    await syncAllModulesFromNeonIfNeeded(true);
-  }).catch(() => {});
-  app.get(['/api/neon/health', '/api/health'], async (_req, res) => {
+  // Neon Postgres background warm-up (idempotent)
+  void ensureNeonBootstrapped();
+  app.get(['/api/neon/health', '/api/health'], (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/health', requireAdminSession, async (_req, res) => {
     const stats = await getNeonHealthStats();
     res.json({
       ok: true,
@@ -1696,6 +1940,7 @@ export function createExpressApp(): express.Express {
           lastFailureAt: 0,
         };
         saveDatabase(dbState);
+        void persistLoginLockToNeon(dbState.loginLocks[lockKey]);
       }
     }
 
@@ -1769,6 +2014,7 @@ export function createExpressApp(): express.Express {
           lastFailureAt: 0,
         };
         dbState.loginLocks[lockKey] = lock;
+        void persistLoginLockToNeon(lock);
       }
     }
 
@@ -1823,6 +2069,7 @@ export function createExpressApp(): express.Express {
           ip
         );
         saveDatabase(dbState);
+        void persistLoginLockToNeon(lock);
         res.status(429).json({
           error:
             'Não foi possível entrar. Confira os dados ou tente novamente após o prazo indicado.',
@@ -1845,6 +2092,7 @@ export function createExpressApp(): express.Express {
         ip
       );
       saveDatabase(dbState);
+      void persistLoginLockToNeon(lock);
       res.status(401).json({
         error:
           'Não foi possível entrar. Confira os dados ou tente novamente após o prazo indicado.',
@@ -1859,9 +2107,12 @@ export function createExpressApp(): express.Express {
     }
 
     // 3. Valid password outside of lock -> atomically reset failure counter
-    lock.consecutiveFailures = 0;
-    lock.blockedUntil = null;
-    lock.lastFailureAt = 0;
+    if (lock.consecutiveFailures > 0 || lock.blockedUntil !== null) {
+      lock.consecutiveFailures = 0;
+      lock.blockedUntil = null;
+      lock.lastFailureAt = 0;
+      void persistLoginLockToNeon(lock);
+    }
 
     // 4. Verify account approval status BEFORE issuing any session
     if (user.approvalStatus === 'PENDENTE') {
@@ -2071,6 +2322,7 @@ export function createExpressApp(): express.Express {
       ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(newPendingUser);
 
     res.status(201).json({
       ok: true,
@@ -2098,6 +2350,7 @@ export function createExpressApp(): express.Express {
 
     if (Date.now() >= sess.expiresAt) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -2111,6 +2364,7 @@ export function createExpressApp(): express.Express {
     const user = dbState.users.find((u) => u.id === sess.userId);
     if (!user || user.approvalStatus !== 'APROVADO' || !user.active) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -2138,6 +2392,7 @@ export function createExpressApp(): express.Express {
     const sess = resolveSessionRecord(sid);
     if (sid) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess?.userId);
     }
     if (sid && sess) {
       const user = dbState.users.find((u) => u.id === sess.userId);
@@ -2184,14 +2439,17 @@ export function createExpressApp(): express.Express {
       for (const t of dbState.passwordResetTokens) {
         if (t.userId === user.id) t.used = true;
       }
+      void markUserPasswordResetTokensUsedInNeon(user.id);
 
-      dbState.passwordResetTokens.push({
+      const newTokenRecord = {
         tokenHash,
         userId: user.id,
         createdAt: now,
         expiresAt: now + 15 * 60 * 1000, // 15 minutes expiration
         used: false,
-      });
+      };
+      dbState.passwordResetTokens.push(newTokenRecord);
+      void persistPasswordResetTokenToNeon(newTokenRecord);
 
       appendAuditLog(
         user.id,
@@ -2253,6 +2511,7 @@ export function createExpressApp(): express.Express {
     const onboarding=(record as any).onboarding && (dbState as any).accessPolicy?.authorizedUids.includes(user?.id);
     if (!user || (!onboarding && (user.approvalStatus !== 'APROVADO' || !user.active))) {
       record.used = true;
+      void persistPasswordResetTokenToNeon(record);
       saveDatabase(dbState);
       res.status(403).json({
         error: 'Esta conta não está autorizada ou encontra-se suspensa/recusada.',
@@ -2263,6 +2522,7 @@ export function createExpressApp(): express.Express {
 
     // Mark single-use token as used immediately
     record.used = true;
+    void persistPasswordResetTokenToNeon(record);
     const { hash, salt } = hashPassword(String(newPassword));
     user.passwordHash = hash;
     user.passwordSalt = salt;
@@ -2281,6 +2541,7 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(user);
 
     res.json({
       ok: true,
@@ -2405,6 +2666,7 @@ export function createExpressApp(): express.Express {
         const policy = (dbState as any).accessPolicy;
         if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(targetUser.id) && targetUser.id !== policy.protectedAdminUid) {
           policy.authorizedUids.push(targetUser.id);
+          void persistAccessPolicyToNeon(policy);
         }
       } else if (action === 'RECUSAR') {
         newStatus = 'RECUSADO';
@@ -2464,6 +2726,7 @@ export function createExpressApp(): express.Express {
       };
 
       dbState.accessDecisions.unshift(decisionRecord);
+      void persistAccessDecisionToNeon(decisionRecord);
       appendAuditLog(
         admin.id,
         admin.name,
@@ -2565,6 +2828,7 @@ export function createExpressApp(): express.Express {
     const policy = (dbState as any).accessPolicy;
     if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(newUser.id)) {
       policy.authorizedUids.push(newUser.id);
+      void persistAccessPolicyToNeon(policy);
     }
     dbState.users.unshift(newUser);
     appendAuditLog(
@@ -2830,6 +3094,7 @@ export function createExpressApp(): express.Express {
         req.ip
       );
       saveDatabase(dbState);
+      void persistUserToNeon(targetUser);
 
       res.json({
         ok: true,
@@ -2877,7 +3142,11 @@ export function createExpressApp(): express.Express {
       actor.passwordSalt = salt;
       actor.mustChangePassword = false;
       for (const [sid, session] of Object.entries(dbState.sessions)) {
-        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) delete dbState.sessions[sid];
+        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, actor.id);
+          delete dbState.sessions[sid];
+        }
       }
     }
 
@@ -2890,6 +3159,7 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(actor);
 
     res.json({
       ok: true,
@@ -2933,7 +3203,12 @@ export function createExpressApp(): express.Express {
   // ECONOMIC MODE API (Low-consumption configuration for Neon Free + Vercel)
   // --------------------------------------------------------------------------
   app.get('/api/economic-mode', async (_req, res) => {
-    const enabled = await loadEconomicModeFromNeon();
+    const now = Date.now();
+    if (!cachedEconomicMode || now - cachedEconomicMode.fetchedAtMs > 30000) {
+      const enabled = await loadEconomicModeFromNeon();
+      cachedEconomicMode = { value: enabled, fetchedAtMs: now };
+    }
+    const enabled = cachedEconomicMode.value;
     res.json({
       ok: true,
       economicMode: enabled,
@@ -2949,6 +3224,7 @@ export function createExpressApp(): express.Express {
   app.post('/api/economic-mode', requireAdminSession, async (req: AuthenticatedRequest, res) => {
     const { enabled } = req.body || {};
     const targetState = Boolean(enabled);
+    cachedEconomicMode = { value: targetState, fetchedAtMs: Date.now() };
     await persistEconomicModeToNeon(targetState);
     appendAuditLog(
       req.sessionUser!.id,
@@ -3283,25 +3559,39 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   registerAccountDeletionRoutes(app, requireAdminSession, dbState, saveDatabase);
   registerAgenda(app, requireApprovedSession, () => dbState.users);
-  registerMural(app, requireApprovedSession, dbState, () => saveDatabase(dbState), INITIAL_ANNOUNCEMENTS);
-  registerChats(app, requireApprovedSession, dbState);
+  registerMural(app, requireApprovedSession, dbState, () => saveMuralState(dbState), INITIAL_ANNOUNCEMENTS);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
   app.post('/api/admin/first-access/:uid', requireAdminSession, (req: AuthenticatedRequest, res) => {
-    const user=dbState.users.find(u=>u.id===req.params.uid);
-    const policy=(dbState as any).accessPolicy;
-    if (!user || !policy?.authorizedUids.includes(user.id)) { res.status(403).json({error:'Identidade ainda não vinculada à lista autorizada.'}); return; }
-    const token='RDV-RST-'+crypto.randomBytes(24).toString('hex').toUpperCase();
-    for (const t of dbState.passwordResetTokens) if(t.userId===user.id) t.used=true;
-    dbState.passwordResetTokens.push({tokenHash:crypto.createHash('sha256').update(token).digest('hex'),userId:user.id,createdAt:Date.now(),expiresAt:Date.now()+86400000,used:false,onboarding:true} as any);
+    const user = dbState.users.find((u) => u.id === req.params.uid);
+    const policy = (dbState as any).accessPolicy;
+    if (!user || !policy?.authorizedUids.includes(user.id)) {
+      res.status(403).json({ error: 'Identidade ainda não vinculada à lista autorizada.' });
+      return;
+    }
+    const token = 'RDV-RST-' + crypto.randomBytes(24).toString('hex').toUpperCase();
+    for (const t of dbState.passwordResetTokens) {
+      if (t.userId === user.id) t.used = true;
+    }
+    void markUserPasswordResetTokensUsedInNeon(user.id);
+    const newTokenRecord = {
+      tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+      userId: user.id,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 86400000,
+      used: false,
+      onboarding: true,
+    };
+    dbState.passwordResetTokens.push(newTokenRecord as any);
+    void persistPasswordResetTokenToNeon(newTokenRecord);
     revokeAllSessionsForUser(user.id);
     saveDatabase(dbState);
-    res.setHeader('Cache-Control','no-store');
-    res.json({token,login:user.login,expiresInHours:24});
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ token, login: user.login, expiresInHours: 24 });
   });
-  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveDatabase(dbState));
-  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDatabase(dbState));
+  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveCustomerCoversState(dbState));
+  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDriversState(dbState));
   registerUnifiedFreightRoutes(
     app,
     requireApprovedSession as any,

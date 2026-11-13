@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Pool, neon, neonConfig } from '@neondatabase/serverless';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,12 +15,14 @@ function normalizeNeonConnectionString(raw: string): string {
   return trimmed.replace(/channel_binding=requerido/gi, 'channel_binding=require');
 }
 
-export const DEFAULT_NEON_DATABASE_URL =
-  'postgresql://neondb_owner:npg_WTmE1HUFL9cC@ep-raspy-river-b6yady4i-pooler.c-2.sa-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+const rawConnectionString = (process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
+if (!rawConnectionString && !process.env.RODOVAR_DATA_ROOT) {
+  throw new Error(
+    'Configuração ausente: A variável de ambiente DATABASE_URL (ou POSTGRES_URL) é obrigatória para conexão com o Neon PostgreSQL.'
+  );
+}
 
-const connectionString = normalizeNeonConnectionString(
-  process.env.DATABASE_URL || process.env.POSTGRES_URL || DEFAULT_NEON_DATABASE_URL
-);
+const connectionString = normalizeNeonConnectionString(rawConnectionString);
 
 export const isNeonConfigured = Boolean(
   connectionString &&
@@ -28,23 +31,27 @@ export const isNeonConfigured = Boolean(
 );
 
 export function isIsolatedTestEnv(): boolean {
+  if (process.env.VERCEL || process.env.VERCEL_ENV) return false;
   return Boolean(
-    process.env.RODOVAR_DATA_ROOT &&
-      !process.env.VERCEL &&
-      !process.env.VERCEL_ENV
+    process.env.RODOVAR_DATA_ROOT ||
+      process.env.NODE_TEST_CONTEXT ||
+      process.execArgv.includes('--test') ||
+      process.argv.includes('--test')
   );
 }
 
 export const pool = new Pool({
-  connectionString: isNeonConfigured
-    ? connectionString
-    : DEFAULT_NEON_DATABASE_URL,
-  connectionTimeoutMillis: 15000,
-  idleTimeoutMillis: 10000,
-  max: 25,
+  connectionString: connectionString || undefined,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 5000,
+  max: 5,
 });
 
 export const sql = isNeonConfigured ? neon(connectionString) : null;
+
+const NEON_SCHEMA_VERSION = '2027.05.v1';
+let neonSchemaInitialized = false;
+let neonSchemaInitPromise: Promise<void> | null = null;
 
 export async function testNeonConnection(): Promise<boolean> {
   if (!isNeonConfigured || !sql) {
@@ -94,7 +101,6 @@ export interface NeonHealthStats {
     snapshots: number;
     announcements?: number;
     agenda?: number;
-    chats?: number;
     auditLogs?: number;
   } | null;
   timestamp: string;
@@ -126,7 +132,6 @@ export async function getNeonHealthStats(): Promise<NeonHealthStats> {
           (SELECT COUNT(*)::int FROM rodovar_state_store) AS snapshots,
           (SELECT COUNT(*)::int FROM rodovar_announcements) AS announcements,
           (SELECT COUNT(*)::int FROM rodovar_agenda) AS agenda,
-          (SELECT COUNT(*)::int FROM rodovar_chats) AS chats,
           (SELECT COUNT(*)::int FROM rodovar_audit_logs) AS audit_logs
       `;
       if (rows[0]) {
@@ -138,7 +143,6 @@ export async function getNeonHealthStats(): Promise<NeonHealthStats> {
           snapshots: Number(rows[0].snapshots || 0),
           announcements: Number(rows[0].announcements || 0),
           agenda: Number(rows[0].agenda || 0),
-          chats: Number(rows[0].chats || 0),
           auditLogs: Number(rows[0].audit_logs || 0),
         };
       }
@@ -184,19 +188,149 @@ export async function initializeNeonSchema(): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv()) {
     return;
   }
-  const client = await pool.connect();
-  try {
-    await client.query(`
+  if (neonSchemaInitialized) {
+    return;
+  }
+  if (neonSchemaInitPromise) {
+    return neonSchemaInitPromise;
+  }
+
+  neonSchemaInitPromise = (async () => {
+    try {
+      // Fast-path check via stateless HTTP query so Vercel cold starts skip 30 DDLs & seed loops
+      if (sql) {
+        try {
+          const check = await sql`
+            SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-schema-version' LIMIT 1
+          `;
+          if (check[0]?.payload?.version === NEON_SCHEMA_VERSION) {
+            neonSchemaInitialized = true;
+            return;
+          }
+        } catch {
+          // Table may not exist yet — proceed to DDL initialization
+        }
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query(`
       CREATE TABLE IF NOT EXISTS rodovar_users (
         id VARCHAR(64) PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
+        login VARCHAR(255),
         department VARCHAR(100) NOT NULL,
-        role VARCHAR(50) NOT NULL,
+        role VARCHAR(100) NOT NULL,
+        role_title VARCHAR(150),
         access_level VARCHAR(50) NOT NULL,
+        access_profile VARCHAR(50),
         password_hash VARCHAR(255) NOT NULL,
+        password_salt VARCHAR(255) DEFAULT '',
         must_change_password BOOLEAN DEFAULT TRUE,
+        avatar TEXT DEFAULT '',
+        has_custom_avatar BOOLEAN DEFAULT FALSE,
+        approval_status VARCHAR(50) DEFAULT 'APROVADO',
+        requested_at VARCHAR(64),
+        approved_by VARCHAR(255),
+        approved_at VARCHAR(64),
+        status_reason TEXT,
+        migrated_from_google BOOLEAN DEFAULT FALSE,
+        phone_ext VARCHAR(64) DEFAULT '',
+        phone VARCHAR(64) DEFAULT '',
+        location VARCHAR(120) DEFAULT 'BA - Salvador',
+        joined_at VARCHAR(64) DEFAULT '',
+        active BOOLEAN DEFAULT TRUE,
+        permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        roster_activation_version INT DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS login VARCHAR(255);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS role_title VARCHAR(150);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS access_profile VARCHAR(50);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS password_salt VARCHAR(255) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS avatar TEXT DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS has_custom_avatar BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APROVADO';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS requested_at VARCHAR(64);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_at VARCHAR(64);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS status_reason TEXT;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS migrated_from_google BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS phone_ext VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS phone VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS location VARCHAR(120) DEFAULT 'BA - Salvador';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS joined_at VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS permissoes_paginas JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS roster_activation_version INT DEFAULT 1;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+      CREATE INDEX IF NOT EXISTS idx_rodovar_users_login ON rodovar_users(LOWER(login));
+      CREATE INDEX IF NOT EXISTS idx_rodovar_users_email ON rodovar_users(LOWER(email));
+
+      CREATE TABLE IF NOT EXISTS rodovar_login_locks (
+        identifier VARCHAR(255) PRIMARY KEY,
+        consecutive_failures INT NOT NULL DEFAULT 0,
+        blocked_until BIGINT,
+        last_failure_at BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_password_reset_tokens (
+        token_hash VARCHAR(128) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        used BOOLEAN NOT NULL DEFAULT FALSE,
+        onboarding BOOLEAN NOT NULL DEFAULT FALSE
+      );
+      CREATE INDEX IF NOT EXISTS idx_rodovar_pw_reset_user ON rodovar_password_reset_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS rodovar_access_decisions (
+        id VARCHAR(64) PRIMARY KEY,
+        target_user_id VARCHAR(64) NOT NULL,
+        target_name VARCHAR(255) NOT NULL,
+        target_login VARCHAR(255) NOT NULL,
+        admin_id VARCHAR(64) NOT NULL,
+        admin_name VARCHAR(255) NOT NULL,
+        action VARCHAR(64) NOT NULL,
+        new_status VARCHAR(64) NOT NULL,
+        access_level VARCHAR(64) NOT NULL,
+        permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        reason TEXT,
+        timestamp_iso VARCHAR(64) NOT NULL,
+        timestamp_formatted VARCHAR(64) NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_archived_users (
+        user_id VARCHAR(64) PRIMARY KEY,
+        user_snapshot JSONB NOT NULL,
+        deleted_at_iso VARCHAR(64) NOT NULL,
+        deleted_by_id VARCHAR(64) NOT NULL,
+        reason TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_access_policy (
+        id VARCHAR(32) PRIMARY KEY,
+        protected_admin_uid VARCHAR(64) NOT NULL,
+        authorized_uids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        version INT NOT NULL DEFAULT 1,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_revoked_sessions (
+        session_id VARCHAR(512) PRIMARY KEY,
+        user_id VARCHAR(64),
+        revoked_at BIGINT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_user_revocations (
+        user_id VARCHAR(64) PRIMARY KEY,
+        revoked_after_ms BIGINT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS rodovar_fretes (
@@ -266,24 +400,21 @@ export async function initializeNeonSchema(): Promise<void> {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS rodovar_chats (
-        id VARCHAR(64) PRIMARY KEY,
-        thread_id VARCHAR(64) NOT NULL,
-        sender_id VARCHAR(64) NOT NULL,
-        sender_name VARCHAR(255),
-        text TEXT NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-
       CREATE TABLE IF NOT EXISTS rodovar_audit_logs (
         id VARCHAR(64) PRIMARY KEY,
         actor_id VARCHAR(64),
         actor_name VARCHAR(255),
+        actor_role VARCHAR(64),
         action VARCHAR(100) NOT NULL,
         details TEXT,
         ip_address VARCHAR(64),
+        timestamp_iso VARCHAR(64),
+        timestamp_formatted VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS actor_role VARCHAR(64);
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS timestamp_iso VARCHAR(64);
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS timestamp_formatted VARCHAR(64);
 
       CREATE TABLE IF NOT EXISTS rodovar_social_profiles (
         user_id VARCHAR(64) PRIMARY KEY,
@@ -351,37 +482,199 @@ export async function initializeNeonSchema(): Promise<void> {
     `);
 
     await syncLocalDataToNeon(client);
-    console.log('Neon Postgres schema & data synchronized successfully.');
-  } catch (error) {
-    console.warn('Neon schema/data synchronization failed:', (error as Error).message);
-  } finally {
-    client.release();
-  }
+    await client.query(
+      `INSERT INTO rodovar_state_store (key, payload, updated_at)
+       VALUES ('rodovar-schema-version', $1::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+      [JSON.stringify({ version: NEON_SCHEMA_VERSION, updatedAt: new Date().toISOString() })]
+    );
+        neonSchemaInitialized = true;
+        console.log('Neon Postgres schema & data synchronized successfully.');
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.warn('Neon schema/data synchronization failed:', (error as Error).message);
+    }
+  })().finally(() => {
+    neonSchemaInitPromise = null;
+  });
+
+  return neonSchemaInitPromise;
+}
+
+export const ensureNeonReady = initializeNeonSchema;
+
+async function upsertUserRowWithClient(client: any, u: any, overwriteExisting = false): Promise<void> {
+  if (!u || !u.id || (!u.email && !u.login)) return;
+  const email = String(u.email || (String(u.login).includes('@') ? u.login : `${u.login}@rodovar.com.br`));
+  const login = String(u.login || email);
+  const role = String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 100);
+  const roleTitle = String(u.roleTitle || u.accessProfile || 'Colaborador').slice(0, 150);
+  const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
+  const permissoes = Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : [];
+
+  const conflictClause = overwriteExisting
+    ? `ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        email = EXCLUDED.email,
+        login = EXCLUDED.login,
+        department = EXCLUDED.department,
+        role = EXCLUDED.role,
+        role_title = EXCLUDED.role_title,
+        access_level = EXCLUDED.access_level,
+        access_profile = EXCLUDED.access_profile,
+        password_hash = EXCLUDED.password_hash,
+        password_salt = EXCLUDED.password_salt,
+        must_change_password = EXCLUDED.must_change_password,
+        avatar = EXCLUDED.avatar,
+        has_custom_avatar = EXCLUDED.has_custom_avatar,
+        approval_status = EXCLUDED.approval_status,
+        requested_at = EXCLUDED.requested_at,
+        approved_by = EXCLUDED.approved_by,
+        approved_at = EXCLUDED.approved_at,
+        status_reason = EXCLUDED.status_reason,
+        migrated_from_google = EXCLUDED.migrated_from_google,
+        phone_ext = EXCLUDED.phone_ext,
+        phone = EXCLUDED.phone,
+        location = EXCLUDED.location,
+        joined_at = EXCLUDED.joined_at,
+        active = EXCLUDED.active,
+        permissoes_paginas = EXCLUDED.permissoes_paginas,
+        roster_activation_version = EXCLUDED.roster_activation_version,
+        updated_at = CURRENT_TIMESTAMP`
+    : `ON CONFLICT (id) DO UPDATE SET
+        login = COALESCE(NULLIF(rodovar_users.login, ''), EXCLUDED.login),
+        role_title = COALESCE(NULLIF(rodovar_users.role_title, ''), EXCLUDED.role_title),
+        access_profile = COALESCE(rodovar_users.access_profile, EXCLUDED.access_profile),
+        password_salt = CASE WHEN rodovar_users.password_salt IS NULL OR rodovar_users.password_salt = '' THEN EXCLUDED.password_salt ELSE rodovar_users.password_salt END,
+        avatar = CASE WHEN rodovar_users.avatar IS NULL OR rodovar_users.avatar = '' THEN EXCLUDED.avatar ELSE rodovar_users.avatar END,
+        has_custom_avatar = COALESCE(rodovar_users.has_custom_avatar, EXCLUDED.has_custom_avatar),
+        approval_status = COALESCE(NULLIF(rodovar_users.approval_status, ''), EXCLUDED.approval_status),
+        requested_at = COALESCE(rodovar_users.requested_at, EXCLUDED.requested_at),
+        approved_by = COALESCE(rodovar_users.approved_by, EXCLUDED.approved_by),
+        approved_at = COALESCE(rodovar_users.approved_at, EXCLUDED.approved_at),
+        status_reason = COALESCE(rodovar_users.status_reason, EXCLUDED.status_reason),
+        phone_ext = CASE WHEN rodovar_users.phone_ext IS NULL OR rodovar_users.phone_ext = '' THEN EXCLUDED.phone_ext ELSE rodovar_users.phone_ext END,
+        phone = CASE WHEN rodovar_users.phone IS NULL OR rodovar_users.phone = '' THEN EXCLUDED.phone ELSE rodovar_users.phone END,
+        location = CASE WHEN rodovar_users.location IS NULL OR rodovar_users.location = '' THEN EXCLUDED.location ELSE rodovar_users.location END,
+        joined_at = CASE WHEN rodovar_users.joined_at IS NULL OR rodovar_users.joined_at = '' THEN EXCLUDED.joined_at ELSE rodovar_users.joined_at END,
+        permissoes_paginas = CASE WHEN rodovar_users.permissoes_paginas IS NULL OR jsonb_array_length(rodovar_users.permissoes_paginas) = 0 THEN EXCLUDED.permissoes_paginas ELSE rodovar_users.permissoes_paginas END`;
+
+  await client.query(
+    `INSERT INTO rodovar_users (
+      id, name, email, login, department, role, role_title, access_level, access_profile,
+      password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+      approval_status, requested_at, approved_by, approved_at, status_reason,
+      migrated_from_google, phone_ext, phone, location, joined_at, active,
+      permissoes_paginas, roster_activation_version, updated_at
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      $10, $11, $12, $13, $14,
+      $15, $16, $17, $18, $19,
+      $20, $21, $22, $23, $24, $25,
+      $26::jsonb, $27, CURRENT_TIMESTAMP
+    )
+    ${conflictClause}`,
+    [
+      String(u.id),
+      String(u.name || login),
+      email,
+      login,
+      String(u.department || 'Administrativo'),
+      role,
+      roleTitle,
+      String(u.accessLevel || 'FUNCIONARIO').slice(0, 50),
+      accessProfile,
+      String(u.passwordHash || 'managed'),
+      String(u.passwordSalt || ''),
+      Boolean(u.mustChangePassword),
+      String(u.avatar || ''),
+      Boolean(u.hasCustomAvatar),
+      String(u.approvalStatus || 'APROVADO'),
+      u.requestedAt ? String(u.requestedAt) : new Date().toISOString(),
+      u.approvedBy ? String(u.approvedBy) : null,
+      u.approvedAt ? String(u.approvedAt) : null,
+      u.statusReason ? String(u.statusReason) : null,
+      Boolean(u.migratedFromGoogle),
+      String(u.phoneExt || '71 9 9920-2476'),
+      String(u.phone || u.phoneExt || '71 9 9920-2476'),
+      String(u.location || 'BA - Salvador'),
+      String(u.joinedAt || '28/10/2026'),
+      u.active !== undefined ? Boolean(u.active) : true,
+      JSON.stringify(permissoes),
+      Number(u.rosterActivationVersion || 1),
+    ]
+  );
 }
 
 async function syncLocalDataToNeon(client: any): Promise<void> {
   const dataDir = path.join(resolveDataRoot(), 'data');
 
-  // 1. Seed Users from rodovar-server-db.json (non-destructive ON CONFLICT DO NOTHING)
+  // 1. Seed Users, AccessPolicy, Decisions, ArchivedUsers & AuditLogs from rodovar-server-db.json
   const dbPath = path.join(dataDir, 'rodovar-server-db.json');
   if (fs.existsSync(dbPath)) {
     const dbRaw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
     const users = Array.isArray(dbRaw.users) ? dbRaw.users : [];
     for (const u of users) {
-      if (!u || !u.id || !u.email) continue;
+      await upsertUserRowWithClient(client, u, false).catch(() => {});
+    }
+
+    if (dbRaw.accessPolicy) {
       await client.query(
-        `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO NOTHING`,
+        `INSERT INTO rodovar_access_policy (id, protected_admin_uid, authorized_uids, version, updated_at)
+         VALUES ('default', $1, $2::jsonb, $3, CURRENT_TIMESTAMP)
+         ON CONFLICT (id) DO UPDATE SET
+           protected_admin_uid = CASE WHEN rodovar_access_policy.protected_admin_uid = 'admin' THEN EXCLUDED.protected_admin_uid ELSE rodovar_access_policy.protected_admin_uid END,
+           authorized_uids = CASE WHEN rodovar_access_policy.protected_admin_uid = 'admin' OR jsonb_array_length(rodovar_access_policy.authorized_uids) = 0 THEN EXCLUDED.authorized_uids ELSE rodovar_access_policy.authorized_uids END`,
         [
-          String(u.id),
-          String(u.name || u.login || u.email),
-          String(u.email),
-          String(u.department || 'Administrativo'),
-          String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 50),
-          String(u.accessLevel || 'FUNCIONARIO').slice(0, 50),
-          String(u.passwordHash || 'managed'),
-          Boolean(u.mustChangePassword),
+          String(dbRaw.accessPolicy.protectedAdminUid || 'emp-admin-master'),
+          JSON.stringify(Array.isArray(dbRaw.accessPolicy.authorizedUids) ? dbRaw.accessPolicy.authorizedUids : users.map((u: any) => u.id)),
+          Number(dbRaw.accessPolicy.version || 1),
+        ]
+      ).catch(() => {});
+    }
+
+    const decisions = Array.isArray(dbRaw.accessDecisions) ? dbRaw.accessDecisions : [];
+    for (const d of decisions) {
+      if (!d || !d.id) continue;
+      await client.query(
+        `INSERT INTO rodovar_access_decisions (
+          id, target_user_id, target_name, target_login, admin_id, admin_name,
+          action, new_status, access_level, permissoes_paginas, reason, timestamp_iso, timestamp_formatted
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
+        ON CONFLICT (id) DO NOTHING`,
+        [
+          String(d.id),
+          String(d.targetUserId || ''),
+          String(d.targetName || ''),
+          String(d.targetLogin || ''),
+          String(d.adminId || ''),
+          String(d.adminName || ''),
+          String(d.action || 'APROVAR'),
+          String(d.newStatus || 'APROVADO'),
+          String(d.accessLevel || 'FUNCIONARIO'),
+          JSON.stringify(Array.isArray(d.permissoesPaginas) ? d.permissoesPaginas : []),
+          d.reason ? String(d.reason) : null,
+          String(d.timestampIso || new Date().toISOString()),
+          String(d.timestampFormatted || ''),
+        ]
+      ).catch(() => {});
+    }
+
+    const archived = Array.isArray(dbRaw.archivedUsers) ? dbRaw.archivedUsers : [];
+    for (const a of archived) {
+      if (!a || !a.user || !a.user.id) continue;
+      await client.query(
+        `INSERT INTO rodovar_archived_users (user_id, user_snapshot, deleted_at_iso, deleted_by_id, reason)
+         VALUES ($1, $2::jsonb, $3, $4, $5)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [
+          String(a.user.id),
+          JSON.stringify(a.user),
+          String(a.deletedAtIso || new Date().toISOString()),
+          String(a.deletedById || 'emp-admin-master'),
+          String(a.reason || ''),
         ]
       ).catch(() => {});
     }
@@ -593,239 +886,537 @@ async function syncLocalDataToNeon(client: any): Promise<void> {
   }
 }
 
-// Live persistence helpers for mutation operations
+function mapRowToServerUserRecord(row: any): any {
+  const permissoes = Array.isArray(row.permissoes_paginas)
+    ? row.permissoes_paginas
+    : typeof row.permissoes_paginas === 'string'
+    ? JSON.parse(row.permissoes_paginas || '[]')
+    : [];
+  return {
+    id: String(row.id),
+    name: String(row.name || row.login || row.email),
+    email: String(row.email),
+    login: String(row.login || row.email),
+    passwordHash: String(row.password_hash || ''),
+    passwordSalt: String(row.password_salt || ''),
+    mustChangePassword: Boolean(row.must_change_password),
+    roleTitle: String(row.role_title || row.role || 'Colaborador'),
+    department: String(row.department || 'Administrativo'),
+    accessLevel: String(row.access_level || 'FUNCIONARIO'),
+    ...(row.access_profile ? { accessProfile: String(row.access_profile) } : {}),
+    avatar: String(row.avatar || ''),
+    hasCustomAvatar: Boolean(row.has_custom_avatar),
+    approvalStatus: String(row.approval_status || 'APROVADO'),
+    requestedAt: String(row.requested_at || new Date().toISOString()),
+    ...(row.approved_by ? { approvedBy: String(row.approved_by) } : {}),
+    ...(row.approved_at ? { approvedAt: String(row.approved_at) } : {}),
+    ...(row.status_reason ? { statusReason: String(row.status_reason) } : {}),
+    migratedFromGoogle: Boolean(row.migrated_from_google),
+    phoneExt: String(row.phone_ext || row.phone || '71 9 9920-2476'),
+    phone: String(row.phone || row.phone_ext || '71 9 9920-2476'),
+    location: String(row.location || 'BA - Salvador'),
+    joinedAt: String(row.joined_at || '28/10/2026'),
+    active: row.active !== undefined && row.active !== null ? Boolean(row.active) : true,
+    permissoesPaginas: permissoes,
+    rosterActivationVersion: Number(row.roster_activation_version || 1),
+  };
+}
+
+// Live persistence helpers for mutation operations (Stateless HTTP sql driver for Neon Free scalability)
 export async function persistUserToNeon(u: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !u || !u.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !u || !u.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           email = EXCLUDED.email,
-           department = EXCLUDED.department,
-           role = EXCLUDED.role,
-           access_level = EXCLUDED.access_level,
-           password_hash = EXCLUDED.password_hash,
-           must_change_password = EXCLUDED.must_change_password`,
-        [
-          String(u.id),
-          String(u.name || u.login || u.email),
-          String(u.email),
-          String(u.department || 'Administrativo'),
-          String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 50),
-          String(u.accessLevel || 'FUNCIONARIO').slice(0, 50),
-          String(u.passwordHash || 'managed'),
-          Boolean(u.mustChangePassword),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    const email = String(u.email || (String(u.login).includes('@') ? u.login : `${u.login}@rodovar.com.br`));
+    const login = String(u.login || email);
+    const role = String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 100);
+    const roleTitle = String(u.roleTitle || u.accessProfile || 'Colaborador').slice(0, 150);
+    const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
+    const permissoes = JSON.stringify(Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : []);
+    await sql`
+      INSERT INTO rodovar_users (
+        id, name, email, login, department, role, role_title, access_level, access_profile,
+        password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+        approval_status, requested_at, approved_by, approved_at, status_reason,
+        migrated_from_google, phone_ext, phone, location, joined_at, active,
+        permissoes_paginas, roster_activation_version, updated_at
+      ) VALUES (
+        ${String(u.id)}, ${String(u.name || login)}, ${email}, ${login},
+        ${String(u.department || 'Administrativo')}, ${role}, ${roleTitle},
+        ${String(u.accessLevel || 'FUNCIONARIO').slice(0, 50)}, ${accessProfile},
+        ${String(u.passwordHash || 'managed')}, ${String(u.passwordSalt || '')},
+        ${Boolean(u.mustChangePassword)}, ${String(u.avatar || '')}, ${Boolean(u.hasCustomAvatar)},
+        ${String(u.approvalStatus || 'APROVADO')}, ${u.requestedAt ? String(u.requestedAt) : new Date().toISOString()},
+        ${u.approvedBy ? String(u.approvedBy) : null}, ${u.approvedAt ? String(u.approvedAt) : null},
+        ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
+        ${String(u.phoneExt || '71 9 9920-2476')}, ${String(u.phone || u.phoneExt || '71 9 9920-2476')},
+        ${String(u.location || 'BA - Salvador')}, ${String(u.joinedAt || '28/10/2026')},
+        ${u.active !== undefined ? Boolean(u.active) : true}, ${permissoes}::jsonb,
+        ${Number(u.rosterActivationVersion || 1)}, CURRENT_TIMESTAMP
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        email = EXCLUDED.email,
+        login = EXCLUDED.login,
+        department = EXCLUDED.department,
+        role = EXCLUDED.role,
+        role_title = EXCLUDED.role_title,
+        access_level = EXCLUDED.access_level,
+        access_profile = EXCLUDED.access_profile,
+        password_hash = EXCLUDED.password_hash,
+        password_salt = EXCLUDED.password_salt,
+        must_change_password = EXCLUDED.must_change_password,
+        avatar = EXCLUDED.avatar,
+        has_custom_avatar = EXCLUDED.has_custom_avatar,
+        approval_status = EXCLUDED.approval_status,
+        requested_at = EXCLUDED.requested_at,
+        approved_by = EXCLUDED.approved_by,
+        approved_at = EXCLUDED.approved_at,
+        status_reason = EXCLUDED.status_reason,
+        migrated_from_google = EXCLUDED.migrated_from_google,
+        phone_ext = EXCLUDED.phone_ext,
+        phone = EXCLUDED.phone,
+        location = EXCLUDED.location,
+        joined_at = EXCLUDED.joined_at,
+        active = EXCLUDED.active,
+        permissoes_paginas = EXCLUDED.permissoes_paginas,
+        roster_activation_version = EXCLUDED.roster_activation_version,
+        updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistUserToNeon error:', (err as Error).message);
   }
 }
 
-export async function persistFreightToNeon(f: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !f || !f.id) return;
+export async function deleteUserFromNeon(userId: string, archived?: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return;
   try {
-    const client = await pool.connect();
-    try {
-      const seqId = String(f.protocol || f.code || f.id).slice(0, 32);
-      const destRaw = String(f.destinoCidadeUf || f.destino || 'Destino');
-      const destParts = destRaw.split('/');
-      const destCity = (destParts[0] || destRaw).trim().slice(0, 255);
-      const destState = (destParts[1] || 'BA').trim().slice(0, 8);
-      const agreedReais =
-        typeof f.valorTotal === 'number'
-          ? Number(f.valorTotal.toFixed(2))
-          : Number(
-              (
-                (f.valorCobradoClienteCentavos ||
-                  f.valorContratadoCentavos ||
-                  f.valorFreteMotoristaCentavos ||
-                  0) / 100
-              ).toFixed(2)
-            );
-      const status = String(
-        f.situacaoMonitoramento && f.situacaoMonitoramento !== 'NAO_LIBERADO'
-          ? f.situacaoMonitoramento
-          : f.situacaoOperacional && f.situacaoOperacional !== 'NAO_ENVIADO'
-          ? f.situacaoOperacional
-          : f.situacaoComercial || f.status || 'EM_ANDAMENTO'
-      ).slice(0, 64);
-
-      await client.query(
-        `INSERT INTO rodovar_fretes (
-           id, sequential_id, client_name, client_cnpj, origin,
-           destination_city, destination_state, destination_address, cargo_description,
-           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status, updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           sequential_id = EXCLUDED.sequential_id,
-           client_name = EXCLUDED.client_name,
-           client_cnpj = EXCLUDED.client_cnpj,
-           origin = EXCLUDED.origin,
-           destination_city = EXCLUDED.destination_city,
-           destination_state = EXCLUDED.destination_state,
-           destination_address = EXCLUDED.destination_address,
-           cargo_description = EXCLUDED.cargo_description,
-           agreed_value = EXCLUDED.agreed_value,
-           driver_name = EXCLUDED.driver_name,
-           driver_cpf = EXCLUDED.driver_cpf,
-           driver_phone = EXCLUDED.driver_phone,
-           truck_plate = EXCLUDED.truck_plate,
-           status = EXCLUDED.status,
-           updated_at = CURRENT_TIMESTAMP`,
-        [
-          String(f.id).slice(0, 64),
-          seqId,
-          String(f.cliente || 'Cliente').slice(0, 255),
-          f.clienteCnpj ? String(f.clienteCnpj).slice(0, 32) : null,
-          String(f.origemCidadeUf || f.origem || 'Origem').slice(0, 255),
-          destCity || 'Destino',
-          destState || 'BA',
-          f.enderecoEntrega ? String(f.enderecoEntrega) : null,
-          f.tipoCarga ? String(f.tipoCarga) : null,
-          agreedReais,
-          f.motoristaNome ? String(f.motoristaNome).slice(0, 255) : null,
-          f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null,
-          f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null,
-          f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null,
-          status,
-        ]
-      );
-    } finally {
-      client.release();
+    if (archived && archived.user) {
+      await sql`
+        INSERT INTO rodovar_archived_users (user_id, user_snapshot, deleted_at_iso, deleted_by_id, reason)
+        VALUES (${String(userId)}, ${JSON.stringify(archived.user)}::jsonb, ${String(archived.deletedAtIso || new Date().toISOString())}, ${String(archived.deletedById || 'emp-admin-master')}, ${String(archived.reason || '')})
+        ON CONFLICT (user_id) DO UPDATE SET
+          user_snapshot = EXCLUDED.user_snapshot,
+          deleted_at_iso = EXCLUDED.deleted_at_iso,
+          deleted_by_id = EXCLUDED.deleted_by_id,
+          reason = EXCLUDED.reason
+      `;
     }
+    await Promise.all([
+      sql`DELETE FROM rodovar_password_reset_tokens WHERE user_id = ${userId}`,
+      sql`DELETE FROM rodovar_login_locks WHERE identifier = ${`user:${userId}`}`,
+      sql`DELETE FROM rodovar_users WHERE id = ${userId}`,
+    ]);
+  } catch (err) {
+    console.warn('Neon deleteUserFromNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadAllUsersFromNeon(): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const rows = await sql`SELECT * FROM rodovar_users ORDER BY created_at ASC`;
+    return rows.map(mapRowToServerUserRecord);
+  } catch (err) {
+    console.warn('Neon loadAllUsersFromNeon notice:', (err as Error).message);
+    return [];
+  }
+}
+
+export async function persistAccessPolicyToNeon(policy: {
+  protectedAdminUid: string;
+  authorizedUids: string[];
+  version: number;
+}): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !policy) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_access_policy (id, protected_admin_uid, authorized_uids, version, updated_at)
+      VALUES ('default', ${String(policy.protectedAdminUid || 'emp-admin-master')}, ${JSON.stringify(Array.isArray(policy.authorizedUids) ? policy.authorizedUids : [])}::jsonb, ${Number(policy.version || 1)}, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE SET
+        protected_admin_uid = EXCLUDED.protected_admin_uid,
+        authorized_uids = EXCLUDED.authorized_uids,
+        version = EXCLUDED.version,
+        updated_at = CURRENT_TIMESTAMP
+    `;
+  } catch (err) {
+    console.warn('Neon persistAccessPolicyToNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadAccessPolicyFromNeon(): Promise<{
+  protectedAdminUid: string;
+  authorizedUids: string[];
+  version: number;
+} | null> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
+  try {
+    const rows = await sql`SELECT * FROM rodovar_access_policy WHERE id = 'default' LIMIT 1`;
+    if (rows.length > 0) {
+      const r = rows[0];
+      return {
+        protectedAdminUid: String(r.protected_admin_uid || 'emp-admin-master'),
+        authorizedUids: Array.isArray(r.authorized_uids) ? r.authorized_uids : [],
+        version: Number(r.version || 1),
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function persistLoginLockToNeon(lock: {
+  identifier: string;
+  consecutiveFailures: number;
+  blockedUntil: number | null;
+  lastFailureAt: number;
+}): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !lock || !lock.identifier) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_login_locks (identifier, consecutive_failures, blocked_until, last_failure_at, updated_at)
+      VALUES (${String(lock.identifier)}, ${Number(lock.consecutiveFailures || 0)}, ${lock.blockedUntil ? Number(lock.blockedUntil) : null}, ${Number(lock.lastFailureAt || 0)}, CURRENT_TIMESTAMP)
+      ON CONFLICT (identifier) DO UPDATE SET
+        consecutive_failures = EXCLUDED.consecutive_failures,
+        blocked_until = EXCLUDED.blocked_until,
+        last_failure_at = EXCLUDED.last_failure_at,
+        updated_at = CURRENT_TIMESTAMP
+    `;
+  } catch (err) {
+    console.warn('Neon persistLoginLockToNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadLoginLocksFromNeon(): Promise<Record<string, {
+  identifier: string;
+  consecutiveFailures: number;
+  blockedUntil: number | null;
+  lastFailureAt: number;
+}>> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return {};
+  try {
+    const rows = await sql`SELECT * FROM rodovar_login_locks`;
+    const out: Record<string, any> = {};
+    for (const r of rows) {
+      out[String(r.identifier)] = {
+        identifier: String(r.identifier),
+        consecutiveFailures: Number(r.consecutive_failures || 0),
+        blockedUntil: r.blocked_until !== null && r.blocked_until !== undefined ? Number(r.blocked_until) : null,
+        lastFailureAt: Number(r.last_failure_at || 0),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export async function persistPasswordResetTokenToNeon(token: {
+  tokenHash: string;
+  userId: string;
+  createdAt: number;
+  expiresAt: number;
+  used: boolean;
+  onboarding?: boolean;
+}): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !token || !token.tokenHash) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_password_reset_tokens (token_hash, user_id, created_at, expires_at, used, onboarding)
+      VALUES (${String(token.tokenHash)}, ${String(token.userId)}, ${Number(token.createdAt || Date.now())}, ${Number(token.expiresAt)}, ${Boolean(token.used)}, ${Boolean(token.onboarding)})
+      ON CONFLICT (token_hash) DO UPDATE SET
+        used = EXCLUDED.used,
+        expires_at = EXCLUDED.expires_at,
+        onboarding = EXCLUDED.onboarding
+    `;
+  } catch (err) {
+    console.warn('Neon persistPasswordResetTokenToNeon error:', (err as Error).message);
+  }
+}
+
+export async function markUserPasswordResetTokensUsedInNeon(userId: string): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return;
+  try {
+    await sql`UPDATE rodovar_password_reset_tokens SET used = TRUE WHERE user_id = ${String(userId)}`;
+  } catch (err) {
+    console.warn('Neon markUserPasswordResetTokensUsedInNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadPasswordResetTokensFromNeon(): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const cutoff = Date.now() - 86400000;
+    const rows = await sql`SELECT * FROM rodovar_password_reset_tokens WHERE expires_at > ${cutoff}`;
+    return rows.map((r) => ({
+      tokenHash: String(r.token_hash),
+      userId: String(r.user_id),
+      createdAt: Number(r.created_at),
+      expiresAt: Number(r.expires_at),
+      used: Boolean(r.used),
+      ...(r.onboarding ? { onboarding: true } : {}),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function persistAccessDecisionToNeon(d: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !d || !d.id) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_access_decisions (
+        id, target_user_id, target_name, target_login, admin_id, admin_name,
+        action, new_status, access_level, permissoes_paginas, reason, timestamp_iso, timestamp_formatted
+      ) VALUES (
+        ${String(d.id)}, ${String(d.targetUserId || '')}, ${String(d.targetName || '')}, ${String(d.targetLogin || '')},
+        ${String(d.adminId || '')}, ${String(d.adminName || '')}, ${String(d.action || 'APROVAR')},
+        ${String(d.newStatus || 'APROVADO')}, ${String(d.accessLevel || 'FUNCIONARIO')},
+        ${JSON.stringify(Array.isArray(d.permissoesPaginas) ? d.permissoesPaginas : [])}::jsonb,
+        ${d.reason ? String(d.reason) : null}, ${String(d.timestampIso || new Date().toISOString())},
+        ${String(d.timestampFormatted || '')}
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+  } catch (err) {
+    console.warn('Neon persistAccessDecisionToNeon error:', (err as Error).message);
+  }
+}
+
+export async function loadAccessDecisionsFromNeon(limit = 100): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const rows = await sql`SELECT * FROM rodovar_access_decisions ORDER BY timestamp_iso DESC LIMIT ${limit}`;
+    return rows.map((r) => ({
+      id: String(r.id),
+      targetUserId: String(r.target_user_id),
+      targetName: String(r.target_name),
+      targetLogin: String(r.target_login),
+      adminId: String(r.admin_id),
+      adminName: String(r.admin_name),
+      action: String(r.action),
+      newStatus: String(r.new_status),
+      accessLevel: String(r.access_level),
+      permissoesPaginas: Array.isArray(r.permissoes_paginas) ? r.permissoes_paginas : [],
+      ...(r.reason ? { reason: String(r.reason) } : {}),
+      timestampIso: String(r.timestamp_iso),
+      timestampFormatted: String(r.timestamp_formatted),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function persistSessionRevocationToNeon(sessionId: string, userId?: string): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !sessionId) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_revoked_sessions (session_id, user_id, revoked_at)
+      VALUES (${String(sessionId)}, ${userId ? String(userId) : null}, ${Date.now()})
+      ON CONFLICT (session_id) DO NOTHING
+    `;
+  } catch {}
+}
+
+export async function persistUserSessionsRevocationToNeon(userId: string, revokedAfterMs: number): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return;
+  try {
+    await sql`
+      INSERT INTO rodovar_user_revocations (user_id, revoked_after_ms)
+      VALUES (${String(userId)}, ${Number(revokedAfterMs)})
+      ON CONFLICT (user_id) DO UPDATE SET revoked_after_ms = EXCLUDED.revoked_after_ms
+    `;
+  } catch {}
+}
+
+export async function loadSessionRevocationsFromNeon(): Promise<{
+  revokedSessions: string[];
+  userRevocations: Record<string, number>;
+}> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) {
+    return { revokedSessions: [], userRevocations: {} };
+  }
+  try {
+    const cutoff = Date.now() - 15 * 86400000;
+    const [sessRows, userRows] = await Promise.all([
+      sql`SELECT session_id FROM rodovar_revoked_sessions WHERE revoked_at > ${cutoff}`,
+      sql`SELECT user_id, revoked_after_ms FROM rodovar_user_revocations`,
+    ]);
+    const userRevocations: Record<string, number> = {};
+    for (const r of userRows) {
+      userRevocations[String(r.user_id)] = Number(r.revoked_after_ms);
+    }
+    return {
+      revokedSessions: sessRows.map((r) => String(r.session_id)),
+      userRevocations,
+    };
+  } catch {
+    return { revokedSessions: [], userRevocations: {} };
+  }
+}
+
+export async function persistFreightToNeon(f: any): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !f || !f.id) return;
+  try {
+    const seqId = String(f.protocol || f.code || f.id).slice(0, 32);
+    const destRaw = String(f.destinoCidadeUf || f.destino || 'Destino');
+    const destParts = destRaw.split('/');
+    const destCity = (destParts[0] || destRaw).trim().slice(0, 255) || 'Destino';
+    const destState = (destParts[1] || 'BA').trim().slice(0, 8) || 'BA';
+    const agreedReais =
+      typeof f.valorTotal === 'number'
+        ? Number(f.valorTotal.toFixed(2))
+        : Number(
+            (
+              (f.valorCobradoClienteCentavos ||
+                f.valorContratadoCentavos ||
+                f.valorFreteMotoristaCentavos ||
+                0) / 100
+            ).toFixed(2)
+          );
+    const status = String(
+      f.situacaoMonitoramento && f.situacaoMonitoramento !== 'NAO_LIBERADO'
+        ? f.situacaoMonitoramento
+        : f.situacaoOperacional && f.situacaoOperacional !== 'NAO_ENVIADO'
+        ? f.situacaoOperacional
+        : f.situacaoComercial || f.status || 'EM_ANDAMENTO'
+    ).slice(0, 64);
+
+    await sql`
+      INSERT INTO rodovar_fretes (
+         id, sequential_id, client_name, client_cnpj, origin,
+         destination_city, destination_state, destination_address, cargo_description,
+         agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status, updated_at
+       ) VALUES (
+         ${String(f.id).slice(0, 64)}, ${seqId}, ${String(f.cliente || 'Cliente').slice(0, 255)},
+         ${f.clienteCnpj ? String(f.clienteCnpj).slice(0, 32) : null},
+         ${String(f.origemCidadeUf || f.origem || 'Origem').slice(0, 255)},
+         ${destCity}, ${destState}, ${f.enderecoEntrega ? String(f.enderecoEntrega) : null},
+         ${f.tipoCarga ? String(f.tipoCarga) : null}, ${agreedReais},
+         ${f.motoristaNome ? String(f.motoristaNome).slice(0, 255) : null},
+         ${f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null},
+         ${f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null},
+         ${f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null},
+         ${status}, CURRENT_TIMESTAMP
+       )
+       ON CONFLICT (id) DO UPDATE SET
+         sequential_id = EXCLUDED.sequential_id,
+         client_name = EXCLUDED.client_name,
+         client_cnpj = EXCLUDED.client_cnpj,
+         origin = EXCLUDED.origin,
+         destination_city = EXCLUDED.destination_city,
+         destination_state = EXCLUDED.destination_state,
+         destination_address = EXCLUDED.destination_address,
+         cargo_description = EXCLUDED.cargo_description,
+         agreed_value = EXCLUDED.agreed_value,
+         driver_name = EXCLUDED.driver_name,
+         driver_cpf = EXCLUDED.driver_cpf,
+         driver_phone = EXCLUDED.driver_phone,
+         truck_plate = EXCLUDED.truck_plate,
+         status = EXCLUDED.status,
+         updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistFreightToNeon notice:', (err as Error).message);
   }
 }
 
 export async function persistRequestToNeon(r: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !r || !r.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !r || !r.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET
-           title = EXCLUDED.title,
-           department = EXCLUDED.department,
-           requester_name = EXCLUDED.requester_name,
-           status = EXCLUDED.status,
-           details = EXCLUDED.details`,
-        [
-          String(r.id).slice(0, 64),
-          String(r.subject || r.protocol || 'Solicitação').slice(0, 255),
-          String(r.targetDepartment || 'Administrativo').slice(0, 100),
-          String(r.requesterName || 'Colaborador').slice(0, 255),
-          String(r.status || 'Aberta').slice(0, 64),
-          String(r.description || ''),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
+      VALUES (
+        ${String(r.id).slice(0, 64)},
+        ${String(r.subject || r.protocol || 'Solicitação').slice(0, 255)},
+        ${String(r.targetDepartment || 'Administrativo').slice(0, 100)},
+        ${String(r.requesterName || 'Colaborador').slice(0, 255)},
+        ${String(r.status || 'Aberta').slice(0, 64)},
+        ${String(r.description || '')}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        title = EXCLUDED.title,
+        department = EXCLUDED.department,
+        requester_name = EXCLUDED.requester_name,
+        status = EXCLUDED.status,
+        details = EXCLUDED.details
+    `;
   } catch (err) {
     console.warn('Neon persistRequestToNeon notice:', (err as Error).message);
   }
 }
 
 export async function persistPaymentReceiptToNeon(rec: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !rec || !rec.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !rec || !rec.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET
-           type = EXCLUDED.type,
-           amount = EXCLUDED.amount,
-           status = EXCLUDED.status`,
-        [
-          String(rec.id).slice(0, 64),
-          rec.freightId ? String(rec.freightId).slice(0, 64) : null,
-          String(rec.installmentType || 'ADIANTAMENTO').slice(0, 64),
-          Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100),
-          String(rec.verificationStatus || rec.uploadStatus || 'SALVO_NO_SERVIDOR').slice(0, 64),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
+      VALUES (
+        ${String(rec.id).slice(0, 64)},
+        ${rec.freightId ? String(rec.freightId).slice(0, 64) : null},
+        ${String(rec.installmentType || 'ADIANTAMENTO').slice(0, 64)},
+        ${Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100)},
+        ${String(rec.verificationStatus || rec.uploadStatus || 'SALVO_NO_SERVIDOR').slice(0, 64)}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        type = EXCLUDED.type,
+        amount = EXCLUDED.amount,
+        status = EXCLUDED.status
+    `;
   } catch (err) {
     console.warn('Neon persistPaymentReceiptToNeon notice:', (err as Error).message);
   }
 }
 
 export async function persistAnnouncementToNeon(a: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !a || !a.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !a || !a.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
-           title = EXCLUDED.title,
-           author_name = EXCLUDED.author_name,
-           target_audience = EXCLUDED.target_audience,
-           priority = EXCLUDED.priority,
-           content = EXCLUDED.content,
-           data = EXCLUDED.data`,
-        [
-          String(a.id).slice(0, 64),
-          String(a.title || 'Comunicado').slice(0, 255),
-          String(a.authorName || 'Diretoria').slice(0, 255),
-          String(a.targetAudience || 'Todos').slice(0, 100),
-          String(a.priority || 'Normal').slice(0, 50),
-          String(a.content || a.summary || ''),
-          JSON.stringify(a),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
+      VALUES (
+        ${String(a.id).slice(0, 64)},
+        ${String(a.title || 'Comunicado').slice(0, 255)},
+        ${String(a.authorName || 'Diretoria').slice(0, 255)},
+        ${String(a.targetAudience || 'Todos').slice(0, 100)},
+        ${String(a.priority || 'Normal').slice(0, 50)},
+        ${String(a.content || a.summary || '')},
+        ${JSON.stringify(a)}::jsonb
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        title = EXCLUDED.title,
+        author_name = EXCLUDED.author_name,
+        target_audience = EXCLUDED.target_audience,
+        priority = EXCLUDED.priority,
+        content = EXCLUDED.content,
+        data = EXCLUDED.data
+    `;
   } catch (err) {
     console.warn('Neon persistAnnouncementToNeon notice:', (err as Error).message);
   }
 }
 
 export async function persistAgendaEventToNeon(e: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !e || !e.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !e || !e.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
-           title = EXCLUDED.title,
-           date_iso = EXCLUDED.date_iso,
-           start_time = EXCLUDED.start_time,
-           end_time = EXCLUDED.end_time,
-           category = EXCLUDED.category,
-           data = EXCLUDED.data`,
-        [
-          String(e.id).slice(0, 64),
-          String(e.title || 'Evento').slice(0, 255),
-          String(e.dateIso || new Date().toISOString().slice(0, 10)).slice(0, 32),
-          String(e.start || '08:00').slice(0, 16),
-          String(e.end || '09:00').slice(0, 16),
-          String(e.category || 'Geral').slice(0, 100),
-          JSON.stringify(e),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
+      VALUES (
+        ${String(e.id).slice(0, 64)},
+        ${String(e.title || 'Evento').slice(0, 255)},
+        ${String(e.dateIso || new Date().toISOString().slice(0, 10)).slice(0, 32)},
+        ${String(e.start || '08:00').slice(0, 16)},
+        ${String(e.end || '09:00').slice(0, 16)},
+        ${String(e.category || 'Geral').slice(0, 100)},
+        ${JSON.stringify(e)}::jsonb
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        title = EXCLUDED.title,
+        date_iso = EXCLUDED.date_iso,
+        start_time = EXCLUDED.start_time,
+        end_time = EXCLUDED.end_time,
+        category = EXCLUDED.category,
+        data = EXCLUDED.data
+    `;
   } catch (err) {
     console.warn('Neon persistAgendaEventToNeon notice:', (err as Error).message);
   }
@@ -835,80 +1426,70 @@ export async function persistAuditLogToNeon(log: {
   id: string;
   actorId?: string;
   actorName?: string;
+  actorRole?: string;
   action: string;
   details?: string;
   ip?: string;
+  timestampIso?: string;
+  timestampFormatted?: string;
 }): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !log || !log.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !log || !log.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_audit_logs (id, actor_id, actor_name, action, details, ip_address)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          String(log.id),
-          log.actorId ? String(log.actorId).slice(0, 64) : null,
-          log.actorName ? String(log.actorName).slice(0, 255) : null,
-          String(log.action).slice(0, 100),
-          log.details ? String(log.details) : null,
-          log.ip ? String(log.ip).slice(0, 64) : null,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    const now = new Date();
+    await sql`
+      INSERT INTO rodovar_audit_logs (
+        id, actor_id, actor_name, actor_role, action, details, ip_address, timestamp_iso, timestamp_formatted
+      ) VALUES (
+        ${String(log.id)},
+        ${log.actorId ? String(log.actorId).slice(0, 64) : null},
+        ${log.actorName ? String(log.actorName).slice(0, 255) : null},
+        ${log.actorRole ? String(log.actorRole).slice(0, 64) : 'FUNCIONARIO'},
+        ${String(log.action).slice(0, 100)},
+        ${log.details ? String(log.details) : null},
+        ${log.ip ? String(log.ip).slice(0, 64) : null},
+        ${log.timestampIso || now.toISOString()},
+        ${log.timestampFormatted || now.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
   } catch (err) {
     console.warn('Neon persistAuditLogToNeon error:', (err as Error).message);
   }
 }
 
-export async function persistChatMessageToNeon(msg: {
-  id: string;
-  threadId: string;
-  senderId: string;
-  senderName?: string;
-  text: string;
-}): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !msg || !msg.id) return;
+export async function loadAuditLogsFromNeon(limit = 200): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_chats (id, thread_id, sender_id, sender_name, text)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text`,
-        [
-          String(msg.id),
-          String(msg.threadId).slice(0, 64),
-          String(msg.senderId).slice(0, 64),
-          String(msg.senderName || 'Colaborador').slice(0, 255),
-          String(msg.text),
-        ]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn('Neon persistChatMessageToNeon error:', (err as Error).message);
+    const rows = await sql`SELECT * FROM rodovar_audit_logs ORDER BY created_at DESC LIMIT ${limit}`;
+    return rows.map((r) => {
+      const dt = r.created_at ? new Date(r.created_at) : new Date();
+      return {
+        id: String(r.id),
+        timestampIso: String(r.timestamp_iso || dt.toISOString()),
+        timestampFormatted: String(
+          r.timestamp_formatted || dt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+        ),
+        actorId: String(r.actor_id || 'anon'),
+        actorName: String(r.actor_name || 'Sistema'),
+        actorRole: String(r.actor_role || 'FUNCIONARIO'),
+        action: String(r.action || ''),
+        details: String(r.details || ''),
+        ...(r.ip_address ? { ip: String(r.ip_address) } : {}),
+      };
+    });
+  } catch {
+    return [];
   }
 }
 
 export async function persistStateSnapshotToNeon(key: string, data: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !key) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !key) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [key, JSON.stringify(data)]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_state_store (key, payload, updated_at)
+      VALUES (${key}, ${JSON.stringify(data)}::jsonb, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistStateSnapshotToNeon error:', (err as Error).message);
   }
@@ -917,25 +1498,19 @@ export async function persistStateSnapshotToNeon(key: string, data: any): Promis
 export async function loadStateSnapshotFromNeon<T = any>(
   key: string
 ): Promise<{ payload: T; updatedAtMs: number } | null> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !key) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !key) return null;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT payload, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
-         FROM rodovar_state_store
-         WHERE key = $1
-         LIMIT 1`,
-        [key]
-      );
-      if (res.rows.length > 0 && res.rows[0].payload) {
-        return {
-          payload: res.rows[0].payload as T,
-          updatedAtMs: Number(res.rows[0].updated_at_ms || Date.now()),
-        };
-      }
-    } finally {
-      client.release();
+    const rows = await sql`
+      SELECT payload, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+      FROM rodovar_state_store
+      WHERE key = ${key}
+      LIMIT 1
+    `;
+    if (rows.length > 0 && rows[0].payload) {
+      return {
+        payload: rows[0].payload as T,
+        updatedAtMs: Number(rows[0].updated_at_ms || Date.now()),
+      };
     }
   } catch (err) {
     console.warn(`Neon loadStateSnapshotFromNeon(${key}) notice:`, (err as Error).message);
@@ -944,24 +1519,19 @@ export async function loadStateSnapshotFromNeon<T = any>(
 }
 
 export async function fetchNeonStateTimestamps(): Promise<Record<string, number>> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return {};
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return {};
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT key, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
-         FROM rodovar_state_store`
-      );
-      const map: Record<string, number> = {};
-      for (const row of res.rows) {
-        if (row.key) {
-          map[String(row.key)] = Number(row.updated_at_ms || 0);
-        }
+    const rows = await sql`
+      SELECT key, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+      FROM rodovar_state_store
+    `;
+    const map: Record<string, number> = {};
+    for (const row of rows) {
+      if (row.key) {
+        map[String(row.key)] = Number(row.updated_at_ms || 0);
       }
-      return map;
-    } finally {
-      client.release();
     }
+    return map;
   } catch {
     return {};
   }
@@ -976,34 +1546,23 @@ export async function persistSocialProfileToNeon(p: {
   location?: string;
   socialLinks?: any;
 }): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !p || !p.userId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !p || !p.userId) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (user_id) DO UPDATE SET
-           cover_url = EXCLUDED.cover_url,
-           bio = EXCLUDED.bio,
-           custom_display_name = EXCLUDED.custom_display_name,
-           phone = EXCLUDED.phone,
-           location = EXCLUDED.location,
-           social_links = EXCLUDED.social_links,
-           updated_at = CURRENT_TIMESTAMP`,
-        [
-          p.userId,
-          p.coverUrl || null,
-          p.bio || null,
-          p.customDisplayName || null,
-          p.phone || null,
-          p.location || null,
-          JSON.stringify(p.socialLinks || {}),
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
+      VALUES (
+        ${p.userId}, ${p.coverUrl || null}, ${p.bio || null}, ${p.customDisplayName || null},
+        ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb, CURRENT_TIMESTAMP
+      )
+      ON CONFLICT (user_id) DO UPDATE SET
+        cover_url = EXCLUDED.cover_url,
+        bio = EXCLUDED.bio,
+        custom_display_name = EXCLUDED.custom_display_name,
+        phone = EXCLUDED.phone,
+        location = EXCLUDED.location,
+        social_links = EXCLUDED.social_links,
+        updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistSocialProfileToNeon error:', (err as Error).message);
   }
@@ -1021,50 +1580,35 @@ export async function persistSocialPostToNeon(post: {
   likes?: string[];
   audience?: string;
 }): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !post || !post.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !post || !post.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           content = EXCLUDED.content,
-           images = EXCLUDED.images,
-           likes = EXCLUDED.likes,
-           audience = EXCLUDED.audience,
-           updated_at = CURRENT_TIMESTAMP`,
-        [
-          post.id,
-          post.authorId,
-          post.authorName,
-          post.authorAvatar || null,
-          post.authorRole || null,
-          post.authorDepartment || null,
-          post.content,
-          JSON.stringify(post.images || []),
-          JSON.stringify(post.likes || []),
-          post.audience || 'Público',
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
+      VALUES (
+        ${post.id}, ${post.authorId}, ${post.authorName}, ${post.authorAvatar || null},
+        ${post.authorRole || null}, ${post.authorDepartment || null}, ${post.content},
+        ${JSON.stringify(post.images || [])}::jsonb, ${JSON.stringify(post.likes || [])}::jsonb,
+        ${post.audience || 'Público'}, CURRENT_TIMESTAMP
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        content = EXCLUDED.content,
+        images = EXCLUDED.images,
+        likes = EXCLUDED.likes,
+        audience = EXCLUDED.audience,
+        updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistSocialPostToNeon error:', (err as Error).message);
   }
 }
 
 export async function deleteSocialPostFromNeon(postId: string): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !postId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !postId) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(`DELETE FROM rodovar_social_comments WHERE post_id = $1`, [postId]);
-      await client.query(`DELETE FROM rodovar_social_posts WHERE id = $1`, [postId]);
-    } finally {
-      client.release();
-    }
+    await Promise.all([
+      sql`DELETE FROM rodovar_social_comments WHERE post_id = ${postId}`,
+      sql`DELETE FROM rodovar_social_posts WHERE id = ${postId}`,
+    ]);
   } catch (err) {
     console.warn('Neon deleteSocialPostFromNeon error:', (err as Error).message);
   }
@@ -1079,41 +1623,22 @@ export async function persistSocialCommentToNeon(c: {
   authorRole?: string;
   content: string;
 }): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !c || !c.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !c || !c.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content`,
-        [
-          c.id,
-          c.postId,
-          c.authorId,
-          c.authorName,
-          c.authorAvatar || null,
-          c.authorRole || null,
-          c.content,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
+      VALUES (${c.id}, ${c.postId}, ${c.authorId}, ${c.authorName}, ${c.authorAvatar || null}, ${c.authorRole || null}, ${c.content})
+      ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content
+    `;
   } catch (err) {
     console.warn('Neon persistSocialCommentToNeon error:', (err as Error).message);
   }
 }
 
 export async function deleteSocialCommentFromNeon(commentId: string): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !commentId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !commentId) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(`DELETE FROM rodovar_social_comments WHERE id = $1`, [commentId]);
-    } finally {
-      client.release();
-    }
+    await sql`DELETE FROM rodovar_social_comments WHERE id = ${commentId}`;
   } catch (err) {
     console.warn('Neon deleteSocialCommentFromNeon error:', (err as Error).message);
   }
@@ -1127,47 +1652,35 @@ export async function persistSystemAssetToNeon(asset: {
   width?: number;
   height?: number;
 }): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !asset.id) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           slot = EXCLUDED.slot,
-           mime_type = EXCLUDED.mime_type,
-           data_base64 = EXCLUDED.data_base64,
-           width = EXCLUDED.width,
-           height = EXCLUDED.height,
-           updated_at = CURRENT_TIMESTAMP`,
-        [asset.id, asset.slot, asset.mimeType, asset.dataBase64, asset.width || null, asset.height || null]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
+      VALUES (${asset.id}, ${asset.slot}, ${asset.mimeType}, ${asset.dataBase64}, ${asset.width || null}, ${asset.height || null}, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE SET
+        slot = EXCLUDED.slot,
+        mime_type = EXCLUDED.mime_type,
+        data_base64 = EXCLUDED.data_base64,
+        width = EXCLUDED.width,
+        height = EXCLUDED.height,
+        updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistSystemAssetToNeon error:', (err as Error).message);
   }
 }
 
 export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: string; buffer: Buffer } | null> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !id) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !id) return null;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = $1 LIMIT 1`,
-        [id]
-      );
-      if (res.rows.length > 0 && res.rows[0].data_base64) {
-        return {
-          mimeType: res.rows[0].mime_type,
-          buffer: Buffer.from(res.rows[0].data_base64, 'base64'),
-        };
-      }
-    } finally {
-      client.release();
+    const rows = await sql`
+      SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = ${id} LIMIT 1
+    `;
+    if (rows.length > 0 && rows[0].data_base64) {
+      return {
+        mimeType: rows[0].mime_type,
+        buffer: Buffer.from(rows[0].data_base64, 'base64'),
+      };
     }
   } catch (err) {
     console.warn('Neon getSystemAssetFromNeon error:', (err as Error).message);
@@ -1176,37 +1689,24 @@ export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: st
 }
 
 export async function persistSystemConfigToNeon(config: any): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !config) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !config) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ('rodovar-system-config', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify(config)]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_state_store (key, payload, updated_at)
+      VALUES ('rodovar-system-config', ${JSON.stringify(config)}::jsonb, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistSystemConfigToNeon error:', (err as Error).message);
   }
 }
 
 export async function loadSystemConfigFromNeon(): Promise<any | null> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-system-config' LIMIT 1`
-      );
-      if (res.rows.length > 0 && res.rows[0].payload) {
-        return res.rows[0].payload;
-      }
-    } finally {
-      client.release();
+    const rows = await sql`SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-system-config' LIMIT 1`;
+    if (rows.length > 0 && rows[0].payload) {
+      return rows[0].payload;
     }
   } catch (err) {
     console.warn('Neon loadSystemConfigFromNeon notice:', (err as Error).message);
@@ -1227,40 +1727,25 @@ export async function persistNotificationToNeon(notif: {
   targetId?: string;
   dedupeKey?: string;
 }): Promise<boolean> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !notif.id || !notif.recipientId) return false;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notif.id || !notif.recipientId) return false;
   try {
-    const client = await pool.connect();
-    try {
-      if (notif.dedupeKey) {
-        const check = await client.query(
-          `SELECT id FROM rodovar_notifications WHERE recipient_id = $1 AND dedupe_key = $2 LIMIT 1`,
-          [notif.recipientId, notif.dedupeKey]
-        );
-        if (check.rows.length > 0) return false;
-      }
-      await client.query(
-        `INSERT INTO rodovar_notifications (
-          id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-        ON CONFLICT (id) DO NOTHING`,
-        [
-          notif.id,
-          notif.recipientId,
-          notif.type,
-          notif.dotColor || 'blue',
-          notif.title,
-          notif.subtitle || null,
-          notif.timeLabel || null,
-          Boolean(notif.read),
-          notif.targetSection,
-          notif.targetId || null,
-          notif.dedupeKey || null,
-        ]
-      );
-      return true;
-    } finally {
-      client.release();
+    if (notif.dedupeKey) {
+      const check = await sql`
+        SELECT id FROM rodovar_notifications WHERE recipient_id = ${notif.recipientId} AND dedupe_key = ${notif.dedupeKey} LIMIT 1
+      `;
+      if (check.length > 0) return false;
     }
+    await sql`
+      INSERT INTO rodovar_notifications (
+        id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
+      ) VALUES (
+        ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || 'blue'}, ${notif.title},
+        ${notif.subtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)},
+        ${notif.targetSection}, ${notif.targetId || null}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+    return true;
   } catch (err) {
     console.warn('Neon persistNotificationToNeon error:', (err as Error).message);
     return false;
@@ -1268,24 +1753,18 @@ export async function persistNotificationToNeon(notif: {
 }
 
 export async function loadNotificationsFromNeon(recipientId: string, limit = 50): Promise<any[]> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !recipientId) return [];
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return [];
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
-                time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
-                dedupe_key AS "dedupeKey", created_at AS "createdAt"
-         FROM rodovar_notifications
-         WHERE recipient_id = $1
-         ORDER BY created_at DESC
-         LIMIT $2`,
-        [recipientId, limit]
-      );
-      return res.rows;
-    } finally {
-      client.release();
-    }
+    const rows = await sql`
+      SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
+              time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
+              dedupe_key AS "dedupeKey", created_at AS "createdAt"
+       FROM rodovar_notifications
+       WHERE recipient_id = ${recipientId}
+       ORDER BY created_at DESC
+       LIMIT ${limit}
+    `;
+    return rows as any[];
   } catch (err) {
     console.warn('Neon loadNotificationsFromNeon error:', (err as Error).message);
     return [];
@@ -1293,76 +1772,47 @@ export async function loadNotificationsFromNeon(recipientId: string, limit = 50)
 }
 
 export async function markNotificationReadInNeon(notifId: string, recipientId: string): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !notifId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE rodovar_notifications SET read = TRUE WHERE id = $1 AND recipient_id = $2`,
-        [notifId, recipientId]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`UPDATE rodovar_notifications SET read = TRUE WHERE id = ${notifId} AND recipient_id = ${recipientId}`;
   } catch (err) {
     console.warn('Neon markNotificationReadInNeon error:', (err as Error).message);
   }
 }
 
 export async function markAllNotificationsReadInNeon(recipientId: string): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !recipientId) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE rodovar_notifications SET read = TRUE WHERE recipient_id = $1 AND read = FALSE`,
-        [recipientId]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`UPDATE rodovar_notifications SET read = TRUE WHERE recipient_id = ${recipientId} AND read = FALSE`;
   } catch (err) {
     console.warn('Neon markAllNotificationsReadInNeon error:', (err as Error).message);
   }
 }
 
 export async function persistEconomicModeToNeon(enabled: boolean): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ('rodovar-economic-mode', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify({ enabled, updatedAt: new Date().toISOString() })]
-      );
-    } finally {
-      client.release();
-    }
+    await sql`
+      INSERT INTO rodovar_state_store (key, payload, updated_at)
+      VALUES ('rodovar-economic-mode', ${JSON.stringify({ enabled, updatedAt: new Date().toISOString() })}::jsonb, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+    `;
   } catch (err) {
     console.warn('Neon persistEconomicModeToNeon error:', (err as Error).message);
   }
 }
 
 export async function loadEconomicModeFromNeon(): Promise<boolean> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return true; // default true
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return true;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-economic-mode' LIMIT 1`
-      );
-      if (res.rows.length > 0 && res.rows[0].payload) {
-        return Boolean(res.rows[0].payload.enabled ?? true);
-      }
-    } finally {
-      client.release();
+    const rows = await sql`SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-economic-mode' LIMIT 1`;
+    if (rows.length > 0 && rows[0].payload) {
+      return Boolean(rows[0].payload.enabled ?? true);
     }
   } catch {
     return true;
   }
-  return true; // Default true
+  return true;
 }
 
 

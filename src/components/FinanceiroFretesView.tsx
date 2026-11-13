@@ -1032,7 +1032,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     try {
       const res = await fetch(`/api/pagamentos/comprovantes/${receiptId}/confirmar`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         credentials: 'include',
         body: JSON.stringify({
           transactionCode: txCodeByInstallment[mode]?.trim() || undefined,

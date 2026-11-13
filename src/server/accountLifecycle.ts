@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import type { Express } from 'express';
 import type { ServerDatabase, ServerUserRecord } from '../../server.ts';
+import {
+  deleteUserFromNeon,
+  persistAccessPolicyToNeon,
+  persistAuditLogToNeon,
+  persistUserSessionsRevocationToNeon,
+} from '../../neon.ts';
 
 export interface ArchivedAccount {
   user: Omit<ServerUserRecord, 'passwordHash' | 'passwordSalt'>;
@@ -31,7 +37,21 @@ export function archiveAccount(db: ServerDatabase, targetId: string, actorId: st
   db.passwordResetTokens = db.passwordResetTokens.filter(t => t.userId !== targetId);
   delete db.loginLocks['user:' + targetId];
   delete db.loginLocks[target.login];
-  db.auditLogs.unshift({ id: crypto.randomUUID(), timestampIso: stamp, timestampFormatted: new Date(stamp).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), actorId, actorName: actor.name, actorRole: 'ADMINISTRADOR', action: 'EXCLUSAO_CADASTRO', details: `Cadastro ${target.name} (${target.login}, UID ${targetId}) excluído dos acessos. Histórico preservado. ${reason}` });
+  const auditEntry = {
+    id: crypto.randomUUID(),
+    timestampIso: stamp,
+    timestampFormatted: new Date(stamp).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+    actorId,
+    actorName: actor.name,
+    actorRole: 'ADMINISTRADOR' as const,
+    action: 'EXCLUSAO_CADASTRO',
+    details: `Cadastro ${target.name} (${target.login}, UID ${targetId}) excluído dos acessos. Histórico preservado. ${reason}`,
+  };
+  db.auditLogs.unshift(auditEntry);
+  void deleteUserFromNeon(targetId, archived);
+  void persistAccessPolicyToNeon(policy);
+  void persistUserSessionsRevocationToNeon(targetId, Date.now());
+  void persistAuditLogToNeon(auditEntry);
   return archived;
 }
 

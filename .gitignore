@@ -8,4 +8,6 @@ coverage/
 !.env.example
 .aistudio/
 .vercel/
-
+data/
+src/server/embeddedDataSeed.ts
+api/index.js

@@ -20,8 +20,6 @@ export type MenuSection =
   | 'fretes_comercial'
   | 'fretes_expedicao'
   | 'fretes_ativos'
-  | 'mensagens'
-  | 'grupos'
   | 'solicitacoes'
   | 'financeiro'
   | 'agenda'

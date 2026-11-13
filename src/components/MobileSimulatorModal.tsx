@@ -67,8 +67,6 @@ const SECTION_LABELS: Record<MenuSection, string> = {
   fretes_comercial: 'Meus Fretes — Comercial',
   fretes_expedicao: 'Meus Fretes — Expedição',
   fretes_ativos: 'Fretes Ativos — Monitoramento',
-  mensagens: 'Mensagens Diretas',
-  grupos: 'Grupos Corporativos',
   solicitacoes: 'Minhas Solicitações',
   financeiro: 'Financeiro — Fretes',
   agenda: 'Agenda Corporativa',
