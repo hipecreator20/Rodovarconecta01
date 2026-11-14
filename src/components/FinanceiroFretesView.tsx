@@ -342,36 +342,34 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       return;
     }
     const parsed = parseOperationalTrafficScript(target);
-    if (parsed.empresaMarca) setEmpresaMarca(parsed.empresaMarca);
+    setEmpresaMarca(
+      parsed.empresaMarca === 'VL TRANSPORTES' || parsed.empresaMarca === 'RODOVAR'
+        ? parsed.empresaMarca
+        : 'RODOVAR'
+    );
     if (parsed.unidadeOperacional) setUnidadeOperacional(parsed.unidadeOperacional);
-    if (parsed.dataCarregamento) {
-      setDataCarregamento(parsed.dataCarregamento);
-      setDataColeta(parsed.dataCarregamento.slice(0, 5));
-    }
-    if (parsed.comercialResponsavel) setComercialResponsavel(parsed.comercialResponsavel);
+    setDataCarregamento(parsed.dataCarregamento || '');
+    setDataColeta(parsed.dataCarregamento ? parsed.dataCarregamento.slice(0, 5) : '');
+    setComercialResponsavel(parsed.comercialResponsavel || '');
     if (parsed.expedicaoResponsavel) setExpedicaoResponsavel(parsed.expedicaoResponsavel);
-    if (parsed.cliente) setCliente(parsed.cliente);
-    if (parsed.telefoneCliente) setTelefoneCliente(parsed.telefoneCliente);
-    if (parsed.motoristaNome) {
-      setMotoristaNome(parsed.motoristaNome);
-      if (!favorecido) setFavorecido(parsed.motoristaNome);
-    }
-    if (parsed.motoristaTelefone) setMotoristaTelefone(parsed.motoristaTelefone);
-    if (parsed.emergenciaNome) setContatoEmergenciaNome(parsed.emergenciaNome);
-    if (parsed.emergenciaTelefone)
-      setContatoEmergenciaTelefone(parsed.emergenciaTelefone);
-    if (parsed.origem) setOrigem(parsed.origem);
-    if (parsed.destino) setDestino(parsed.destino);
-    if (parsed.valorFreteEmpresa) setFreteEmpresaInput(String(parsed.valorFreteEmpresa));
-    if (parsed.valorFreteMotorista) setValorTotalInput(String(parsed.valorFreteMotorista));
-    if (parsed.favorecido) setFavorecido(parsed.favorecido);
-    if (parsed.chavePix) setChavePix(parsed.chavePix);
+    setCliente(parsed.cliente || '');
+    setTelefoneCliente(parsed.telefoneCliente || '');
+    setMotoristaNome(parsed.motoristaNome || '');
+    setMotoristaTelefone(parsed.motoristaTelefone || '');
+    setContatoEmergenciaNome(parsed.emergenciaNome || '');
+    setContatoEmergenciaTelefone(parsed.emergenciaTelefone || '');
+    setOrigem(parsed.origem || '');
+    setDestino(parsed.destino || '');
+    setFreteEmpresaInput(parsed.valorFreteEmpresa ? String(parsed.valorFreteEmpresa) : '');
+    setValorTotalInput(parsed.valorFreteMotorista ? String(parsed.valorFreteMotorista) : '');
+    setFavorecido(parsed.favorecido || '');
+    setChavePix(parsed.chavePix || '');
     if (parsed.tipoChavePix) setTipoChavePix(parsed.tipoChavePix);
-    if (parsed.banco) setBanco(parsed.banco);
+    setBanco(parsed.banco || '');
     setShowScriptPasteBox(false);
     triggerToast(
       'Script de Tráfego importado!',
-      'Os campos operacionais e financeiros foram preenchidos automaticamente.'
+      'Os campos encontrados foram preenchidos e os ausentes ficaram em branco.'
     );
   };
 
@@ -1032,7 +1030,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     try {
       const res = await fetch(`/api/pagamentos/comprovantes/${receiptId}/confirmar`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         credentials: 'include',
         body: JSON.stringify({
           transactionCode: txCodeByInstallment[mode]?.trim() || undefined,

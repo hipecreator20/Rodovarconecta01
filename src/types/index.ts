@@ -20,8 +20,6 @@ export type MenuSection =
   | 'fretes_comercial'
   | 'fretes_expedicao'
   | 'fretes_ativos'
-  | 'mensagens'
-  | 'grupos'
   | 'solicitacoes'
   | 'financeiro'
   | 'agenda'
@@ -359,7 +357,8 @@ export interface AuditLog {
   details: string;
 }
 
-export type CarrierBrand = 'RODOVAR' | 'VL TRANSPORTES' | 'AXD';
+export type ActiveCarrierBrand = 'RODOVAR' | 'VL TRANSPORTES';
+export type CarrierBrand = ActiveCarrierBrand | 'AXD';
 
 export type OperationalUnit = 'BA - Salvador' | 'SP - Guarulhos';
 
@@ -734,7 +733,9 @@ export type FreightHistoryEventType =
   | 'UPLOAD_ANEXO'
   | 'CONFERENCIA_ANEXO'
   | 'CONCLUSAO_OPERACAO'
+  | 'REABERTURA_MONITORAMENTO'
   | 'ALTERACAO_RELEVANTE_POS_FECHAMENTO'
+  | 'ORDEM_COLETA_PENDENTE'
   | 'CANCELAMENTO';
 
 export interface UnifiedFreightHistoryEntry {
@@ -798,9 +799,39 @@ export interface UnifiedFreightRecord {
   transportadorDocumento?: string;
   motoristaNome?: string;
   motoristaCpf?: string;
+  motoristaRg?: string;
+  motoristaCnh?: string;
   motoristaTelefone?: string;
+  emergenciaNome?: string;
+  emergenciaTelefone?: string;
+  comercialScriptRef?: string;
   placaVeiculo?: string;
   placaCarreta?: string;
+  placaBitrem?: string;
+  // Dados adicionais para Ordem de Coleta (RODOVAR / VL TRANSPORTES)
+  numeroPedido?: string;
+  numeroOrcamento?: string;
+  pontoReferencia?: string;
+  especieCarga?: string;
+  embalagemCarga?: string;
+  valorMercadoriaCentavos?: number;
+  quantidadeEntregas?: number;
+  remetenteNome?: string;
+  remetenteCnpjCpf?: string;
+  remetenteIe?: string;
+  remetenteTelefone?: string;
+  remetenteEndereco?: string;
+  remetenteBairro?: string;
+  remetenteMunicipio?: string;
+  remetenteCep?: string;
+  destinatarioNome?: string;
+  destinatarioCnpjCpf?: string;
+  destinatarioIe?: string;
+  destinatarioTelefone?: string;
+  destinatarioEndereco?: string;
+  destinatarioBairro?: string;
+  destinatarioMunicipio?: string;
+  destinatarioCep?: string;
   // Condições Financeiras / Solicitação ao Financeiro
   condicoesPagamento?: string;
   favorecidoPagamento?: string;
@@ -829,6 +860,13 @@ export interface UnifiedFreightRecord {
   comprovanteEntregaConferido: boolean;
   ordemCarregamentoEmitidaEm?: string;
   ordemCarregamentoNumero?: string;
+  ordemColetaAno?: number;
+  ordemColetaSequencia?: number;
+  ordemColetaPendente?: boolean;
+  ordemColetaIgnoradaEm?: string;
+  ordemColetaIgnoradaPorId?: string;
+  ordemColetaIgnoradaPorNome?: string;
+  ordemColetaIgnoradaMotivo?: string;
   liberadoMonitoramentoEm?: string;
   liberadoMonitoramentoPorId?: string;
   liberadoMonitoramentoPorNome?: string;

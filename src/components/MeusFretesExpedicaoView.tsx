@@ -9,6 +9,9 @@ import {
   Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
   Download,
   FileText,
   LayoutGrid,
@@ -26,6 +29,7 @@ import {
   User,
   Video,
   X,
+  ClipboardPaste,
 } from 'lucide-react';
 import {
   Employee,
@@ -65,6 +69,13 @@ import {
 } from './MeusFretesComercialView';
 import { FreightDocumentsManager } from './FreightDocumentsManager';
 import { CorporateModal } from './ui/CorporateModal';
+import { OrdemColetaModal, printCollectionOrderViaIframe } from './OrdemColetaDocument';
+import { ImportFreightScriptModal } from './ImportFreightScriptModal';
+import { ParsedTrafficScript } from '../lib/carrierLogos';
+import {
+  COMPANY_LEGAL_PROFILES,
+  extractOrderDisplayNumber,
+} from '../lib/freightOrderPdfGenerator';
 
 interface MeusFretesExpedicaoViewProps {
   currentUser: Employee;
@@ -148,238 +159,13 @@ function getInitials(name: string): string {
 function countCompletedVerifications(f:UnifiedFreightRecord):number {return expeditionChecklistCount(f);}
 
 /**
- * Isolated print/PDF generator for the official "Ordem de Coleta" RODOVAR.
+ * Isolated print generator for the official "Ordem de Coleta" (RODOVAR or VL TRANSPORTES, 2 vias A4).
  * Never includes client sale value, margin, or internal commercial/operational notes.
  */
 export function printIsolatedOrdemColeta(freight: UnifiedFreightRecord): void {
-  const win = window.open('', '_blank', 'width=900,height=800');
-  if (!win) {
-    window.print();
-    return;
-  }
-
-  const emittedAt = freight.ordemCarregamentoEmitidaEm || freight.updatedAtFormatted || 'Agora';
-  const janelaColetaStr = freight.janelaColetaInicio
-    ? `${freight.janelaColetaInicio}${freight.janelaColetaFim ? ` às ${freight.janelaColetaFim}` : ''}`
-    : '';
-  const janelaEntregaStr = freight.janelaEntregaInicio
-    ? `${freight.janelaEntregaInicio}${freight.janelaEntregaFim ? ` às ${freight.janelaEntregaFim}` : ''}`
-    : '';
-
-  const html = `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <title>Ordem de Coleta ${freight.protocol} — RODOVAR</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-      color: #15191D;
-      background: #FFFFFF;
-      padding: 28px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .header {
-      background: #080B0D;
-      color: #FFFFFF;
-      padding: 20px 24px;
-      border-radius: 12px;
-      border-bottom: 5px solid #FFD400;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .brand-title {
-      font-size: 22px;
-      font-weight: 900;
-      letter-spacing: 0.04em;
-      color: #FFD400;
-    }
-    .brand-sub {
-      font-size: 11px;
-      color: #E5E7EB;
-      margin-top: 2px;
-    }
-    .protocol-box {
-      text-align: right;
-    }
-    .protocol-badge {
-      display: inline-block;
-      background: #FFD400;
-      color: #080B0D;
-      font-weight: 900;
-      font-size: 16px;
-      padding: 4px 12px;
-      border-radius: 6px;
-    }
-    .section {
-      border: 1px solid #D1D5DB;
-      border-radius: 10px;
-      padding: 14px 16px;
-      margin-bottom: 14px;
-    }
-    .section-title {
-      font-size: 10px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #4B5563;
-      margin-bottom: 8px;
-      border-bottom: 1px solid #E5E7EB;
-      padding-bottom: 4px;
-    }
-    .grid-2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-    .grid-3 {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 12px;
-    }
-    .label {
-      font-size: 10px;
-      font-weight: 700;
-      color: #6B7280;
-      text-transform: uppercase;
-    }
-    .val {
-      font-size: 13px;
-      font-weight: 800;
-      color: #111827;
-      margin-top: 2px;
-    }
-    .subval {
-      font-size: 11px;
-      color: #374151;
-      margin-top: 2px;
-    }
-    .signatures {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 32px;
-      margin-top: 36px;
-      padding-top: 16px;
-    }
-    .sig-box {
-      border-top: 1px solid #9CA3AF;
-      padding-top: 8px;
-      text-align: center;
-      font-size: 11px;
-      font-weight: 700;
-      color: #374151;
-    }
-    @media print {
-      body { padding: 10px; }
-      .header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .protocol-badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div>
-      <div class="brand-title">RODOVAR LOGÍSTICA E TRANSPORTES</div>
-      <div class="brand-sub">CNPJ: 49.908.710/0001-03 • Central Operacional: (71) 9 9920-2476</div>
-      <div class="brand-sub">ORDEM DE COLETA E CARREGAMENTO OFICIAL</div>
-    </div>
-    <div class="protocol-box">
-      <div class="protocol-badge">FRETE ${freight.protocol}</div>
-      <div class="brand-sub" style="margin-top:6px;">Emitida em: ${emittedAt}</div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="section">
-      <div class="section-title">1. Origem / Local de Coleta</div>
-      <div class="val">${freight.origemCidadeUf || '—'}</div>
-      <div class="subval"><strong>Endereço:</strong> ${freight.enderecoColeta || '—'}</div>
-      <div class="subval"><strong>Data / Janela:</strong> ${formatIsoDateBr(freight.dataColetaIso)} ${janelaColetaStr ? `(${janelaColetaStr})` : ''}</div>
-      <div class="subval"><strong>Cliente / Embarcador:</strong> ${freight.cliente || '—'}</div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">2. Destino / Local de Entrega</div>
-      <div class="val">${freight.destinoCidadeUf || '—'}</div>
-      <div class="subval"><strong>Endereço:</strong> ${freight.enderecoEntrega || 'A confirmar pelo Monitoramento'}</div>
-      <div class="subval"><strong>Previsão de Entrega:</strong> ${formatIsoDateBr(freight.dataEntregaPrevistaIso)} ${janelaEntregaStr ? `(${janelaEntregaStr})` : ''}</div>
-      <div class="subval"><strong>Contato Local:</strong> ${freight.clienteContato || '—'}</div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">3. Especificações da Carga e Veículo</div>
-    <div class="grid-3">
-      <div>
-        <div class="label">Material / Carga</div>
-        <div class="val">${freight.tipoCarga || '—'}</div>
-      </div>
-      <div>
-        <div class="label">Peso / Volumes</div>
-        <div class="val">${freight.pesoKg ? `${freight.pesoKg.toLocaleString('pt-BR')} kg` : '—'} ${freight.volumes ? `• ${freight.volumes} vol.` : ''}</div>
-      </div>
-      <div>
-        <div class="label">Tipo de Veículo</div>
-        <div class="val">${freight.veiculoNecessario || '—'}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">4. Motorista, Transportadora e Placas Autorizadas</div>
-    <div class="grid-3">
-      <div>
-        <div class="label">Motorista</div>
-        <div class="val">${freight.motoristaNome || '—'}</div>
-        <div class="subval">CPF: ${freight.motoristaCpf || '—'}</div>
-        <div class="subval">Tel: ${freight.motoristaTelefone || '—'}</div>
-      </div>
-      <div>
-        <div class="label">Transportadora / Proprietário</div>
-        <div class="val">${freight.transportadorNome || '—'}</div>
-        <div class="subval">Doc: ${freight.transportadorDocumento || '—'}</div>
-      </div>
-      <div>
-        <div class="label">Placas Autorizadas</div>
-        <div class="val">Cavalo: ${freight.placaVeiculo || '—'}</div>
-        <div class="subval">Carreta/Impl.: ${freight.placaCarreta || '—'}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">5. Instruções de Coleta, Segurança e Apresentação</div>
-    <div class="subval">
-      ${freight.instrucoesColetaEntrega || freight.condicoesOperacionais || 'Apresentar CNH vigente, CRLV e EPIs obrigatórios no local de coleta. Comunicar imediatamente a Expedição/Monitoramento Rodovar ao chegar no local de carregamento.'}
-    </div>
-  </div>
-
-  <div class="signatures">
-    <div class="sig-box">
-      Expedição Rodovar (${freight.expedicaoResponsavelNome || 'Responsável Operacional'})
-    </div>
-    <div class="sig-box">
-      Motorista Responsável (${freight.motoristaNome || 'Assinatura'})
-    </div>
-  </div>
-
-  <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 250);
-    };
-  </script>
-</body>
-</html>`;
-
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  if (freight.empresaMarca === 'AXD') return;
+  if (freight.ordemColetaPendente && !freight.ordemCarregamentoNumero) return;
+  printCollectionOrderViaIframe(freight);
 }
 
 export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = ({
@@ -516,6 +302,35 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
   const [opObservacoes, setOpObservacoes] = useState('');
   const [opMonitoramentoResponsavelId, setOpMonitoramentoResponsavelId] = useState('');
 
+  // Extended Ordem de Coleta Optional Fields
+  const [showComplementosOrdem, setShowComplementosOrdem] = useState(false);
+  const [opMotoristaRg, setOpMotoristaRg] = useState('');
+  const [opMotoristaCnh, setOpMotoristaCnh] = useState('');
+  const [opPlacaBitrem, setOpPlacaBitrem] = useState('');
+  const [opNumeroPedido, setOpNumeroPedido] = useState('');
+  const [opNumeroOrcamento, setOpNumeroOrcamento] = useState('');
+  const [opPontoReferencia, setOpPontoReferencia] = useState('');
+  const [opEspecieCarga, setOpEspecieCarga] = useState('');
+  const [opEmbalagemCarga, setOpEmbalagemCarga] = useState('');
+  const [opValorMercadoriaReais, setOpValorMercadoriaReais] = useState('');
+  const [opQuantidadeEntregas, setOpQuantidadeEntregas] = useState('1');
+  const [opRemetenteNome, setOpRemetenteNome] = useState('');
+  const [opRemetenteCnpjCpf, setOpRemetenteCnpjCpf] = useState('');
+  const [opRemetenteIe, setOpRemetenteIe] = useState('');
+  const [opRemetenteTelefone, setOpRemetenteTelefone] = useState('');
+  const [opRemetenteEndereco, setOpRemetenteEndereco] = useState('');
+  const [opRemetenteBairro, setOpRemetenteBairro] = useState('');
+  const [opRemetenteMunicipio, setOpRemetenteMunicipio] = useState('');
+  const [opRemetenteCep, setOpRemetenteCep] = useState('');
+  const [opDestinatarioNome, setOpDestinatarioNome] = useState('');
+  const [opDestinatarioCnpjCpf, setOpDestinatarioCnpjCpf] = useState('');
+  const [opDestinatarioIe, setOpDestinatarioIe] = useState('');
+  const [opDestinatarioTelefone, setOpDestinatarioTelefone] = useState('');
+  const [opDestinatarioEndereco, setOpDestinatarioEndereco] = useState('');
+  const [opDestinatarioBairro, setOpDestinatarioBairro] = useState('');
+  const [opDestinatarioMunicipio, setOpDestinatarioMunicipio] = useState('');
+  const [opDestinatarioCep, setOpDestinatarioCep] = useState('');
+
   // 5 Functional Verifications State
   const [chkMotorista, setChkMotorista] = useState(false);
   const [chkVeiculo, setChkVeiculo] = useState(false);
@@ -533,8 +348,11 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnObservation, setReturnObservation] = useState('');
 
-  // Printable Order Modal
+  // Printable Order Modal & "Ignorar por enquanto" Modal & Script Import Modal
   const [showOrderModal, setShowOrderModal] = useState(false);
+  const [showSkipOrderModal, setShowSkipOrderModal] = useState(false);
+  const [skipOrderReason, setSkipOrderReason] = useState('');
+  const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
 
   // Occurrence creation state
   const [occTitulo, setOccTitulo] = useState('');
@@ -598,6 +416,37 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     setOpCondicoesOperacionais(f.condicoesOperacionais || f.instrucoesColetaEntrega || '');
     setOpObservacoes(f.observacoes || '');
     setOpMonitoramentoResponsavelId(f.monitoramentoResponsavelId || '');
+
+    setOpMotoristaRg(f.motoristaRg || '');
+    setOpMotoristaCnh(f.motoristaCnh || '');
+    setOpPlacaBitrem(f.placaBitrem || '');
+    setOpNumeroPedido(f.numeroPedido || '');
+    setOpNumeroOrcamento(f.numeroOrcamento || '');
+    setOpPontoReferencia(f.pontoReferencia || '');
+    setOpEspecieCarga(f.especieCarga || '');
+    setOpEmbalagemCarga(f.embalagemCarga || '');
+    setOpValorMercadoriaReais(
+      typeof f.valorMercadoriaCentavos === 'number' && f.valorMercadoriaCentavos > 0
+        ? (f.valorMercadoriaCentavos / 100).toFixed(2).replace('.', ',')
+        : ''
+    );
+    setOpQuantidadeEntregas(f.quantidadeEntregas ? String(f.quantidadeEntregas) : '1');
+    setOpRemetenteNome(f.remetenteNome || '');
+    setOpRemetenteCnpjCpf(f.remetenteCnpjCpf || '');
+    setOpRemetenteIe(f.remetenteIe || '');
+    setOpRemetenteTelefone(f.remetenteTelefone || '');
+    setOpRemetenteEndereco(f.remetenteEndereco || '');
+    setOpRemetenteBairro(f.remetenteBairro || '');
+    setOpRemetenteMunicipio(f.remetenteMunicipio || '');
+    setOpRemetenteCep(f.remetenteCep || '');
+    setOpDestinatarioNome(f.destinatarioNome || '');
+    setOpDestinatarioCnpjCpf(f.destinatarioCnpjCpf || '');
+    setOpDestinatarioIe(f.destinatarioIe || '');
+    setOpDestinatarioTelefone(f.destinatarioTelefone || '');
+    setOpDestinatarioEndereco(f.destinatarioEndereco || '');
+    setOpDestinatarioBairro(f.destinatarioBairro || '');
+    setOpDestinatarioMunicipio(f.destinatarioMunicipio || '');
+    setOpDestinatarioCep(f.destinatarioCep || '');
 
     const c = effectiveExpeditionChecklist(f);
     setChkMotorista(Boolean(c?.motoristaConfirmado));
@@ -852,6 +701,34 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         tipoChavePix: opTipoChavePix,
         chavePix: opChavePix,
         observacoes: opObservacoes,
+        motoristaRg: opMotoristaRg,
+        motoristaCnh: opMotoristaCnh,
+        placaBitrem: opPlacaBitrem.toUpperCase(),
+        numeroPedido: opNumeroPedido,
+        numeroOrcamento: opNumeroOrcamento,
+        pontoReferencia: opPontoReferencia,
+        especieCarga: opEspecieCarga,
+        embalagemCarga: opEmbalagemCarga,
+        valorMercadoriaCentavos: opValorMercadoriaReais
+          ? parseBrlInputToCentavos(opValorMercadoriaReais)
+          : undefined,
+        quantidadeEntregas: opQuantidadeEntregas ? Number(opQuantidadeEntregas) : undefined,
+        remetenteNome: opRemetenteNome,
+        remetenteCnpjCpf: opRemetenteCnpjCpf,
+        remetenteIe: opRemetenteIe,
+        remetenteTelefone: opRemetenteTelefone,
+        remetenteEndereco: opRemetenteEndereco,
+        remetenteBairro: opRemetenteBairro,
+        remetenteMunicipio: opRemetenteMunicipio,
+        remetenteCep: opRemetenteCep,
+        destinatarioNome: opDestinatarioNome,
+        destinatarioCnpjCpf: opDestinatarioCnpjCpf,
+        destinatarioIe: opDestinatarioIe,
+        destinatarioTelefone: opDestinatarioTelefone,
+        destinatarioEndereco: opDestinatarioEndereco,
+        destinatarioBairro: opDestinatarioBairro,
+        destinatarioMunicipio: opDestinatarioMunicipio,
+        destinatarioCep: opDestinatarioCep,
         monitoramentoResponsavelId: opMonitoramentoResponsavelId || null,
         checklistFechamento: {
           motoristaConfirmado: nextMotorista,
@@ -968,10 +845,47 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     }
   };
 
+  const handleIgnorarOrdemColeta = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFreight) return;
+    setActionBusy(true);
+    setErrorMsg(null);
+    try {
+      const saved = await persistPreparationData({ silentToast: true });
+      const target = saved || selectedFreight;
+      const res = await apiExpedicaoAction(target.id, {
+        action: 'IGNORAR_ORDEM_COLETA',
+        motivo: skipOrderReason.trim() || undefined,
+        baseRevision: target.revision,
+      });
+      if (!res.ok || !res.freight) {
+        setErrorMsg(res.error || 'Não foi possível adiar a Ordem de Coleta.');
+        return;
+      }
+      const updated = res.freight;
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      syncOperationalFormFromRecord(updated);
+      if (res.historico) setDetailHistorico(res.historico);
+      setShowSkipOrderModal(false);
+      setSkipOrderReason('');
+      showToast(
+        `Ordem de coleta marcada como pendente no frete ${updated.protocol}. Você já pode liberar para Monitoramento ou emitir depois.`
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erro ao adiar Ordem de Coleta.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const handleShareOrdemColeta = async (freight: UnifiedFreightRecord) => {
+    const activeBrand = freight.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : 'RODOVAR';
+    const company = COMPANY_LEGAL_PROFILES[activeBrand];
+    const orderDisplay = extractOrderDisplayNumber(freight);
     const shareText = [
-      `*ORDEM DE COLETA RODOVAR — FRETE ${freight.protocol}*`,
-      `CNPJ: 49.908.710/0001-03`,
+      `*ORDEM DE COLETA ${activeBrand} Nº ${orderDisplay.seqFormatted}/${orderDisplay.year} — FRETE ${freight.protocol}*`,
+      `CNPJ: ${company.cnpj}`,
       `Origem: ${freight.origemCidadeUf} (${freight.enderecoColeta || '—'})`,
       `Destino: ${freight.destinoCidadeUf} (${freight.enderecoEntrega || '—'})`,
       `Coleta: ${formatIsoDateBr(freight.dataColetaIso)} ${freight.janelaColetaInicio || ''}`,
@@ -984,7 +898,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
-          title: `Ordem de Coleta ${freight.protocol} — RODOVAR`,
+          title: `Ordem de Coleta ${orderDisplay.seqFormatted}/${orderDisplay.year} — ${activeBrand}`,
           text: shareText,
         });
         return;
@@ -996,7 +910,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       await navigator.clipboard.writeText(shareText);
       showToast('Resumo da Ordem de Coleta copiado para envio ao motorista.');
     } catch {
-      showToast('Use "Baixar / Imprimir PDF" para enviar a Ordem ao motorista.');
+      showToast('Use "Baixar PDF (2 vias A4)" ou "Imprimir" para enviar a Ordem ao motorista.');
     }
   };
 
@@ -1027,7 +941,11 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     if (!chkVeiculo) missing.push('Verificação: Veículo conferido');
     if (!chkCondicoesEDocs) missing.push('Verificação: Condições e documentos conferidos');
     if (!chkVideochamada) missing.push('Verificação: Videochamada realizada com o motorista');
-    if (!chkOrdemEnviada) missing.push('Verificação: Ordem de coleta enviada ao motorista');
+    if (!chkOrdemEnviada && !selectedFreight.ordemColetaPendente) {
+      missing.push(
+        'Verificação: Ordem de coleta enviada ao motorista (ou clique em "Ignorar por enquanto")'
+      );
+    }
     if (!opMonitoramentoResponsavelId) {
       missing.push('Seleção do Operador de Monitoramento responsável');
     }
@@ -1668,6 +1586,12 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                                   Monit.: {formatSituacaoMonitoramentoLabel(f.situacaoMonitoramento)}
                                 </span>
                               )}
+                              {f.ordemColetaPendente && !f.ordemCarregamentoNumero && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                                  <Clock className="w-2.5 h-2.5" />
+                                  Ordem de coleta pendente
+                                </span>
+                              )}
                               {f.situacaoOperacional === 'DISPONIVEL_FILA' && (
                                 <button
                                   type="button"
@@ -1964,6 +1888,20 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
             {/* TAB 1: PREPARAÇÃO OPERACIONAL (CARDS 1 A 4 IGUAIS AO COMERCIAL) */}
             {activeDetailTab === 'PREPARACAO' && (
               <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-amber-950">
+                    <strong>Preencher por Script (WhatsApp):</strong> Importe motorista, telefone, frete motorista, favorecido, PIX, banco e observações (campos ausentes permanecem em branco).
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsScriptModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#080B0D] text-[#FFD400] font-extrabold text-xs hover:bg-slate-800 cursor-pointer"
+                  >
+                    <ClipboardPaste className="w-3.5 h-3.5" />
+                    Importar Script
+                  </button>
+                </div>
+
                 {/* CARD 1: ROTA, COLETA, ENTREGA E CARGA */}
                 <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
                   <div className="flex items-center justify-between pb-2 border-b border-gray-200">
@@ -2228,6 +2166,161 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                         />
                       </div>
                     </div>
+                  </div>
+
+                  {/* DADOS COMPLEMENTARES PARA ORDEM DE COLETA (RG/CNH/BITREM/REMETENTE/DESTINATÁRIO/CARGA) */}
+                  <div className="pt-2 border-t border-gray-200/80">
+                    <button
+                      type="button"
+                      onClick={() => setShowComplementosOrdem((prev) => !prev)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-white border border-gray-200 hover:border-[#FFD400] text-xs font-extrabold text-[#15191D] cursor-pointer transition"
+                    >
+                      <span>
+                        Dados complementares da Ordem de Coleta (RG/CNH, Bitrem, Remetente/Destinatário, Pedido/Orçamento)
+                      </span>
+                      {showComplementosOrdem ? (
+                        <ChevronUp className="w-4 h-4 text-gray-500" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-gray-500" />
+                      )}
+                    </button>
+
+                    {showComplementosOrdem && (
+                      <div className="mt-3 p-3.5 bg-white rounded-xl border border-gray-200 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">RG do Motorista</label>
+                            <input
+                              type="text"
+                              value={opMotoristaRg}
+                              onChange={(e) => setOpMotoristaRg(e.target.value)}
+                              placeholder="Número do RG"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">CNH do Motorista</label>
+                            <input
+                              type="text"
+                              value={opMotoristaCnh}
+                              onChange={(e) => setOpMotoristaCnh(e.target.value)}
+                              placeholder="Registro CNH"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Placa Bitrem / Dolly</label>
+                            <input
+                              type="text"
+                              value={opPlacaBitrem}
+                              onChange={(e) => setOpPlacaBitrem(e.target.value.toUpperCase())}
+                              placeholder="Opcional"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-mono uppercase"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Pedido Nº</label>
+                            <input
+                              type="text"
+                              value={opNumeroPedido}
+                              onChange={(e) => setOpNumeroPedido(e.target.value)}
+                              placeholder="Opcional"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Orçamento Nº</label>
+                            <input
+                              type="text"
+                              value={opNumeroOrcamento}
+                              onChange={(e) => setOpNumeroOrcamento(e.target.value)}
+                              placeholder="Opcional"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Qtd. Entregas</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={opQuantidadeEntregas}
+                              onChange={(e) => setOpQuantidadeEntregas(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Espécie da Carga</label>
+                            <input
+                              type="text"
+                              value={opEspecieCarga}
+                              onChange={(e) => setOpEspecieCarga(e.target.value)}
+                              placeholder="Ex.: Carga Geral, Granel"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Embalagem</label>
+                            <input
+                              type="text"
+                              value={opEmbalagemCarga}
+                              onChange={(e) => setOpEmbalagemCarga(e.target.value)}
+                              placeholder="Ex.: Paletizada, Big Bag"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Valor da Mercadoria (R$)</label>
+                            <input
+                              type="text"
+                              value={opValorMercadoriaReais}
+                              onChange={(e) => setOpValorMercadoriaReais(e.target.value)}
+                              placeholder="Ex.: 85.000,00"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                          <div className="sm:col-span-3">
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Ponto de Referência</label>
+                            <input
+                              type="text"
+                              value={opPontoReferencia}
+                              onChange={(e) => setOpPontoReferencia(e.target.value)}
+                              placeholder="Referência para chegada do motorista no local de coleta/entrega"
+                              className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-black text-gray-700 uppercase">Remetente (Coleta)</p>
+                            <input type="text" value={opRemetenteNome} onChange={(e) => setOpRemetenteNome(e.target.value)} placeholder="Razão Social / Nome (padrão: Cliente)" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            <input type="text" value={opRemetenteEndereco} onChange={(e) => setOpRemetenteEndereco(e.target.value)} placeholder="Endereço completo do remetente" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            <div className="grid grid-cols-2 gap-2">
+                              <input type="text" value={opRemetenteBairro} onChange={(e) => setOpRemetenteBairro(e.target.value)} placeholder="Bairro" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opRemetenteTelefone} onChange={(e) => setOpRemetenteTelefone(e.target.value)} placeholder="Telefone" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opRemetenteMunicipio} onChange={(e) => setOpRemetenteMunicipio(e.target.value)} placeholder="Município/UF" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opRemetenteCep} onChange={(e) => setOpRemetenteCep(e.target.value)} placeholder="CEP" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opRemetenteCnpjCpf} onChange={(e) => setOpRemetenteCnpjCpf(e.target.value)} placeholder="CNPJ / CPF" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opRemetenteIe} onChange={(e) => setOpRemetenteIe(e.target.value)} placeholder="IE" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-black text-gray-700 uppercase">Destinatário (Entrega)</p>
+                            <input type="text" value={opDestinatarioNome} onChange={(e) => setOpDestinatarioNome(e.target.value)} placeholder="Razão Social / Nome do destinatário" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            <input type="text" value={opDestinatarioEndereco} onChange={(e) => setOpDestinatarioEndereco(e.target.value)} placeholder="Endereço completo do destinatário" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            <div className="grid grid-cols-2 gap-2">
+                              <input type="text" value={opDestinatarioBairro} onChange={(e) => setOpDestinatarioBairro(e.target.value)} placeholder="Bairro" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opDestinatarioTelefone} onChange={(e) => setOpDestinatarioTelefone(e.target.value)} placeholder="Telefone" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opDestinatarioMunicipio} onChange={(e) => setOpDestinatarioMunicipio(e.target.value)} placeholder="Município/UF" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opDestinatarioCep} onChange={(e) => setOpDestinatarioCep(e.target.value)} placeholder="CEP" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opDestinatarioCnpjCpf} onChange={(e) => setOpDestinatarioCnpjCpf(e.target.value)} placeholder="CNPJ / CPF" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <input type="text" value={opDestinatarioIe} onChange={(e) => setOpDestinatarioIe(e.target.value)} placeholder="IE" className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2604,40 +2697,82 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                       </div>
                     </label>
 
-                    <div className="pl-6 flex flex-wrap gap-1.5">
-                      <button
-                        type="button"
-                        disabled={actionBusy}
-                        onClick={handleEmitirOrdemColeta}
-                        className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>
-                          {selectedFreight.ordemCarregamentoEmitidaEm
-                            ? 'Visualizar / Baixar Ordem de Coleta (PDF)'
-                            : 'Gerar Ordem de Coleta (PDF)'}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleShareOrdemColeta(selectedFreight)}
-                        className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-bold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
-                      >
-                        <Share2 className="w-3.5 h-3.5" />
-                        <span>Compartilhar</span>
-                      </button>
-
-                      {!chkOrdemEnviada && (
+                    <div className="pl-6 space-y-2">
+                      <div className="flex flex-wrap gap-1.5">
                         <button
                           type="button"
                           disabled={actionBusy}
-                          onClick={handleConfirmarEnvioOrdemAoMotorista}
-                          className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                          onClick={handleEmitirOrdemColeta}
+                          className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
                         >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Confirmar envio ao motorista</span>
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>
+                            {selectedFreight.ordemCarregamentoEmitidaEm
+                              ? `Visualizar / Baixar Ordem (${selectedFreight.empresaMarca === 'VL TRANSPORTES' ? 'VL' : 'RODOVAR'})`
+                              : 'Gerar Ordem de Coleta'}
+                          </span>
                         </button>
+
+                        {!selectedFreight.ordemCarregamentoNumero && !chkOrdemEnviada && (
+                          <button
+                            type="button"
+                            disabled={actionBusy}
+                            onClick={() => {
+                              setSkipOrderReason(selectedFreight.ordemColetaIgnoradaMotivo || '');
+                              setShowSkipOrderModal(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                          >
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>
+                              {selectedFreight.ordemColetaPendente
+                                ? 'Ordem pendente (Editar motivo)'
+                                : 'Ignorar por enquanto'}
+                            </span>
+                          </button>
+                        )}
+
+                        {selectedFreight.ordemCarregamentoNumero && (
+                          <button
+                            type="button"
+                            onClick={() => void handleShareOrdemColeta(selectedFreight)}
+                            className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-bold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                          >
+                            <Share2 className="w-3.5 h-3.5" />
+                            <span>Compartilhar</span>
+                          </button>
+                        )}
+
+                        {!chkOrdemEnviada && selectedFreight.ordemCarregamentoNumero && (
+                          <button
+                            type="button"
+                            disabled={actionBusy}
+                            onClick={handleConfirmarEnvioOrdemAoMotorista}
+                            className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg text-[11px] cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Confirmar envio ao motorista</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {selectedFreight.ordemColetaPendente && !selectedFreight.ordemCarregamentoNumero && (
+                        <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-950 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-extrabold flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-amber-700" />
+                              Ordem de coleta pendente
+                            </p>
+                            <p className="text-[10px] text-amber-800">
+                              Adiada por {selectedFreight.ordemColetaIgnoradaPorNome || 'Expedição'} em{' '}
+                              {selectedFreight.ordemColetaIgnoradaEm || 'agora'}
+                              {selectedFreight.ordemColetaIgnoradaMotivo
+                                ? ` • Obs.: ${selectedFreight.ordemColetaIgnoradaMotivo}`
+                                : ''}
+                              . Você pode liberar para o Monitoramento e emitir a Ordem oficial a qualquer momento.
+                            </p>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -2931,218 +3066,75 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       )}
 
       {/* =====================================================================
-          MODAL: ORDEM DE COLETA OFICIAL RODOVAR (VISUALIZAÇÃO + IMPRESSÃO ISOLADA)
+          MODAL: CONFIRMAR "IGNORAR POR ENQUANTO" DA ORDEM DE COLETA
+      ===================================================================== */}
+      {showSkipOrderModal && selectedFreight && (
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
+          <form
+            onSubmit={handleIgnorarOrdemColeta}
+            className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-3"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h3 className="text-sm font-black text-[#15191D]">
+                Adiar Ordem de Coleta — Frete {selectedFreight.protocol}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowSkipOrderModal(false)}
+                className="text-gray-400 hover:text-gray-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-gray-600">
+              O frete será marcado como <strong>Ordem de coleta pendente</strong> sem gerar um PDF falso, permitindo liberar para o Monitoramento e emitir a Ordem oficial posteriormente.
+            </p>
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                Motivo / Observação (opcional)
+              </label>
+              <textarea
+                rows={3}
+                maxLength={300}
+                value={skipOrderReason}
+                onChange={(e) => setSkipOrderReason(e.target.value)}
+                placeholder="Ex.: Aguardando dados complementares do remetente/destinatário..."
+                className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSkipOrderModal(false)}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-100 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={actionBusy}
+                className="bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] text-xs font-extrabold px-4 py-2 rounded-xl cursor-pointer disabled:opacity-60"
+              >
+                {actionBusy ? 'Registrando...' : 'Confirmar "Ignorar por enquanto"'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: ORDEM DE COLETA OFICIAL (RODOVAR / VL TRANSPORTES — 2 VIAS A4)
       ===================================================================== */}
       {showOrderModal && selectedFreight && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-3xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
-            <div className="px-5 py-3.5 bg-[#080B0D] text-white flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-[#FFD400]" />
-                <span className="text-xs font-extrabold uppercase tracking-wider text-[#FFD400]">
-                  Ordem de Coleta Oficial RODOVAR — Frete {selectedFreight.protocol}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => printIsolatedOrdemColeta(selectedFreight)}
-                  className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-3.5 py-1.5 rounded-lg cursor-pointer"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Baixar / Imprimir PDF Isolado</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleShareOrdemColeta(selectedFreight)}
-                  className="inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer"
-                >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Compartilhar</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowOrderModal(false)}
-                  className="p-1 text-gray-300 hover:text-white cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-6 overflow-y-auto space-y-5 text-xs text-[#15191D]">
-              <div className="bg-[#080B0D] text-white p-5 rounded-xl border-b-4 border-[#FFD400] flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-black tracking-wide text-[#FFD400]">
-                    RODOVAR LOGÍSTICA E TRANSPORTES
-                  </h2>
-                  <p className="text-[11px] text-gray-300">
-                    CNPJ: 49.908.710/0001-03 • Central Operacional: (71) 9 9920-2476
-                  </p>
-                  <p className="text-xs font-bold text-white mt-1">
-                    ORDEM DE COLETA E CARREGAMENTO OFICIAL
-                  </p>
-                </div>
-                <div className="text-right">
-                  <span className="bg-[#FFD400] text-[#080B0D] font-black text-sm px-3 py-1 rounded-md">
-                    FRETE {selectedFreight.protocol}
-                  </span>
-                  <p className="text-[11px] text-gray-300 mt-1.5">
-                    Emitida em: {selectedFreight.ordemCarregamentoEmitidaEm || 'Agora'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="p-3.5 rounded-xl border border-gray-300">
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    1. Origem / Local de Coleta
-                  </p>
-                  <p className="text-sm font-black text-[#15191D] mt-0.5">
-                    {selectedFreight.origemCidadeUf}
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Endereço:</strong> {selectedFreight.enderecoColeta || '—'}
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Data / Janela:</strong> {formatIsoDateBr(selectedFreight.dataColetaIso)}{' '}
-                    ({selectedFreight.janelaColetaInicio || '08:00'})
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Cliente / Embarcador:</strong> {selectedFreight.cliente}
-                  </p>
-                </div>
-
-                <div className="p-3.5 rounded-xl border border-gray-300">
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    2. Destino / Local de Entrega
-                  </p>
-                  <p className="text-sm font-black text-[#15191D] mt-0.5">
-                    {selectedFreight.destinoCidadeUf}
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Endereço:</strong>{' '}
-                    {selectedFreight.enderecoEntrega ? (
-                      selectedFreight.enderecoEntrega
-                    ) : (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                        A confirmar pelo Monitoramento
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Previsão de Entrega:</strong>{' '}
-                    {formatIsoDateBr(selectedFreight.dataEntregaPrevistaIso)}
-                  </p>
-                  <p className="text-xs text-gray-700 mt-1">
-                    <strong>Contato Local:</strong> {selectedFreight.clienteContato || '—'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-xl border border-gray-300 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    Material / Carga
-                  </p>
-                  <p className="font-extrabold text-[#15191D] mt-0.5">
-                    {selectedFreight.tipoCarga || '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    Peso / Volumes
-                  </p>
-                  <p className="font-extrabold text-[#15191D] mt-0.5">
-                    {selectedFreight.pesoKg
-                      ? `${selectedFreight.pesoKg.toLocaleString('pt-BR')} kg`
-                      : '—'}
-                    {selectedFreight.volumes ? ` • ${selectedFreight.volumes} vol.` : ''}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    Tipo de Veículo
-                  </p>
-                  <p className="font-extrabold text-[#15191D] mt-0.5">
-                    {selectedFreight.veiculoNecessario || '—'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-xl border border-gray-300 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">Motorista</p>
-                  <p className="font-extrabold text-[#15191D] mt-0.5">
-                    {selectedFreight.motoristaNome || '—'}
-                  </p>
-                  <p className="text-[11px] text-gray-600">
-                    CPF: {selectedFreight.motoristaCpf || '—'}
-                  </p>
-                  <p className="text-[11px] text-gray-600">
-                    Tel.: {selectedFreight.motoristaTelefone || '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    Transportadora / Proprietário
-                  </p>
-                  <p className="font-extrabold text-[#15191D] mt-0.5">
-                    {selectedFreight.transportadorNome || '—'}
-                  </p>
-                  <p className="text-[11px] text-gray-600">
-                    Doc.: {selectedFreight.transportadorDocumento || '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                    Placas Autorizadas
-                  </p>
-                  <p className="font-mono font-black text-sm text-[#15191D] mt-0.5">
-                    Cavalo: {selectedFreight.placaVeiculo || '—'}
-                  </p>
-                  <p className="font-mono text-xs text-gray-600">
-                    Carreta: {selectedFreight.placaCarreta || '—'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-xl border border-gray-300">
-                <p className="text-[10px] font-extrabold text-gray-500 uppercase">
-                  Instruções Operacionais de Coleta e Entrega
-                </p>
-                <p className="text-xs text-gray-700 mt-1">
-                  {selectedFreight.instrucoesColetaEntrega ||
-                    selectedFreight.condicoesOperacionais ||
-                    'Apresentar CNH vigente, CRLV e EPIs obrigatórios no local de coleta. Comunicar imediatamente a Expedição/Monitoramento Rodovar ao chegar no local de carregamento.'}
-                </p>
-              </div>
-
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs text-emerald-950">
-                  <p className="font-extrabold">
-                    Envio da Ordem de Coleta ao Motorista ({selectedFreight.motoristaNome || '—'})
-                  </p>
-                  <p className="text-[11px]">
-                    {selectedFreight.checklistFechamento?.ordemColetaEnviadaMotorista
-                      ? `Confirmado por ${selectedFreight.checklistFechamento.ordemColetaEnviadaPorNome} em ${selectedFreight.checklistFechamento.ordemColetaEnviadaEm}`
-                      : 'Após enviar o PDF ao motorista, confirme o envio para liberar a 5ª verificação.'}
-                  </p>
-                </div>
-                {!selectedFreight.checklistFechamento?.ordemColetaEnviadaMotorista && (
-                  <button
-                    type="button"
-                    disabled={actionBusy}
-                    onClick={handleConfirmarEnvioOrdemAoMotorista}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
-                  >
-                    Confirmar envio ao motorista
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <OrdemColetaModal
+          freight={selectedFreight}
+          issuedByName={currentUser.name}
+          onClose={() => setShowOrderModal(false)}
+          onShare={(f) => void handleShareOrdemColeta(f)}
+          canConfirmDriverSend={true}
+          actionBusy={actionBusy}
+          onConfirmDriverSend={() => void handleConfirmarEnvioOrdemAoMotorista()}
+        />
       )}
 
       {/* =====================================================================
@@ -3204,6 +3196,38 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
           </div>
         </CorporateModal>
       )}
+
+      <ImportFreightScriptModal
+        isOpen={isScriptModalOpen}
+        onClose={() => setIsScriptModalOpen(false)}
+        title="Importar Script para Dados Operacionais"
+        subtitle="Preenche motorista, frete motorista, PIX, banco e condições; campos ausentes permanecem em branco."
+        fillFormLabel="Preencher dados operacionais"
+        onFillForm={(parsed: Partial<ParsedTrafficScript>) => {
+          setOpEnderecoColeta(parsed.enderecoColeta || opEnderecoColeta || '');
+          setOpClienteContato(parsed.telefoneCliente || '');
+          setOpTipoCarga(parsed.tipoCarga || opTipoCarga || '');
+          if (parsed.pesoKg && parsed.pesoKg > 0) setOpPesoKg(String(parsed.pesoKg));
+          if (parsed.volumes && parsed.volumes > 0) setOpVolumes(String(parsed.volumes));
+          if (parsed.veiculoNecessario) setOpVeiculoNecessario(parsed.veiculoNecessario);
+          setOpMotoristaNome(parsed.motoristaNome || '');
+          setOpMotoristaCpf(parsed.motoristaCpf || '');
+          setOpMotoristaTelefone(parsed.motoristaTelefone || '');
+          if (parsed.placaVeiculo) setOpPlacaVeiculo(parsed.placaVeiculo);
+          setOpValorContratadoReais(
+            parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
+              ? parsed.valorFreteMotorista.toFixed(2).replace('.', ',')
+              : ''
+          );
+          setOpFavorecidoPagamento(parsed.favorecido || '');
+          setOpBancoPagamento(parsed.banco || '');
+          setOpTipoChavePix(parsed.tipoChavePix || 'CPF/CNPJ');
+          setOpChavePix(parsed.chavePix || '');
+          setOpCondicoesPagamento(parsed.condicoesPagamento || '');
+          setOpObservacoes(parsed.observacoes || '');
+          showToast('Script aplicado aos dados operacionais! Campos ausentes permaneceram em branco.');
+        }}
+      />
     </div>
   );
 };

@@ -3,11 +3,19 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type {Express} from 'express';
 import {resolveDataRoot} from './dataRoot.ts';
+import {persistStateSnapshotToNeon} from '../../neon.ts';
 export const canManagePolls=(u:any)=>u?.accessLevel==='ADMINISTRADOR'||['DIRETORIA','FINANCEIRO','RH'].includes(u?.accessProfile)||u?.accessLevel==='DIRETORIA'||u?.roleTitle==='Gerência Administrativa';
+let activePollsRef: any[] | null = null;
+export function hydrateMuralPollsFromPayload(payload: any): void {
+ if (!activePollsRef || !Array.isArray(payload)) return;
+ activePollsRef.splice(0, activePollsRef.length, ...payload);
+}
 export function registerPolls(app:Express,guard:any,storageFile=path.join(resolveDataRoot(),'data','mural-polls.local.json')){
+ const isDefaultStorage = storageFile === path.join(resolveDataRoot(),'data','mural-polls.local.json');
  const polls:any[]=fs.existsSync(storageFile)?JSON.parse(fs.readFileSync(storageFile,'utf8')):[];
  if(!Array.isArray(polls))throw Error('Arquivo local de enquetes inválido.');
- const save=()=>{fs.mkdirSync(path.dirname(storageFile),{recursive:true});const temporary=storageFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(polls),{mode:0o600});fs.renameSync(temporary,storageFile);};
+ if(isDefaultStorage) activePollsRef = polls;
+ const save=()=>{fs.mkdirSync(path.dirname(storageFile),{recursive:true});const temporary=storageFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(polls),{mode:0o600});fs.renameSync(temporary,storageFile);if(isDefaultStorage)void persistStateSnapshotToNeon('rodovar-mural-polls',polls);};
  app.use('/api/mural-polls',(_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
  const view=(p:any,u:any)=>{const total=Object.keys(p.votes).length,own=p.votes[u.id],ended=p.closed||Date.now()>=Date.parse(p.deadline),show=canManagePolls(u)||p.results==='always'||own!==undefined||ended;return {id:p.id,question:p.question,options:p.options,deadline:p.deadline,closed:ended,draft:p.draft,results:p.results,total,own,counts:show?p.options.map((_:any,i:number)=>Object.values(p.votes).filter(v=>v===i).length):null};};
  app.get('/api/mural-polls',guard,(req:any,res)=>res.json({canManage:canManagePolls(req.sessionUser),polls:polls.filter(p=>!p.draft||canManagePolls(req.sessionUser)).map(p=>view(p,req.sessionUser))}));

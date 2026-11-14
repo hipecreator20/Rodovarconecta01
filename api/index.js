@@ -1,5 +1,11 @@
+// server.ts
+import "dotenv/config";
+
+// src/server/customerCovers.ts
+import crypto from "node:crypto";
+
 // src/lib/accessPolicy.ts
-var BUSINESS_MODULES = ["inicio", "comunicados", "fretes_ativos", "solicitacoes", "financeiro", "agenda", "documentos", "mensagens", "grupos", "diretorio"];
+var BUSINESS_MODULES = ["inicio", "comunicados", "fretes_ativos", "solicitacoes", "financeiro", "agenda", "documentos", "diretorio"];
 var PROFILE_MODULES = {
   RH: ["solicitacoes"],
   DIRETORIA: BUSINESS_MODULES,
@@ -90,18 +96,6 @@ var AVAILABLE_MODULES = [
     badgeCategory: "Normas"
   },
   {
-    id: "mensagens",
-    label: "Mensagens",
-    description: "Chat individual direto entre colaboradores.",
-    badgeCategory: "Comunica\xE7\xE3o"
-  },
-  {
-    id: "grupos",
-    label: "Grupos",
-    description: "Canais tem\xE1ticos e operacionais da transportadora.",
-    badgeCategory: "Comunica\xE7\xE3o"
-  },
-  {
     id: "diretorio",
     label: "Diret\xF3rio de Funcion\xE1rios",
     description: "Lista de contatos, telefones e departamentos autorizados.",
@@ -109,9 +103,38 @@ var AVAILABLE_MODULES = [
   }
 ];
 var ALL_MODULE_IDS = AVAILABLE_MODULES.map((m) => m.id);
-function getDefaultPermissionsForDepartment(dept, accessLevel) {
+function resolveAccessProfileFromSector(dept, accessLevel, explicitProfile, roleTitle) {
+  if (accessLevel === "ADMINISTRADOR") return void 0;
+  if (accessLevel === "DIRETORIA") return "DIRETORIA";
+  const validProfiles = ["RH", "DIRETORIA", "MONITORAMENTO", "COMERCIAL", "EXPEDICAO", "FINANCEIRO"];
+  if (explicitProfile && validProfiles.includes(explicitProfile)) {
+    return explicitProfile;
+  }
+  const norm = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const d = norm(String(dept || ""));
+  const r = norm(String(roleTitle || ""));
+  if (d === "comercial" || r.includes("comercial")) return "COMERCIAL";
+  if (d === "expedicao" || r.includes("expedicao")) return "EXPEDICAO";
+  if (d === "monitoramento" || r.includes("monitoramento")) return "MONITORAMENTO";
+  if (d === "financeiro" || r.includes("financeir")) return "FINANCEIRO";
+  if (d === "recursos humanos" || d === "rh" || r.includes("recursos humanos") || r === "rh") return "RH";
+  if (d === "diretoria" || r.includes("diretor")) return "DIRETORIA";
+  return void 0;
+}
+function getDefaultPermissionsForDepartment(dept, accessLevel, accessProfile) {
   if (accessLevel === "ADMINISTRADOR") return [...ALL_MODULE_IDS];
   if (accessLevel === "DIRETORIA") return [...PROFILE_MODULES.DIRETORIA];
+  const resolved = resolveAccessProfileFromSector(dept, accessLevel, accessProfile);
+  if (resolved && PROFILE_MODULES[resolved]) {
+    return [...PROFILE_MODULES[resolved]];
+  }
+  const norm = String(dept || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  if (norm === "logistica" || norm === "operacional") {
+    return [...PROFILE_MODULES.MONITORAMENTO];
+  }
+  if (norm === "administrativo" || norm === "seguranca") {
+    return ["inicio", "comunicados", "solicitacoes", "agenda", "documentos", "diretorio"];
+  }
   return [];
 }
 function isLogisticsManager(u) {
@@ -122,9 +145,9 @@ function isLogisticsManager(u) {
 }
 function hasPagePermission(employee, moduleId) {
   if (!employee || employee.active !== true || employee.approvalStatus !== "APROVADO") return false;
-  if (moduleId === "perfil" || moduleId === "ajuda" || moduleId === "fluxo_notificacoes") return true;
+  if (moduleId === "perfil" || moduleId === "ajuda") return true;
   if (employee.accessLevel === "ADMINISTRADOR") return true;
-  if (moduleId === "administracao") return false;
+  if (moduleId === "administracao" || moduleId === "fluxo_notificacoes") return false;
   if (moduleId === "fretes_ativos" && isLogisticsManager(employee)) return true;
   if (moduleId === "agenda") return !!employee.accessProfile || employee.accessLevel === "DIRETORIA";
   const profile = employee.accessProfile || (employee.accessLevel === "DIRETORIA" ? "DIRETORIA" : void 0);
@@ -152,25 +175,54 @@ function registerCustomerCovers(app, guard, db, save) {
   const allowed = (u) => canAccessMonitoramentoFreights(u);
   app.get("/api/customer-covers", guard, (req, res) => {
     if (!allowed(req.sessionUser)) return res.sendStatus(403);
-    res.json({ covers: db.customerCovers || [], canEdit: req.sessionUser.accessLevel === "ADMINISTRADOR" || canOperateMonitoring(req.sessionUser) });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      covers: db.customerCovers || [],
+      canEdit: req.sessionUser.accessLevel === "ADMINISTRADOR" || canOperateMonitoring(req.sessionUser)
+    });
   });
-  app.put("/api/customer-covers", guard, (req, res) => {
+  app.put("/api/customer-covers", guard, async (req, res) => {
     const u = req.sessionUser;
-    if (!(u.accessLevel === "ADMINISTRADOR" || canOperateMonitoring(u))) return res.sendStatus(403);
-    const b = req.body || {}, key = customerCoverKey(b.customer);
-    if (!key || key.length > 200) return res.status(400).json({ error: "Cliente inv\xE1lido." });
-    const match = /^data:(image\/png|image\/jpeg|image\/webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(b.dataUrl || ""));
-    if (!match) return res.status(400).json({ error: "Escolha uma imagem PNG, JPG ou WebP." });
-    const bytes = Buffer.from(match[2], "base64"), valid = match[1] === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : match[1] === "image/jpeg" ? bytes[0] === 255 && bytes[1] === 216 : bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP";
-    if (!valid || bytes.length > 3 * 1024 * 1024) return res.status(400).json({ error: "Imagem inv\xE1lida ou acima de 3 MB." });
+    if (!(u.accessLevel === "ADMINISTRADOR" || canOperateMonitoring(u))) {
+      return res.sendStatus(403);
+    }
+    const b = req.body || {};
+    const key = customerCoverKey(b.customer);
+    if (!key || key.length > 200) {
+      return res.status(400).json({ error: "Cliente inv\xE1lido." });
+    }
+    const match = /^data:(image\/png|image\/jpeg|image\/jpg|image\/webp|image\/gif);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(
+      String(b.dataUrl || "")
+    );
+    if (!match) {
+      return res.status(400).json({ error: "Escolha uma imagem PNG, JPG, WebP ou GIF." });
+    }
+    const mime = match[1] === "image/jpg" ? "image/jpeg" : match[1];
+    const bytes = Buffer.from(match[2], "base64");
+    const valid = mime === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : mime === "image/jpeg" ? bytes[0] === 255 && bytes[1] === 216 : mime === "image/webp" ? bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP" : bytes.subarray(0, 3).toString() === "GIF";
+    if (!valid || bytes.length > 3 * 1024 * 1024) {
+      return res.status(400).json({ error: "Imagem inv\xE1lida ou acima de 3 MB." });
+    }
     db.customerCovers ||= [];
-    const cover = { key, customer: String(b.customer).trim(), dataUrl: b.dataUrl, updatedBy: u.id, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const cover = {
+      key,
+      customer: String(b.customer).trim(),
+      dataUrl: b.dataUrl,
+      updatedBy: u.id,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
     const index = db.customerCovers.findIndex((c) => c.key === key);
     if (index < 0) db.customerCovers.push(cover);
     else db.customerCovers[index] = cover;
     db.auditLogs ||= [];
-    db.auditLogs.push({ id: crypto.randomUUID(), action: "CUSTOMER_COVER_UPDATED", actorUserId: u.id, customer: cover.customer, atIso: cover.updatedAt });
-    save();
+    db.auditLogs.push({
+      id: crypto.randomUUID(),
+      action: "CUSTOMER_COVER_UPDATED",
+      actorUserId: u.id,
+      customer: cover.customer,
+      atIso: cover.updatedAt
+    });
+    await Promise.resolve(save());
     res.json({ cover });
   });
 }
@@ -263,8 +315,8 @@ function registerDrivers(app, guard, adminGuard, db, save) {
 }
 
 // src/server/agenda.ts
-import fs2 from "node:fs";
-import path2 from "node:path";
+import fs3 from "node:fs";
+import path3 from "node:path";
 import crypto3 from "node:crypto";
 
 // src/server/dataRoot.ts
@@ -274,7 +326,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 // src/server/embeddedDataSeed.ts
-var EMBEDDED_DATA_SEED_GZIP_B64 = "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";
+var EMBEDDED_DATA_SEED_GZIP_B64 = "H4sIAAAAAAAAA6uuBQBDv6ajAgAAAA==";
 
 // src/server/dataRoot.ts
 var cachedServerlessRoot = null;
@@ -333,385 +385,11 @@ function resolveDataRoot() {
   return candidateRoot;
 }
 
-// src/server/agenda.ts
-var agendaCreator = (u) => u.accessLevel === "ADMINISTRADOR" || ["DIRETORIA", "RH"].includes(u.accessProfile) || u.accessLevel === "DIRETORIA" || u.roleTitle === "Ger\xEAncia Administrativa" || u.permissoesPaginas?.includes("agenda_criar");
-function registerAgenda(app, guard, users) {
-  const file = path2.join(resolveDataRoot(), "data", "agenda-local.json");
-  const state = fs2.existsSync(file) ? JSON.parse(fs2.readFileSync(file, "utf8")) : { events: [], notifications: [], imported: false, keys: {} };
-  const save = () => {
-    fs2.mkdirSync(path2.dirname(file), { recursive: true });
-    fs2.writeFileSync(file + ".tmp", JSON.stringify(state));
-    fs2.renameSync(file + ".tmp", file);
-  };
-  const manage = (e, u) => u.accessLevel === "ADMINISTRADOR" || agendaCreator(u) && (e.ownerId === u.id || !e.ownerId && ["DIRETORIA", "RH"].includes(u.accessProfile));
-  const invited = (e, u) => e.visibility === "Todos" || e.invitees?.includes(u.id) || e.sectors?.includes(u.department) || e.ownerId === u.id || !e.visibility;
-  const visible = (e, u) => manage(e, u) || invited(e, u);
-  const audience = (e) => users().filter((u) => u.active && invited(e, u));
-  const notify = (e, title, key) => {
-    for (const u of audience(e)) {
-      const id = "agenda:" + key + ":" + u.id;
-      if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId: u.id, targetId: e.id, type: "agenda", title, subtitle: e.title, targetSection: "agenda", read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString(), timeLabel: "Agenda" });
-    }
-  };
-  const audit = (e, u, action) => {
-    e.history ||= [];
-    e.history.push({ id: crypto3.randomUUID(), actor: u.name, action, at: (/* @__PURE__ */ new Date()).toISOString() });
-  };
-  const view = (e, u) => {
-    const c = structuredClone(e);
-    c.canManage = manage(e, u);
-    c.participantCount = audience(e).length;
-    c.confirmedCount = (e.attendees || []).length;
-    c.response = e.responses?.[u.id] || (e.attendees?.includes(u.id) ? "Confirmado" : "Pendente");
-    if (!c.canManage && !["ADMINISTRADOR", "DIRETORIA"].includes(u.accessLevel)) {
-      delete c.responses;
-      delete c.attendees;
-      delete c.invitees;
-      delete c.confirmedCount;
-      delete c.participantCount;
-      c.history = (c.history || []).filter((h) => !h.action.startsWith("Participa\xE7\xE3o:") || h.actor === u.name);
-    }
-    return c;
-  };
-  app.get("/api/agenda", guard, (req, res) => {
-    for (const e of state.events) {
-      const hours = (Date.parse(e.dateIso + "T" + (e.start || e.time?.match(/\d\d:\d\d/)?.[0] || "00:00") + ":00-03:00") - Date.now()) / 36e5;
-      if (!e.cancelled && hours > 0 && hours <= 24) notify(e, "Lembrete: evento nas pr\xF3ximas 24h", "upcoming:" + e.id + ":" + e.dateIso);
-    }
-    save();
-    res.setHeader("Cache-Control", "no-store");
-    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id) });
-  });
-  app.post("/api/agenda/import", guard, (req, res) => {
-    if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return res.status(403).json({ error: "Importa\xE7\xE3o n\xE3o autorizada." });
-    if (!state.imported) {
-      for (const e of req.body.events || []) {
-        if (e.id && !state.events.some((r) => r.id === e.id)) state.events.push({ ...e, history: e.history || [], responses: e.responses || {}, visibility: e.visibility || "Todos" });
-      }
-      state.imported = true;
-      save();
-    }
-    res.json({ ok: true });
-  });
-  app.post("/api/agenda/read", guard, (req, res) => {
-    for (const n of state.notifications) if (n.recipientId === req.sessionUser.id && req.body.ids?.includes(n.id)) n.read = true;
-    save();
-    res.json({ ok: true });
-  });
-  app.post("/api/agenda", guard, (req, res) => {
-    const b = req.body || {}, u = req.sessionUser;
-    let e = state.events.find((r) => r.id === b.id);
-    if (!agendaCreator(u) || e && !manage(e, u)) return res.status(403).json({ error: "Evento n\xE3o autorizado." });
-    if (u.accessProfile === "FINANCEIRO" && b.department !== u.department) return res.status(403).json({ error: "Cria\xE7\xE3o restrita ao pr\xF3prio setor." });
-    if (b.id && !e) return res.status(404).json({ error: "Evento n\xE3o encontrado." });
-    if (e?.cancelled) return res.status(409).json({ error: "Evento cancelado." });
-    if (!b.id && !req.headers["x-idempotency-key"]) return res.status(400).json({ error: "Identificador obrigat\xF3rio." });
-    if (!String(b.title || "").trim() || String(b.title).length > 200 || !/^\d{4}-\d{2}-\d{2}$/.test(b.dateIso) || !Number.isFinite(Date.parse(b.dateIso)) || new Date(b.dateIso).toISOString().slice(0, 10) !== b.dateIso || !b.allDay && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(b.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(b.end) || b.end <= b.start)) return res.status(400).json({ error: "Confira t\xEDtulo, data e hor\xE1rios inicial/final." });
-    if (!["Reuni\xE3o", "Treinamento", "Evento Corporativo", "Comunicado de Agenda", "Outro"].includes(b.category)) return res.status(400).json({ error: "Categoria inv\xE1lida." });
-    if ((b.attachments || []).some((a) => !/^data:(application\/pdf|image\/png|image\/jpeg);base64,/.test(a.dataUrl) || a.dataUrl.length > 7e6)) return res.status(400).json({ error: "Anexo inv\xE1lido: PDF, PNG ou JPEG at\xE9 5 MB." });
-    const key = u.id + ":" + String(req.headers["x-idempotency-key"] || "");
-    if (!b.id && state.keys[key]) return res.json(view(state.events.find((r) => r.id === state.keys[key]), u));
-    const id = e?.id || crypto3.randomUUID();
-    const prior = e;
-    if (!e) {
-      e = { id, ownerId: u.id, attendees: [], responses: {}, history: [] };
-      state.events.push(e);
-    }
-    for (const field of ["title", "description", "category", "dateIso", "start", "end", "allDay", "location", "organizer", "department", "invitees", "sectors", "priority", "visibility", "attachments", "recurrence", "requireRsvp"]) e[field] = b[field];
-    e.time = b.allDay ? "Dia inteiro" : b.start + " - " + b.end;
-    e.day = b.dateIso.slice(8);
-    e.monthShort = (/* @__PURE__ */ new Date(b.dateIso + "T12:00:00")).toLocaleString("pt-BR", { month: "short" }).toUpperCase();
-    audit(e, u, prior ? "Evento atualizado" : "Evento criado");
-    state.keys[key] = id;
-    notify(e, prior ? "Evento alterado" : "Novo convite recebido", crypto3.randomUUID());
-    save();
-    res.json(view(e, u));
-  });
-  app.post("/api/agenda/:id/:action", guard, (req, res) => {
-    const e = state.events.find((r) => r.id === req.params.id), u = req.sessionUser, a = req.params.action;
-    if (!e || !visible(e, u)) return res.status(404).json({ error: "Evento indispon\xEDvel." });
-    if (a === "rsvp") {
-      if (e.cancelled || !invited(e, u)) return res.status(409).json({ error: "Convite indispon\xEDvel." });
-      const response = req.body.response;
-      if (!["Confirmado", "Recusado", "Pendente"].includes(response)) return res.status(400).json({ error: "Resposta inv\xE1lida." });
-      e.responses ||= {};
-      if (e.responses[u.id] === response) return res.json({ ok: true });
-      e.responses[u.id] = response;
-      e.attendees = (e.attendees || []).filter((id) => id !== u.id);
-      if (response === "Confirmado") e.attendees.push(u.id);
-      audit(e, u, "Participa\xE7\xE3o: " + response);
-      if (e.ownerId) state.notifications.push({ id: "agenda:" + crypto3.randomUUID(), recipientId: e.ownerId, targetId: e.id, targetSection: "agenda", type: "agenda", title: u.name + " \u2014 " + response, subtitle: e.title, read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
-    } else {
-      if (!manage(e, u)) return res.status(403).json({ error: "Gerenciamento n\xE3o autorizado." });
-      if (a === "cancel") {
-        e.cancelled = true;
-        audit(e, u, "Evento cancelado");
-        notify(e, "Evento cancelado", crypto3.randomUUID());
-      } else if (a === "remind") {
-        audit(e, u, "Lembrete enviado");
-        notify(e, "Lembrete de participa\xE7\xE3o", crypto3.randomUUID());
-      } else return res.status(400).json({ error: "A\xE7\xE3o inv\xE1lida." });
-    }
-    save();
-    res.json({ ok: true });
-  });
-}
-
-// src/server/muralPolls.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
-import crypto4 from "node:crypto";
-var canManagePolls = (u) => u?.accessLevel === "ADMINISTRADOR" || ["DIRETORIA", "FINANCEIRO", "RH"].includes(u?.accessProfile) || u?.accessLevel === "DIRETORIA" || u?.roleTitle === "Ger\xEAncia Administrativa";
-function registerPolls(app, guard, storageFile = path3.join(resolveDataRoot(), "data", "mural-polls.local.json")) {
-  const polls = fs3.existsSync(storageFile) ? JSON.parse(fs3.readFileSync(storageFile, "utf8")) : [];
-  if (!Array.isArray(polls)) throw Error("Arquivo local de enquetes inv\xE1lido.");
-  const save = () => {
-    fs3.mkdirSync(path3.dirname(storageFile), { recursive: true });
-    const temporary = storageFile + ".tmp";
-    fs3.writeFileSync(temporary, JSON.stringify(polls), { mode: 384 });
-    fs3.renameSync(temporary, storageFile);
-  };
-  app.use("/api/mural-polls", (_req, res, next) => {
-    res.setHeader("Cache-Control", "no-store");
-    next();
-  });
-  const view = (p, u) => {
-    const total = Object.keys(p.votes).length, own = p.votes[u.id], ended = p.closed || Date.now() >= Date.parse(p.deadline), show = canManagePolls(u) || p.results === "always" || own !== void 0 || ended;
-    return { id: p.id, question: p.question, options: p.options, deadline: p.deadline, closed: ended, draft: p.draft, results: p.results, total, own, counts: show ? p.options.map((_, i) => Object.values(p.votes).filter((v) => v === i).length) : null };
-  };
-  app.get("/api/mural-polls", guard, (req, res) => res.json({ canManage: canManagePolls(req.sessionUser), polls: polls.filter((p) => !p.draft || canManagePolls(req.sessionUser)).map((p) => view(p, req.sessionUser)) }));
-  app.post("/api/mural-polls", guard, (req, res) => {
-    const u = req.sessionUser, b = req.body || {};
-    if (!canManagePolls(u)) return res.status(403).json({ error: "Sem permiss\xE3o para administrar enquetes." });
-    let p = polls.find((p2) => p2.id === b.id);
-    if (b.action === "close") {
-      if (!p) return res.status(404).json({ error: "Enquete indispon\xEDvel." });
-      p.closed = true;
-      save();
-      return res.json(view(p, u));
-    }
-    const options = Array.isArray(b.options) ? b.options.map((v) => String(v).trim()) : [];
-    if (!String(b.question || "").trim() || String(b.question).length > 240 || options.length < 2 || options.length > 6 || options.some((v) => !v || v.length > 120) || new Set(options).size !== options.length || !Number.isFinite(Date.parse(b.deadline)) || Date.parse(b.deadline) <= Date.now()) return res.status(400).json({ error: "Informe pergunta, 2 a 6 alternativas distintas e prazo futuro." });
-    if (p && (Object.keys(p.votes).length || p.closed)) return res.status(409).json({ error: "Enquetes com votos ou encerradas n\xE3o podem ser editadas." });
-    if (!p) {
-      p = { id: crypto4.randomUUID(), votes: {}, closed: false };
-      polls.push(p);
-    }
-    Object.assign(p, { question: String(b.question).trim(), options, deadline: b.deadline, draft: !!b.draft, results: b.results === "always" ? "always" : "after", authorId: u.id });
-    save();
-    res.json(view(p, u));
-  });
-  app.post("/api/mural-polls/:id/vote", guard, (req, res) => {
-    const p = polls.find((p2) => p2.id === req.params.id), u = req.sessionUser, i = req.body?.option;
-    if (!p || p.draft) return res.status(404).json({ error: "Enquete indispon\xEDvel." });
-    if (p.closed || Date.now() >= Date.parse(p.deadline)) return res.status(409).json({ error: "Vota\xE7\xE3o encerrada." });
-    if (!Number.isInteger(i) || i < 0 || i >= p.options.length) return res.status(400).json({ error: "Alternativa inv\xE1lida." });
-    if (p.votes[u.id] !== void 0) {
-      if (p.votes[u.id] !== i) return res.status(409).json({ error: "Seu voto j\xE1 foi registrado." });
-      return res.json(view(p, u));
-    }
-    p.votes[u.id] = i;
-    save();
-    res.json(view(p, u));
-  });
-}
-
-// src/server/mural.ts
-import crypto5 from "node:crypto";
-import fs4 from "node:fs";
-import path4 from "node:path";
-function registerMural(app, guard, db, save, initial) {
-  registerPolls(app, guard);
-  const directory = path4.join(resolveDataRoot(), "data", "mural-attachments");
-  db.mural ||= { announcements: structuredClone(initial), notifications: [], keys: {}, audit: [], imported: false };
-  const state = db.mural;
-  const publisher = (u) => hasPagePermission(u, "comunicados") && ["ADMINISTRADOR", "DIRETORIA"].includes(u.accessLevel);
-  const visible = (a, u) => hasPagePermission(u, "comunicados") && (publisher(u) || !a.draft && (a.targetAudience === "Todos" || a.targetAudience === u.department));
-  const stamp = () => (/* @__PURE__ */ new Date()).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-  const audit = (u, id, action) => state.audit.push({ id: crypto5.randomUUID(), announcementId: id, actorId: u.id, actorName: u.name, action, at: (/* @__PURE__ */ new Date()).toISOString() });
-  const fail = (res, status, error) => res.status(status).json({ error });
-  const check = (req, res, next) => hasPagePermission(req.sessionUser, "comunicados") ? (res.setHeader("Cache-Control", "no-store"), next()) : fail(res, 403, "Sem acesso ao Mural.");
-  const get = (id) => state.announcements.find((a) => a.id === id);
-  const notify = (a) => {
-    if (a.draft || a.archived) return;
-    for (const u of db.users.filter((u2) => visible(a, u2) && (a.targetAudience === "Todos" || a.targetAudience === u2.department))) {
-      const id = "mural:" + a.id + ":" + u.id;
-      if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId: u.id, targetId: a.id, publicationId: a.id, type: "comunicado", title: "Novo comunicado publicado", subtitle: a.title, read: false, timeLabel: "Mural", targetSection: "comunicados", createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
-    }
-  };
-  const publicRecord = (a, u) => {
-    const copy = structuredClone(a);
-    if (!publisher(u)) {
-      copy.readReceipts = copy.readReceipts.filter((r) => r.userId === u.id);
-      copy.readCount = a.readReceipts.length;
-      delete copy.editHistory;
-      delete copy.versions;
-    }
-    return copy;
-  };
-  const cleanFile = (input) => {
-    if (!input.dataUrl) return input.url && /^\/assets\/[a-zA-Z0-9_./%() -]+$/.test(input.url) && !input.url.includes("..") ? { name: String(input.name).slice(0, 160), size: String(input.size || ""), type: String(input.type || ""), url: input.url } : null;
-    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(input.dataUrl);
-    if (!match) throw Error("Arquivo inv\xE1lido.");
-    const bytes = Buffer.from(match[2], "base64");
-    const extension = String(input.name || "").split(".").pop()?.toLowerCase();
-    const signature = bytes.subarray(0, 8);
-    const allowed = extension === "pdf" ? bytes.subarray(0, 5).toString() === "%PDF-" : ["docx", "xlsx"].includes(extension || "") ? bytes[0] === 80 && bytes[1] === 75 : ["doc", "xls"].includes(extension || "") ? signature.equals(Buffer.from([208, 207, 17, 224, 161, 177, 26, 225])) : ["png"].includes(extension || "") ? signature.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : ["jpg", "jpeg"].includes(extension || "") ? bytes[0] === 255 && bytes[1] === 216 : extension === "webp" ? bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP" : false;
-    if (!allowed || !bytes.length || bytes.length > 5 * 1024 * 1024) throw Error("Envie PDF, Word, Excel ou imagem v\xE1lida de at\xE9 5 MB.");
-    const mime = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", doc: "application/msword", xls: "application/vnd.ms-excel", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
-    const id = crypto5.randomUUID();
-    fs4.mkdirSync(directory, { recursive: true });
-    fs4.writeFileSync(path4.join(directory, id), bytes, { mode: 384 });
-    return { id, name: String(input.name).replace(/[\r\n<>"/\\]/g, "_").slice(0, 160), size: Math.ceil(bytes.length / 1024) + " KB", type: extension.toUpperCase(), mimeType: mime[extension], hash: crypto5.createHash("sha256").update(bytes).digest("hex") };
-  };
-  app.get("/api/mural", guard, check, (req, res) => res.json({ announcements: state.announcements.filter((a) => visible(a, req.sessionUser)).map((a) => publicRecord(a, req.sessionUser)), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed), canPublish: publisher(req.sessionUser) }));
-  app.post("/api/mural/notifications/read", guard, check, (req, res) => {
-    const ids = req.body?.ids;
-    if (!Array.isArray(ids) || ids.length > 500) return fail(res, 400, "Notifica\xE7\xF5es inv\xE1lidas.");
-    for (const n of state.notifications.filter((n2) => n2.recipientId === req.sessionUser.id && ids.includes(n2.id))) {
-      n.read = true;
-      if (req.body.dismiss) n.dismissed = true;
-    }
-    save();
-    res.json({ ok: true });
-  });
-  app.post("/api/mural/import", guard, check, (req, res) => {
-    if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return fail(res, 403, "Importa\xE7\xE3o exclusiva do administrador.");
-    if (!state.imported) {
-      const incoming = req.body?.announcements;
-      if (!Array.isArray(incoming) || incoming.length > 1e3) return fail(res, 400, "Origem inv\xE1lida.");
-      for (const old of incoming) {
-        if (!old?.id || !old.title || !Array.isArray(old.readReceipts) || !Array.isArray(old.comments) || !Array.isArray(old.likes)) continue;
-        const current = get(old.id);
-        if (current) {
-          const reads = current.readReceipts, comments = current.comments, likes = current.likes, history = current.editHistory || [];
-          Object.assign(current, structuredClone(old));
-          current.editHistory = [...new Map([...history, ...old.editHistory || []].map((h) => [h.id, h])).values()];
-          current.readReceipts = [...new Map([...reads, ...old.readReceipts].map((r) => [r.userId, r])).values()];
-          current.comments = [...new Map([...comments, ...old.comments].map((c) => [c.id, c])).values()];
-          current.likes = [.../* @__PURE__ */ new Set([...likes, ...old.likes])];
-        } else state.announcements.push(structuredClone(old));
-      }
-      state.imported = true;
-      audit(req.sessionUser, "migration", "Hist\xF3rico existente importado sem substituir registros");
-      save();
-    }
-    res.json({ ok: true });
-  });
-  app.post("/api/mural", guard, check, (req, res) => {
-    if (!publisher(req.sessionUser)) return fail(res, 403, "Publica\xE7\xE3o n\xE3o autorizada.");
-    const b = req.body || {}, u = req.sessionUser;
-    const key = String(req.headers["x-idempotency-key"] || "");
-    if (!key || key.length > 160) return fail(res, 400, "Identificador do envio obrigat\xF3rio.");
-    const fingerprint = crypto5.createHash("sha256").update(JSON.stringify(b)).digest("hex"), composite = u.id + ":" + key;
-    if (state.keys[composite]) return state.keys[composite].fingerprint === fingerprint ? res.json({ announcement: get(state.keys[composite].id) }) : fail(res, 409, "Envio repetido com dados diferentes.");
-    const existing = b.id ? get(b.id) : null;
-    if (b.id && !existing) return fail(res, 404, "Comunicado n\xE3o encontrado.");
-    if (typeof b.title !== "string" || !b.title.trim() || b.title.length > 180 || typeof b.content !== "string" || !b.draft && !b.content.trim() || b.content.length > 2e4 || !["Normal", "Importante", "Urgente"].includes(b.priority) || !["Comunicado Geral", "Importante", "Urgente", "Recursos Humanos", "Seguran\xE7a", "Operacional", "Eventos", "Diretoria"].includes(b.category) || !["Todos", "Operacional", "Log\xEDstica", "Administrativo", "Financeiro", "Recursos Humanos", "Seguran\xE7a", "Diretoria"].includes(b.targetAudience)) return fail(res, 400, "Confira t\xEDtulo, conte\xFAdo, categoria, prioridade e p\xFAblico.");
-    try {
-      const attachments = b.attachments || [];
-      if (!Array.isArray(attachments) || attachments.length > 12) throw Error("Limite de 12 anexos.");
-      const stored = attachments.map((item) => {
-        if (item.id) {
-          const known = existing?.attachments?.find((d) => d.id === item.id);
-          if (!known) throw Error("Anexo n\xE3o autorizado.");
-          return known;
-        }
-        const legacy = existing?.attachments?.find((d) => !d.id && d.name === item.name && d.url === item.url);
-        return legacy || cleanFile(item) || { name: String(item.name).slice(0, 160), size: String(item.size || ""), type: String(item.type || "") };
-      }).filter(Boolean);
-      const cover = String(b.coverImage || "");
-      const banner = String(b.bannerImage || "");
-      if (banner && !/^\/assets\//.test(banner) && !/^data:image\/(png|jpeg|webp);base64,/.test(banner)) throw Error("Imagem do banner inv\xE1lida.");
-      if (banner.length > 7 * 1024 * 1024) throw Error("Imagem do banner muito grande.");
-      if (cover && !/^\/assets\//.test(cover) && !/^data:image\/(png|jpeg|webp);base64,/.test(cover)) throw Error("Imagem de capa inv\xE1lida.");
-      if (cover.length > 7 * 1024 * 1024) throw Error("Imagem muito grande.");
-      const validImage = (value) => {
-        if (!value) return true;
-        if (value.startsWith("/assets/")) return !value.includes("..") && !/[\r\n]/.test(value);
-        const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(value);
-        if (!match) return false;
-        const data = Buffer.from(match[2], "base64");
-        if (data.length > 5 * 1024 * 1024) return false;
-        return match[1] === "png" ? data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : match[1] === "jpeg" ? data[0] === 255 && data[1] === 216 : data.subarray(0, 4).toString() === "RIFF" && data.subarray(8, 12).toString() === "WEBP";
-      };
-      if (!validImage(cover) || !validImage(banner)) throw Error("Imagem inv\xE1lida: envie PNG, JPEG ou WebP de at\xE9 5 MB.");
-      const versions = [...existing?.versions || []];
-      if (existing) versions.push({ id: crypto5.randomUUID(), at: stamp(), editorName: u.name, title: existing.title, content: existing.content, attachments: structuredClone(existing.attachments || []) });
-      const now = /* @__PURE__ */ new Date(), record = { ...existing || {}, id: existing?.id || crypto5.randomUUID(), title: b.title.trim(), summary: String(b.summary || "").slice(0, 500), content: b.content.trim(), category: b.category, priority: b.priority, targetAudience: b.targetAudience, requireReadConfirmation: !!b.requireReadConfirmation, pinned: !!b.pinned, featured: !!b.featured, draft: !!b.draft, versions, coverImage: cover, bannerImage: String(b.bannerImage || cover || "/assets/login-rodovar-sunset-v2.png"), attachments: stored, authorId: existing?.authorId || u.id, authorName: existing?.authorName || u.name, department: existing?.department || u.department, createdAtIso: existing?.createdAtIso || now.toISOString(), dateFormatted: existing?.dateFormatted || now.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }), readReceipts: existing?.readReceipts || [], comments: existing?.comments || [], likes: existing?.likes || [], editHistory: [{ id: crypto5.randomUUID(), editedAt: stamp(), editorName: u.name, editorRole: u.accessLevel, note: String(b.editNote || "Publica\xE7\xE3o atualizada").slice(0, 1e3) }, ...existing?.editHistory || []] };
-      if (existing) Object.assign(existing, record);
-      else state.announcements.unshift(record);
-      state.keys[composite] = { id: record.id, fingerprint };
-      audit(u, record.id, record.draft ? "Rascunho salvo" : "Publica\xE7\xE3o salva");
-      notify(record);
-      save();
-      res.status(201).json({ announcement: record });
-    } catch (e) {
-      fail(res, 400, e.message);
-    }
-  });
-  app.post("/api/mural/:id/action", guard, check, (req, res) => {
-    const a = get(req.params.id), u = req.sessionUser;
-    if (!a || !visible(a, u)) return fail(res, 404, "Comunicado indispon\xEDvel.");
-    const b = req.body || {};
-    if (b.action === "READ") {
-      if (a.draft || a.archived) return fail(res, 409, "Publica\xE7\xE3o indispon\xEDvel para confirma\xE7\xE3o.");
-      if (!a.readReceipts.some((r) => r.userId === u.id)) {
-        a.readReceipts.push({ userId: u.id, userName: u.name, department: u.department, confirmedAt: stamp() });
-        audit(u, a.id, "Leitura confirmada explicitamente");
-      }
-      for (const n of state.notifications.filter((n2) => n2.recipientId === u.id && n2.targetId === a.id)) n.read = true;
-    } else if (b.action === "LIKE") {
-      a.likes = a.likes.includes(u.id) ? a.likes.filter((id) => id !== u.id) : [...a.likes, u.id];
-    } else if (b.action === "COMMENT") {
-      const text = String(b.text || "").trim();
-      if (!text || text.length > 3e3) return fail(res, 400, "Coment\xE1rio de at\xE9 3000 caracteres.");
-      const key = String(req.headers["x-idempotency-key"] || "");
-      if (!key) return fail(res, 400, "Identificador obrigat\xF3rio.");
-      const prior = a.comments.find((c) => c.key === u.id + ":" + key);
-      if (prior) {
-        if (prior.content !== text) return fail(res, 409, "Coment\xE1rio repetido com conte\xFAdo diferente.");
-        return res.json({ announcement: publicRecord(a, u) });
-      }
-      a.comments.push({ id: crypto5.randomUUID(), key: u.id + ":" + key, authorId: u.id, authorName: u.name, authorRole: u.roleTitle || u.accessLevel, authorAvatar: u.avatar, content: text, createdAt: stamp() });
-      audit(u, a.id, "Coment\xE1rio registrado");
-    } else if (b.action === "DELETE_COMMENT") {
-      const c = a.comments.find((c2) => c2.id === b.commentId);
-      if (!c || !publisher(u) && c.authorId !== u.id) return fail(res, 403, "Coment\xE1rio n\xE3o autorizado.");
-      a.comments = a.comments.filter((c2) => c2.id !== b.commentId);
-      audit(u, a.id, "Coment\xE1rio removido");
-    } else {
-      if (!publisher(u)) return fail(res, 403, "A\xE7\xE3o administrativa n\xE3o autorizada.");
-      if (b.action === "PIN") a.pinned = !a.pinned;
-      else if (b.action === "FEATURE") a.featured = !a.featured;
-      else if (b.action === "ARCHIVE") a.archived = !a.archived;
-      else return fail(res, 400, "A\xE7\xE3o inv\xE1lida.");
-      audit(u, a.id, b.action);
-    }
-    save();
-    res.json({ announcement: publicRecord(a, u) });
-  });
-  app.get("/api/mural/:id/attachments/:fileId", guard, check, (req, res) => {
-    const a = get(req.params.id), u = req.sessionUser;
-    if (!a || !visible(a, u)) return fail(res, 404, "Documento indispon\xEDvel.");
-    const d = a.attachments?.find((d2) => d2.id === req.params.fileId) || (publisher(u) ? a.versions?.flatMap((v) => v.attachments).find((d2) => d2.id === req.params.fileId) : void 0);
-    if (!d) return fail(res, 404, "Arquivo n\xE3o encontrado.");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    audit(u, a.id, "Download autorizado de anexo");
-    save();
-    res.type(d.mimeType).attachment(d.name).sendFile(path4.join(directory, d.id));
-  });
-}
-
-// src/server/chats.ts
-import crypto6 from "node:crypto";
-import fs6 from "node:fs";
-import path6 from "node:path";
-
 // neon.ts
+import "dotenv/config";
 import { Pool, neon, neonConfig } from "@neondatabase/serverless";
-import fs5 from "node:fs";
-import path5 from "node:path";
+import fs2 from "node:fs";
+import path2 from "node:path";
 import ws from "ws";
 neonConfig.webSocketConstructor = ws;
 function normalizeNeonConnectionString(raw) {
@@ -719,20 +397,56 @@ function normalizeNeonConnectionString(raw) {
   if (!trimmed) return "";
   return trimmed.replace(/channel_binding=requerido/gi, "channel_binding=require");
 }
-var DEFAULT_NEON_DATABASE_URL = "postgresql://neondb_owner:npg_WTmE1HUFL9cC@ep-raspy-river-b6yady4i-pooler.c-2.sa-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
-var connectionString = normalizeNeonConnectionString(
-  process.env.DATABASE_URL || process.env.POSTGRES_URL || DEFAULT_NEON_DATABASE_URL
-);
+var rawConnectionString = (process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.DATABASE_URL_UNPOOLED || "").trim();
+if (!rawConnectionString && !process.env.RODOVAR_DATA_ROOT) {
+  console.warn(
+    "Neon Postgres notice: vari\xE1vel DATABASE_URL (ou POSTGRES_URL) n\xE3o configurada neste ambiente."
+  );
+}
+var connectionString = normalizeNeonConnectionString(rawConnectionString);
 var isNeonConfigured = Boolean(
   connectionString && !connectionString.includes("dummy") && !connectionString.includes("****************")
 );
+function isIsolatedTestEnv() {
+  if (process.env.VERCEL || process.env.VERCEL_ENV) return false;
+  return Boolean(
+    process.env.RODOVAR_DATA_ROOT || process.env.NODE_TEST_CONTEXT || process.execArgv.includes("--test") || process.argv.includes("--test")
+  );
+}
 var pool = new Pool({
-  connectionString: isNeonConfigured ? connectionString : DEFAULT_NEON_DATABASE_URL,
-  connectionTimeoutMillis: 15e3,
-  idleTimeoutMillis: 1e4,
-  max: 10
+  connectionString: connectionString || void 0,
+  connectionTimeoutMillis: 1e4,
+  idleTimeoutMillis: 5e3,
+  max: 5
 });
 var sql = isNeonConfigured ? neon(connectionString) : null;
+var pendingNeonWrites = /* @__PURE__ */ new Set();
+function trackNeonWrite(promise) {
+  pendingNeonWrites.add(promise);
+  promise.finally(() => {
+    pendingNeonWrites.delete(promise);
+  });
+  return promise;
+}
+function hasPendingNeonWrites() {
+  return pendingNeonWrites.size > 0;
+}
+async function flushPendingNeonWrites(timeoutMs = 15e3) {
+  const deadline = Date.now() + timeoutMs;
+  while (pendingNeonWrites.size > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const batch = Array.from(pendingNeonWrites);
+    await Promise.race([
+      Promise.allSettled(batch),
+      new Promise((resolve) => setTimeout(resolve, remaining))
+    ]);
+    if (Date.now() >= deadline) break;
+  }
+}
+var NEON_SCHEMA_VERSION = "2027.06.v1";
+var neonSchemaInitialized = false;
+var neonSchemaInitPromise = null;
 async function testNeonConnection() {
   if (!isNeonConfigured || !sql) {
     return false;
@@ -781,7 +495,6 @@ async function getNeonHealthStats() {
           (SELECT COUNT(*)::int FROM rodovar_state_store) AS snapshots,
           (SELECT COUNT(*)::int FROM rodovar_announcements) AS announcements,
           (SELECT COUNT(*)::int FROM rodovar_agenda) AS agenda,
-          (SELECT COUNT(*)::int FROM rodovar_chats) AS chats,
           (SELECT COUNT(*)::int FROM rodovar_audit_logs) AS audit_logs
       `;
       if (rows[0]) {
@@ -793,7 +506,6 @@ async function getNeonHealthStats() {
           snapshots: Number(rows[0].snapshots || 0),
           announcements: Number(rows[0].announcements || 0),
           agenda: Number(rows[0].agenda || 0),
-          chats: Number(rows[0].chats || 0),
           auditLogs: Number(rows[0].audit_logs || 0)
         };
       }
@@ -834,22 +546,148 @@ async function getNeonHealthStats() {
   };
 }
 async function initializeNeonSchema() {
-  if (!isNeonConfigured) {
+  if (!isNeonConfigured || isIsolatedTestEnv()) {
     return;
   }
-  const client = await pool.connect();
-  try {
-    await client.query(`
+  if (neonSchemaInitialized) {
+    return;
+  }
+  if (neonSchemaInitPromise) {
+    return neonSchemaInitPromise;
+  }
+  neonSchemaInitPromise = (async () => {
+    try {
+      if (sql) {
+        try {
+          const check = await sql`
+            SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-schema-version' LIMIT 1
+          `;
+          if (check[0]?.payload?.version === NEON_SCHEMA_VERSION) {
+            neonSchemaInitialized = true;
+            return;
+          }
+        } catch {
+        }
+      }
+      const client = await pool.connect();
+      try {
+        await client.query(`
       CREATE TABLE IF NOT EXISTS rodovar_users (
         id VARCHAR(64) PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
+        login VARCHAR(255),
         department VARCHAR(100) NOT NULL,
-        role VARCHAR(50) NOT NULL,
+        role VARCHAR(100) NOT NULL,
+        role_title VARCHAR(150),
         access_level VARCHAR(50) NOT NULL,
+        access_profile VARCHAR(50),
         password_hash VARCHAR(255) NOT NULL,
+        password_salt VARCHAR(255) DEFAULT '',
         must_change_password BOOLEAN DEFAULT TRUE,
+        avatar TEXT DEFAULT '',
+        has_custom_avatar BOOLEAN DEFAULT FALSE,
+        approval_status VARCHAR(50) DEFAULT 'APROVADO',
+        requested_at VARCHAR(64),
+        approved_by VARCHAR(255),
+        approved_at VARCHAR(64),
+        status_reason TEXT,
+        migrated_from_google BOOLEAN DEFAULT FALSE,
+        phone_ext VARCHAR(64) DEFAULT '',
+        phone VARCHAR(64) DEFAULT '',
+        location VARCHAR(120) DEFAULT 'BA - Salvador',
+        joined_at VARCHAR(64) DEFAULT '',
+        active BOOLEAN DEFAULT TRUE,
+        permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        roster_activation_version INT DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS login VARCHAR(255);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS role_title VARCHAR(150);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS access_profile VARCHAR(50);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS password_salt VARCHAR(255) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS avatar TEXT DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS has_custom_avatar BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APROVADO';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS requested_at VARCHAR(64);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_at VARCHAR(64);
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS status_reason TEXT;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS migrated_from_google BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS phone_ext VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS phone VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS location VARCHAR(120) DEFAULT 'BA - Salvador';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS joined_at VARCHAR(64) DEFAULT '';
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS permissoes_paginas JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS roster_activation_version INT DEFAULT 1;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+      CREATE INDEX IF NOT EXISTS idx_rodovar_users_login ON rodovar_users(LOWER(login));
+      CREATE INDEX IF NOT EXISTS idx_rodovar_users_email ON rodovar_users(LOWER(email));
+
+      CREATE TABLE IF NOT EXISTS rodovar_login_locks (
+        identifier VARCHAR(255) PRIMARY KEY,
+        consecutive_failures INT NOT NULL DEFAULT 0,
+        blocked_until BIGINT,
+        last_failure_at BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_password_reset_tokens (
+        token_hash VARCHAR(128) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        used BOOLEAN NOT NULL DEFAULT FALSE,
+        onboarding BOOLEAN NOT NULL DEFAULT FALSE
+      );
+      CREATE INDEX IF NOT EXISTS idx_rodovar_pw_reset_user ON rodovar_password_reset_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS rodovar_access_decisions (
+        id VARCHAR(64) PRIMARY KEY,
+        target_user_id VARCHAR(64) NOT NULL,
+        target_name VARCHAR(255) NOT NULL,
+        target_login VARCHAR(255) NOT NULL,
+        admin_id VARCHAR(64) NOT NULL,
+        admin_name VARCHAR(255) NOT NULL,
+        action VARCHAR(64) NOT NULL,
+        new_status VARCHAR(64) NOT NULL,
+        access_level VARCHAR(64) NOT NULL,
+        permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        reason TEXT,
+        timestamp_iso VARCHAR(64) NOT NULL,
+        timestamp_formatted VARCHAR(64) NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_archived_users (
+        user_id VARCHAR(64) PRIMARY KEY,
+        user_snapshot JSONB NOT NULL,
+        deleted_at_iso VARCHAR(64) NOT NULL,
+        deleted_by_id VARCHAR(64) NOT NULL,
+        reason TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_access_policy (
+        id VARCHAR(32) PRIMARY KEY,
+        protected_admin_uid VARCHAR(64) NOT NULL,
+        authorized_uids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        version INT NOT NULL DEFAULT 1,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_revoked_sessions (
+        session_id VARCHAR(512) PRIMARY KEY,
+        user_id VARCHAR(64),
+        revoked_at BIGINT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rodovar_user_revocations (
+        user_id VARCHAR(64) PRIMARY KEY,
+        revoked_after_ms BIGINT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS rodovar_fretes (
@@ -868,9 +706,33 @@ async function initializeNeonSchema() {
         driver_phone VARCHAR(64),
         truck_plate VARCHAR(32),
         status VARCHAR(64) NOT NULL,
+        situacao_comercial VARCHAR(64),
+        situacao_operacional VARCHAR(64),
+        situacao_monitoramento VARCHAR(64),
+        comercial_responsavel_id VARCHAR(64),
+        expedicao_responsavel_id VARCHAR(64),
+        monitoramento_responsavel_id VARCHAR(64),
+        data_coleta_iso VARCHAR(32),
+        data_entrega_prevista_iso VARCHAR(32),
+        entrega_comprovada_em VARCHAR(64),
+        payload JSONB,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_comercial VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_operacional VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS situacao_monitoramento VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS comercial_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS expedicao_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS monitoramento_responsavel_id VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS data_coleta_iso VARCHAR(32);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS data_entrega_prevista_iso VARCHAR(32);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS entrega_comprovada_em VARCHAR(64);
+      ALTER TABLE rodovar_fretes ADD COLUMN IF NOT EXISTS payload JSONB;
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_mon_status_upd ON rodovar_fretes(situacao_monitoramento, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_mon_resp_status ON rodovar_fretes(monitoramento_responsavel_id, situacao_monitoramento, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_protocol ON rodovar_fretes(sequential_id);
+      CREATE INDEX IF NOT EXISTS idx_rodovar_fretes_dates ON rodovar_fretes(data_coleta_iso, data_entrega_prevista_iso);
 
       CREATE TABLE IF NOT EXISTS rodovar_requests (
         id VARCHAR(64) PRIMARY KEY,
@@ -884,7 +746,7 @@ async function initializeNeonSchema() {
 
       CREATE TABLE IF NOT EXISTS rodovar_payments (
         id VARCHAR(64) PRIMARY KEY,
-        frete_id VARCHAR(64) REFERENCES rodovar_fretes(id),
+        frete_id VARCHAR(64),
         type VARCHAR(64) NOT NULL,
         amount NUMERIC(12,2) NOT NULL,
         status VARCHAR(64) NOT NULL,
@@ -919,24 +781,21 @@ async function initializeNeonSchema() {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS rodovar_chats (
-        id VARCHAR(64) PRIMARY KEY,
-        thread_id VARCHAR(64) NOT NULL,
-        sender_id VARCHAR(64) NOT NULL,
-        sender_name VARCHAR(255),
-        text TEXT NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-
       CREATE TABLE IF NOT EXISTS rodovar_audit_logs (
         id VARCHAR(64) PRIMARY KEY,
         actor_id VARCHAR(64),
         actor_name VARCHAR(255),
+        actor_role VARCHAR(64),
         action VARCHAR(100) NOT NULL,
         details TEXT,
         ip_address VARCHAR(64),
+        timestamp_iso VARCHAR(64),
+        timestamp_formatted VARCHAR(64),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS actor_role VARCHAR(64);
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS timestamp_iso VARCHAR(64);
+      ALTER TABLE rodovar_audit_logs ADD COLUMN IF NOT EXISTS timestamp_formatted VARCHAR(64);
 
       CREATE TABLE IF NOT EXISTS rodovar_social_profiles (
         user_id VARCHAR(64) PRIMARY KEY,
@@ -1002,49 +861,198 @@ async function initializeNeonSchema() {
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_recipient ON rodovar_notifications(recipient_id);
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_dedupe ON rodovar_notifications(dedupe_key);
     `);
-    await syncLocalDataToNeon(client);
-    console.log("Neon Postgres schema & data synchronized successfully.");
-  } catch (error) {
-    console.warn("Neon schema/data synchronization failed:", error.message);
-  } finally {
-    client.release();
-  }
+        await syncLocalDataToNeon(client);
+        await client.query(
+          `INSERT INTO rodovar_state_store (key, payload, updated_at)
+       VALUES ('rodovar-schema-version', $1::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+          [JSON.stringify({ version: NEON_SCHEMA_VERSION, updatedAt: (/* @__PURE__ */ new Date()).toISOString() })]
+        );
+        neonSchemaInitialized = true;
+        console.log("Neon Postgres schema & data synchronized successfully.");
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.warn("Neon schema/data synchronization failed:", error.message);
+    }
+  })().finally(() => {
+    neonSchemaInitPromise = null;
+  });
+  return neonSchemaInitPromise;
+}
+var ensureNeonReady = initializeNeonSchema;
+async function upsertUserRowWithClient(client, u, overwriteExisting = false) {
+  if (!u || !u.id || !u.email && !u.login) return;
+  const email = String(u.email || (String(u.login).includes("@") ? u.login : `${u.login}@rodovar.com.br`));
+  const login = String(u.login || email);
+  const role = String(u.accessProfile || u.roleTitle || "COLABORADOR").slice(0, 100);
+  const roleTitle = String(u.roleTitle || u.accessProfile || "Colaborador").slice(0, 150);
+  const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
+  const permissoes = Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : [];
+  const conflictClause = overwriteExisting ? `ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        email = EXCLUDED.email,
+        login = EXCLUDED.login,
+        department = EXCLUDED.department,
+        role = EXCLUDED.role,
+        role_title = EXCLUDED.role_title,
+        access_level = EXCLUDED.access_level,
+        access_profile = EXCLUDED.access_profile,
+        password_hash = EXCLUDED.password_hash,
+        password_salt = EXCLUDED.password_salt,
+        must_change_password = EXCLUDED.must_change_password,
+        avatar = EXCLUDED.avatar,
+        has_custom_avatar = EXCLUDED.has_custom_avatar,
+        approval_status = EXCLUDED.approval_status,
+        requested_at = EXCLUDED.requested_at,
+        approved_by = EXCLUDED.approved_by,
+        approved_at = EXCLUDED.approved_at,
+        status_reason = EXCLUDED.status_reason,
+        migrated_from_google = EXCLUDED.migrated_from_google,
+        phone_ext = EXCLUDED.phone_ext,
+        phone = EXCLUDED.phone,
+        location = EXCLUDED.location,
+        joined_at = EXCLUDED.joined_at,
+        active = EXCLUDED.active,
+        permissoes_paginas = EXCLUDED.permissoes_paginas,
+        roster_activation_version = EXCLUDED.roster_activation_version,
+        updated_at = CURRENT_TIMESTAMP` : `ON CONFLICT (id) DO UPDATE SET
+        login = COALESCE(NULLIF(rodovar_users.login, ''), EXCLUDED.login),
+        role_title = COALESCE(NULLIF(rodovar_users.role_title, ''), EXCLUDED.role_title),
+        access_profile = COALESCE(rodovar_users.access_profile, EXCLUDED.access_profile),
+        password_salt = CASE WHEN rodovar_users.password_salt IS NULL OR rodovar_users.password_salt = '' THEN EXCLUDED.password_salt ELSE rodovar_users.password_salt END,
+        avatar = CASE WHEN rodovar_users.avatar IS NULL OR rodovar_users.avatar = '' THEN EXCLUDED.avatar ELSE rodovar_users.avatar END,
+        has_custom_avatar = COALESCE(rodovar_users.has_custom_avatar, EXCLUDED.has_custom_avatar),
+        approval_status = COALESCE(NULLIF(rodovar_users.approval_status, ''), EXCLUDED.approval_status),
+        requested_at = COALESCE(rodovar_users.requested_at, EXCLUDED.requested_at),
+        approved_by = COALESCE(rodovar_users.approved_by, EXCLUDED.approved_by),
+        approved_at = COALESCE(rodovar_users.approved_at, EXCLUDED.approved_at),
+        status_reason = COALESCE(rodovar_users.status_reason, EXCLUDED.status_reason),
+        phone_ext = CASE WHEN rodovar_users.phone_ext IS NULL OR rodovar_users.phone_ext = '' THEN EXCLUDED.phone_ext ELSE rodovar_users.phone_ext END,
+        phone = CASE WHEN rodovar_users.phone IS NULL OR rodovar_users.phone = '' THEN EXCLUDED.phone ELSE rodovar_users.phone END,
+        location = CASE WHEN rodovar_users.location IS NULL OR rodovar_users.location = '' THEN EXCLUDED.location ELSE rodovar_users.location END,
+        joined_at = CASE WHEN rodovar_users.joined_at IS NULL OR rodovar_users.joined_at = '' THEN EXCLUDED.joined_at ELSE rodovar_users.joined_at END,
+        permissoes_paginas = CASE WHEN rodovar_users.permissoes_paginas IS NULL OR jsonb_array_length(rodovar_users.permissoes_paginas) = 0 THEN EXCLUDED.permissoes_paginas ELSE rodovar_users.permissoes_paginas END`;
+  await client.query(
+    `INSERT INTO rodovar_users (
+      id, name, email, login, department, role, role_title, access_level, access_profile,
+      password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+      approval_status, requested_at, approved_by, approved_at, status_reason,
+      migrated_from_google, phone_ext, phone, location, joined_at, active,
+      permissoes_paginas, roster_activation_version, updated_at
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      $10, $11, $12, $13, $14,
+      $15, $16, $17, $18, $19,
+      $20, $21, $22, $23, $24, $25,
+      $26::jsonb, $27, CURRENT_TIMESTAMP
+    )
+    ${conflictClause}`,
+    [
+      String(u.id),
+      String(u.name || login),
+      email,
+      login,
+      String(u.department || "Administrativo"),
+      role,
+      roleTitle,
+      String(u.accessLevel || "FUNCIONARIO").slice(0, 50),
+      accessProfile,
+      String(u.passwordHash || "managed"),
+      String(u.passwordSalt || ""),
+      Boolean(u.mustChangePassword),
+      String(u.avatar || ""),
+      Boolean(u.hasCustomAvatar),
+      String(u.approvalStatus || "APROVADO"),
+      u.requestedAt ? String(u.requestedAt) : (/* @__PURE__ */ new Date()).toISOString(),
+      u.approvedBy ? String(u.approvedBy) : null,
+      u.approvedAt ? String(u.approvedAt) : null,
+      u.statusReason ? String(u.statusReason) : null,
+      Boolean(u.migratedFromGoogle),
+      String(u.phoneExt || "71 9 9920-2476"),
+      String(u.phone || u.phoneExt || "71 9 9920-2476"),
+      String(u.location || "BA - Salvador"),
+      String(u.joinedAt || "28/10/2026"),
+      u.active !== void 0 ? Boolean(u.active) : true,
+      JSON.stringify(permissoes),
+      Number(u.rosterActivationVersion || 1)
+    ]
+  );
 }
 async function syncLocalDataToNeon(client) {
-  const dataDir = path5.join(resolveDataRoot(), "data");
-  const dbPath = path5.join(dataDir, "rodovar-server-db.json");
-  if (fs5.existsSync(dbPath)) {
-    const dbRaw = JSON.parse(fs5.readFileSync(dbPath, "utf8"));
+  const dataDir = path2.join(resolveDataRoot(), "data");
+  const dbPath = path2.join(dataDir, "rodovar-server-db.json");
+  if (fs2.existsSync(dbPath)) {
+    const dbRaw = JSON.parse(fs2.readFileSync(dbPath, "utf8"));
     const users = Array.isArray(dbRaw.users) ? dbRaw.users : [];
     for (const u of users) {
-      if (!u || !u.id || !u.email) continue;
+      await upsertUserRowWithClient(client, u, false).catch(() => {
+      });
+    }
+    if (dbRaw.accessPolicy) {
       await client.query(
-        `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO rodovar_access_policy (id, protected_admin_uid, authorized_uids, version, updated_at)
+         VALUES ('default', $1, $2::jsonb, $3, CURRENT_TIMESTAMP)
          ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           email = EXCLUDED.email,
-           department = EXCLUDED.department,
-           role = EXCLUDED.role,
-           access_level = EXCLUDED.access_level,
-           password_hash = EXCLUDED.password_hash,
-           must_change_password = EXCLUDED.must_change_password`,
+           protected_admin_uid = CASE WHEN rodovar_access_policy.protected_admin_uid = 'admin' THEN EXCLUDED.protected_admin_uid ELSE rodovar_access_policy.protected_admin_uid END,
+           authorized_uids = CASE WHEN rodovar_access_policy.protected_admin_uid = 'admin' OR jsonb_array_length(rodovar_access_policy.authorized_uids) = 0 THEN EXCLUDED.authorized_uids ELSE rodovar_access_policy.authorized_uids END`,
         [
-          String(u.id),
-          String(u.name || u.login || u.email),
-          String(u.email),
-          String(u.department || "Administrativo"),
-          String(u.accessProfile || u.roleTitle || "COLABORADOR").slice(0, 50),
-          String(u.accessLevel || "FUNCIONARIO").slice(0, 50),
-          String(u.passwordHash || "managed"),
-          Boolean(u.mustChangePassword)
+          String(dbRaw.accessPolicy.protectedAdminUid || "emp-admin-master"),
+          JSON.stringify(Array.isArray(dbRaw.accessPolicy.authorizedUids) ? dbRaw.accessPolicy.authorizedUids : users.map((u) => u.id)),
+          Number(dbRaw.accessPolicy.version || 1)
         ]
-      );
+      ).catch(() => {
+      });
+    }
+    const decisions = Array.isArray(dbRaw.accessDecisions) ? dbRaw.accessDecisions : [];
+    for (const d of decisions) {
+      if (!d || !d.id) continue;
+      await client.query(
+        `INSERT INTO rodovar_access_decisions (
+          id, target_user_id, target_name, target_login, admin_id, admin_name,
+          action, new_status, access_level, permissoes_paginas, reason, timestamp_iso, timestamp_formatted
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
+        ON CONFLICT (id) DO NOTHING`,
+        [
+          String(d.id),
+          String(d.targetUserId || ""),
+          String(d.targetName || ""),
+          String(d.targetLogin || ""),
+          String(d.adminId || ""),
+          String(d.adminName || ""),
+          String(d.action || "APROVAR"),
+          String(d.newStatus || "APROVADO"),
+          String(d.accessLevel || "FUNCIONARIO"),
+          JSON.stringify(Array.isArray(d.permissoesPaginas) ? d.permissoesPaginas : []),
+          d.reason ? String(d.reason) : null,
+          String(d.timestampIso || (/* @__PURE__ */ new Date()).toISOString()),
+          String(d.timestampFormatted || "")
+        ]
+      ).catch(() => {
+      });
+    }
+    const archived = Array.isArray(dbRaw.archivedUsers) ? dbRaw.archivedUsers : [];
+    for (const a of archived) {
+      if (!a || !a.user || !a.user.id) continue;
+      await client.query(
+        `INSERT INTO rodovar_archived_users (user_id, user_snapshot, deleted_at_iso, deleted_by_id, reason)
+         VALUES ($1, $2::jsonb, $3, $4, $5)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [
+          String(a.user.id),
+          JSON.stringify(a.user),
+          String(a.deletedAtIso || (/* @__PURE__ */ new Date()).toISOString()),
+          String(a.deletedById || "emp-admin-master"),
+          String(a.reason || "")
+        ]
+      ).catch(() => {
+      });
     }
     await client.query(
       `INSERT INTO rodovar_state_store (key, payload, updated_at)
        VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
-       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+       ON CONFLICT (key) DO NOTHING`,
       [
         "rodovar-server-db",
         JSON.stringify({
@@ -1055,11 +1063,11 @@ async function syncLocalDataToNeon(client) {
       ]
     );
   }
-  const freightsDir = path5.join(dataDir, "freights-store");
-  if (fs5.existsSync(freightsDir)) {
-    const files = fs5.readdirSync(freightsDir).filter((f) => f.startsWith("frete-") && f.endsWith(".json") && !f.endsWith(".sub.json"));
+  const freightsDir = path2.join(dataDir, "freights-store");
+  if (fs2.existsSync(freightsDir)) {
+    const files = fs2.readdirSync(freightsDir).filter((f) => f.startsWith("frete-") && f.endsWith(".json") && !f.endsWith(".sub.json"));
     for (const file of files) {
-      const f = JSON.parse(fs5.readFileSync(path5.join(freightsDir, file), "utf8"));
+      const f = JSON.parse(fs2.readFileSync(path2.join(freightsDir, file), "utf8"));
       if (!f || !f.id || !f.protocol) continue;
       const destParts = String(f.destinoCidadeUf || "").split("/");
       const destCity = (destParts[0] || f.destinoCidadeUf || "Destino").trim();
@@ -1069,24 +1077,22 @@ async function syncLocalDataToNeon(client) {
         `INSERT INTO rodovar_fretes (
            id, sequential_id, client_name, client_cnpj, origin,
            destination_city, destination_state, destination_address, cargo_description,
-           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status,
+           situacao_comercial, situacao_operacional, situacao_monitoramento,
+           comercial_responsavel_id, expedicao_responsavel_id, monitoramento_responsavel_id,
+           data_coleta_iso, data_entrega_prevista_iso, entrega_comprovada_em, payload, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,COALESCE($26::timestamptz, CURRENT_TIMESTAMP))
          ON CONFLICT (id) DO UPDATE SET
-           sequential_id = EXCLUDED.sequential_id,
-           client_name = EXCLUDED.client_name,
-           client_cnpj = EXCLUDED.client_cnpj,
-           origin = EXCLUDED.origin,
-           destination_city = EXCLUDED.destination_city,
-           destination_state = EXCLUDED.destination_state,
-           destination_address = EXCLUDED.destination_address,
-           cargo_description = EXCLUDED.cargo_description,
-           agreed_value = EXCLUDED.agreed_value,
-           driver_name = EXCLUDED.driver_name,
-           driver_cpf = EXCLUDED.driver_cpf,
-           driver_phone = EXCLUDED.driver_phone,
-           truck_plate = EXCLUDED.truck_plate,
-           status = EXCLUDED.status,
-           updated_at = CURRENT_TIMESTAMP`,
+           situacao_comercial = COALESCE(rodovar_fretes.situacao_comercial, EXCLUDED.situacao_comercial),
+           situacao_operacional = COALESCE(rodovar_fretes.situacao_operacional, EXCLUDED.situacao_operacional),
+           situacao_monitoramento = COALESCE(rodovar_fretes.situacao_monitoramento, EXCLUDED.situacao_monitoramento),
+           comercial_responsavel_id = COALESCE(rodovar_fretes.comercial_responsavel_id, EXCLUDED.comercial_responsavel_id),
+           expedicao_responsavel_id = COALESCE(rodovar_fretes.expedicao_responsavel_id, EXCLUDED.expedicao_responsavel_id),
+           monitoramento_responsavel_id = COALESCE(rodovar_fretes.monitoramento_responsavel_id, EXCLUDED.monitoramento_responsavel_id),
+           data_coleta_iso = COALESCE(rodovar_fretes.data_coleta_iso, EXCLUDED.data_coleta_iso),
+           data_entrega_prevista_iso = COALESCE(rodovar_fretes.data_entrega_prevista_iso, EXCLUDED.data_entrega_prevista_iso),
+           entrega_comprovada_em = COALESCE(rodovar_fretes.entrega_comprovada_em, EXCLUDED.entrega_comprovada_em),
+           payload = COALESCE(rodovar_fretes.payload, EXCLUDED.payload)`,
         [
           String(f.id),
           String(f.protocol),
@@ -1102,14 +1108,26 @@ async function syncLocalDataToNeon(client) {
           f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null,
           f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null,
           f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null,
-          String(f.situacaoMonitoramento !== "NAO_LIBERADO" ? f.situacaoMonitoramento : f.situacaoOperacional !== "NAO_ENVIADO" ? f.situacaoOperacional : f.situacaoComercial || "EM_NEGOCIACAO").slice(0, 64)
+          String(f.situacaoMonitoramento !== "NAO_LIBERADO" ? f.situacaoMonitoramento : f.situacaoOperacional !== "NAO_ENVIADO" ? f.situacaoOperacional : f.situacaoComercial || "EM_NEGOCIACAO").slice(0, 64),
+          f.situacaoComercial ? String(f.situacaoComercial).slice(0, 64) : null,
+          f.situacaoOperacional ? String(f.situacaoOperacional).slice(0, 64) : null,
+          f.situacaoMonitoramento ? String(f.situacaoMonitoramento).slice(0, 64) : null,
+          f.comercialResponsavelId ? String(f.comercialResponsavelId).slice(0, 64) : null,
+          f.expedicaoResponsavelId ? String(f.expedicaoResponsavelId).slice(0, 64) : null,
+          f.monitoramentoResponsavelId ? String(f.monitoramentoResponsavelId).slice(0, 64) : null,
+          f.dataColetaIso ? String(f.dataColetaIso).slice(0, 32) : null,
+          f.dataEntregaPrevistaIso ? String(f.dataEntregaPrevistaIso).slice(0, 32) : null,
+          f.entregaComprovadaEm ? String(f.entregaComprovadaEm).slice(0, 64) : null,
+          JSON.stringify(f),
+          f.updatedAtIso ? String(f.updatedAtIso) : null
         ]
-      );
+      ).catch(() => {
+      });
     }
   }
-  const paymentFreightsPath = path5.join(dataDir, "payment-store", "freights.json");
-  if (fs5.existsSync(paymentFreightsPath)) {
-    const pfList = JSON.parse(fs5.readFileSync(paymentFreightsPath, "utf8"));
+  const paymentFreightsPath = path2.join(dataDir, "payment-store", "freights.json");
+  if (fs2.existsSync(paymentFreightsPath)) {
+    const pfList = JSON.parse(fs2.readFileSync(paymentFreightsPath, "utf8"));
     if (Array.isArray(pfList)) {
       for (const pf of pfList) {
         if (!pf || !pf.id || !pf.code) continue;
@@ -1137,25 +1155,21 @@ async function syncLocalDataToNeon(client) {
             null,
             String(pf.status || "Pendente").slice(0, 64)
           ]
-        );
+        ).catch(() => {
+        });
       }
     }
   }
-  const reqPath = path5.join(dataDir, "requests-server.json");
-  if (fs5.existsSync(reqPath)) {
-    const reqState = JSON.parse(fs5.readFileSync(reqPath, "utf8"));
+  const reqPath = path2.join(dataDir, "requests-server.json");
+  if (fs2.existsSync(reqPath)) {
+    const reqState = JSON.parse(fs2.readFileSync(reqPath, "utf8"));
     const requests = Array.isArray(reqState.requests) ? reqState.requests : [];
     for (const r of requests) {
       if (!r || !r.id) continue;
       await client.query(
         `INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET
-           title = EXCLUDED.title,
-           department = EXCLUDED.department,
-           requester_name = EXCLUDED.requester_name,
-           status = EXCLUDED.status,
-           details = EXCLUDED.details`,
+         ON CONFLICT (id) DO NOTHING`,
         [
           String(r.id),
           String(r.subject || r.protocol || "Solicita\xE7\xE3o").slice(0, 255),
@@ -1164,22 +1178,20 @@ async function syncLocalDataToNeon(client) {
           String(r.status || "Aberta").slice(0, 64),
           String(r.description || "")
         ]
-      );
+      ).catch(() => {
+      });
     }
   }
-  const receiptsPath = path5.join(dataDir, "payment-store", "receipts.json");
-  if (fs5.existsSync(receiptsPath)) {
-    const receipts = JSON.parse(fs5.readFileSync(receiptsPath, "utf8"));
+  const receiptsPath = path2.join(dataDir, "payment-store", "receipts.json");
+  if (fs2.existsSync(receiptsPath)) {
+    const receipts = JSON.parse(fs2.readFileSync(receiptsPath, "utf8"));
     if (Array.isArray(receipts)) {
       for (const rec of receipts) {
         if (!rec || !rec.id || !rec.freightId) continue;
         await client.query(
           `INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET
-             type = EXCLUDED.type,
-             amount = EXCLUDED.amount,
-             status = EXCLUDED.status`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(rec.id),
             String(rec.freightId),
@@ -1187,26 +1199,21 @@ async function syncLocalDataToNeon(client) {
             Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100),
             String(rec.verificationStatus || rec.uploadStatus || "SALVO_NO_SERVIDOR").slice(0, 64)
           ]
-        );
+        ).catch(() => {
+        });
       }
     }
   }
-  if (fs5.existsSync(dbPath)) {
+  if (fs2.existsSync(dbPath)) {
     try {
-      const dbRaw = JSON.parse(fs5.readFileSync(dbPath, "utf8"));
+      const dbRaw = JSON.parse(fs2.readFileSync(dbPath, "utf8"));
       const announcements = dbRaw.mural?.announcements || [];
       for (const a of announcements) {
         if (!a || !a.id || !a.title) continue;
         await client.query(
           `INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-           ON CONFLICT (id) DO UPDATE SET
-             title = EXCLUDED.title,
-             author_name = EXCLUDED.author_name,
-             target_audience = EXCLUDED.target_audience,
-             priority = EXCLUDED.priority,
-             content = EXCLUDED.content,
-             data = EXCLUDED.data`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(a.id),
             String(a.title).slice(0, 255),
@@ -1216,13 +1223,14 @@ async function syncLocalDataToNeon(client) {
             String(a.content || a.summary || ""),
             JSON.stringify(a)
           ]
-        );
+        ).catch(() => {
+        });
       }
       if (announcements.length > 0) {
         await client.query(
           `INSERT INTO rodovar_state_store (key, payload, updated_at)
            VALUES ('rodovar-mural', $1::jsonb, CURRENT_TIMESTAMP)
-           ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+           ON CONFLICT (key) DO NOTHING`,
           [JSON.stringify(dbRaw.mural)]
         );
       }
@@ -1230,23 +1238,17 @@ async function syncLocalDataToNeon(client) {
       console.warn("Neon announcements sync notice:", e.message);
     }
   }
-  const agendaPath = path5.join(dataDir, "agenda-local.json");
-  if (fs5.existsSync(agendaPath)) {
+  const agendaPath = path2.join(dataDir, "agenda-local.json");
+  if (fs2.existsSync(agendaPath)) {
     try {
-      const agendaRaw = JSON.parse(fs5.readFileSync(agendaPath, "utf8"));
+      const agendaRaw = JSON.parse(fs2.readFileSync(agendaPath, "utf8"));
       const events = Array.isArray(agendaRaw.events) ? agendaRaw.events : [];
       for (const e of events) {
         if (!e || !e.id || !e.title) continue;
         await client.query(
           `INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-           ON CONFLICT (id) DO UPDATE SET
-             title = EXCLUDED.title,
-             date_iso = EXCLUDED.date_iso,
-             start_time = EXCLUDED.start_time,
-             end_time = EXCLUDED.end_time,
-             category = EXCLUDED.category,
-             data = EXCLUDED.data`,
+           ON CONFLICT (id) DO NOTHING`,
           [
             String(e.id),
             String(e.title).slice(0, 255),
@@ -1256,12 +1258,13 @@ async function syncLocalDataToNeon(client) {
             String(e.category || "Geral").slice(0, 100),
             JSON.stringify(e)
           ]
-        );
+        ).catch(() => {
+        });
       }
       await client.query(
         `INSERT INTO rodovar_state_store (key, payload, updated_at)
          VALUES ('rodovar-agenda', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
+         ON CONFLICT (key) DO NOTHING`,
         [JSON.stringify(agendaRaw)]
       );
     } catch (e) {
@@ -1269,438 +1272,1170 @@ async function syncLocalDataToNeon(client) {
     }
   }
 }
-async function persistUserToNeon(u) {
-  if (!isNeonConfigured || !u || !u.id) return;
+function mapRowToServerUserRecord(row) {
+  const permissoes = Array.isArray(row.permissoes_paginas) ? row.permissoes_paginas : typeof row.permissoes_paginas === "string" ? JSON.parse(row.permissoes_paginas || "[]") : [];
+  return {
+    id: String(row.id),
+    name: String(row.name || row.login || row.email),
+    email: String(row.email),
+    login: String(row.login || row.email),
+    passwordHash: String(row.password_hash || ""),
+    passwordSalt: String(row.password_salt || ""),
+    mustChangePassword: Boolean(row.must_change_password),
+    roleTitle: String(row.role_title || row.role || "Colaborador"),
+    department: String(row.department || "Administrativo"),
+    accessLevel: String(row.access_level || "FUNCIONARIO"),
+    ...row.access_profile ? { accessProfile: String(row.access_profile) } : {},
+    avatar: String(row.avatar || ""),
+    hasCustomAvatar: Boolean(row.has_custom_avatar),
+    approvalStatus: String(row.approval_status || "APROVADO"),
+    requestedAt: String(row.requested_at || (/* @__PURE__ */ new Date()).toISOString()),
+    ...row.approved_by ? { approvedBy: String(row.approved_by) } : {},
+    ...row.approved_at ? { approvedAt: String(row.approved_at) } : {},
+    ...row.status_reason ? { statusReason: String(row.status_reason) } : {},
+    migratedFromGoogle: Boolean(row.migrated_from_google),
+    phoneExt: String(row.phone_ext || row.phone || "71 9 9920-2476"),
+    phone: String(row.phone || row.phone_ext || "71 9 9920-2476"),
+    location: String(row.location || "BA - Salvador"),
+    joinedAt: String(row.joined_at || "28/10/2026"),
+    active: row.active !== void 0 && row.active !== null ? Boolean(row.active) : true,
+    permissoesPaginas: permissoes,
+    rosterActivationVersion: Number(row.roster_activation_version || 1)
+  };
+}
+function persistUserToNeon(u) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !u || !u.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        const email = String(u.email || (String(u.login).includes("@") ? u.login : `${u.login}@rodovar.com.br`));
+        const login = String(u.login || email);
+        const role = String(u.accessProfile || u.roleTitle || "COLABORADOR").slice(0, 100);
+        const roleTitle = String(u.roleTitle || u.accessProfile || "Colaborador").slice(0, 150);
+        const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
+        const permissoes = JSON.stringify(Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : []);
+        await dbSql`
+          INSERT INTO rodovar_users (
+            id, name, email, login, department, role, role_title, access_level, access_profile,
+            password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+            approval_status, requested_at, approved_by, approved_at, status_reason,
+            migrated_from_google, phone_ext, phone, location, joined_at, active,
+            permissoes_paginas, roster_activation_version, updated_at
+          ) VALUES (
+            ${String(u.id)}, ${String(u.name || login)}, ${email}, ${login},
+            ${String(u.department || "Administrativo")}, ${role}, ${roleTitle},
+            ${String(u.accessLevel || "FUNCIONARIO").slice(0, 50)}, ${accessProfile},
+            ${String(u.passwordHash || "managed")}, ${String(u.passwordSalt || "")},
+            ${Boolean(u.mustChangePassword)}, ${String(u.avatar || "")}, ${Boolean(u.hasCustomAvatar)},
+            ${String(u.approvalStatus || "APROVADO")}, ${u.requestedAt ? String(u.requestedAt) : (/* @__PURE__ */ new Date()).toISOString()},
+            ${u.approvedBy ? String(u.approvedBy) : null}, ${u.approvedAt ? String(u.approvedAt) : null},
+            ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
+            ${String(u.phoneExt || "71 9 9920-2476")}, ${String(u.phone || u.phoneExt || "71 9 9920-2476")},
+            ${String(u.location || "BA - Salvador")}, ${String(u.joinedAt || "28/10/2026")},
+            ${u.active !== void 0 ? Boolean(u.active) : true}, ${permissoes}::jsonb,
+            ${Number(u.rosterActivationVersion || 1)}, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            email = EXCLUDED.email,
+            login = EXCLUDED.login,
+            department = EXCLUDED.department,
+            role = EXCLUDED.role,
+            role_title = EXCLUDED.role_title,
+            access_level = EXCLUDED.access_level,
+            access_profile = EXCLUDED.access_profile,
+            password_hash = EXCLUDED.password_hash,
+            password_salt = EXCLUDED.password_salt,
+            must_change_password = EXCLUDED.must_change_password,
+            avatar = EXCLUDED.avatar,
+            has_custom_avatar = EXCLUDED.has_custom_avatar,
+            approval_status = EXCLUDED.approval_status,
+            requested_at = EXCLUDED.requested_at,
+            approved_by = EXCLUDED.approved_by,
+            approved_at = EXCLUDED.approved_at,
+            status_reason = EXCLUDED.status_reason,
+            migrated_from_google = EXCLUDED.migrated_from_google,
+            phone_ext = EXCLUDED.phone_ext,
+            phone = EXCLUDED.phone,
+            location = EXCLUDED.location,
+            joined_at = EXCLUDED.joined_at,
+            active = EXCLUDED.active,
+            permissoes_paginas = EXCLUDED.permissoes_paginas,
+            roster_activation_version = EXCLUDED.roster_activation_version,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistUserToNeon error:", err.message);
+      }
+    })()
+  );
+}
+function deleteUserFromNeon(userId, archived) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        if (archived && archived.user) {
+          await dbSql`
+            INSERT INTO rodovar_archived_users (user_id, user_snapshot, deleted_at_iso, deleted_by_id, reason)
+            VALUES (${String(userId)}, ${JSON.stringify(archived.user)}::jsonb, ${String(archived.deletedAtIso || (/* @__PURE__ */ new Date()).toISOString())}, ${String(archived.deletedById || "emp-admin-master")}, ${String(archived.reason || "")})
+            ON CONFLICT (user_id) DO UPDATE SET
+              user_snapshot = EXCLUDED.user_snapshot,
+              deleted_at_iso = EXCLUDED.deleted_at_iso,
+              deleted_by_id = EXCLUDED.deleted_by_id,
+              reason = EXCLUDED.reason
+          `;
+        }
+        await Promise.all([
+          dbSql`DELETE FROM rodovar_password_reset_tokens WHERE user_id = ${userId}`,
+          dbSql`DELETE FROM rodovar_login_locks WHERE identifier = ${`user:${userId}`}`,
+          dbSql`DELETE FROM rodovar_users WHERE id = ${userId}`
+        ]);
+      } catch (err) {
+        console.warn("Neon deleteUserFromNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadAllUsersFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_users (id, name, email, department, role, access_level, password_hash, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           email = EXCLUDED.email,
-           department = EXCLUDED.department,
-           role = EXCLUDED.role,
-           access_level = EXCLUDED.access_level,
-           password_hash = EXCLUDED.password_hash,
-           must_change_password = EXCLUDED.must_change_password`,
-        [
-          String(u.id),
-          String(u.name || u.login || u.email),
-          String(u.email),
-          String(u.department || "Administrativo"),
-          String(u.accessProfile || u.roleTitle || "COLABORADOR").slice(0, 50),
-          String(u.accessLevel || "FUNCIONARIO").slice(0, 50),
-          String(u.passwordHash || "managed"),
-          Boolean(u.mustChangePassword)
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    const rows = await sql`SELECT * FROM rodovar_users ORDER BY created_at ASC`;
+    return rows.map(mapRowToServerUserRecord);
   } catch (err) {
-    console.warn("Neon persistUserToNeon error:", err.message);
+    console.warn("Neon loadAllUsersFromNeon notice:", err.message);
+    return [];
   }
 }
-async function persistAuditLogToNeon(log) {
-  if (!isNeonConfigured || !log || !log.id) return;
+function persistAccessPolicyToNeon(policy) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !policy) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_access_policy (id, protected_admin_uid, authorized_uids, version, updated_at)
+          VALUES ('default', ${String(policy.protectedAdminUid || "emp-admin-master")}, ${JSON.stringify(Array.isArray(policy.authorizedUids) ? policy.authorizedUids : [])}::jsonb, ${Number(policy.version || 1)}, CURRENT_TIMESTAMP)
+          ON CONFLICT (id) DO UPDATE SET
+            protected_admin_uid = EXCLUDED.protected_admin_uid,
+            authorized_uids = EXCLUDED.authorized_uids,
+            version = EXCLUDED.version,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistAccessPolicyToNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadAccessPolicyFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_audit_logs (id, actor_id, actor_name, action, details, ip_address)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          String(log.id),
-          log.actorId ? String(log.actorId).slice(0, 64) : null,
-          log.actorName ? String(log.actorName).slice(0, 255) : null,
-          String(log.action).slice(0, 100),
-          log.details ? String(log.details) : null,
-          log.ip ? String(log.ip).slice(0, 64) : null
-        ]
-      );
-    } finally {
-      client.release();
+    const rows = await sql`SELECT * FROM rodovar_access_policy WHERE id = 'default' LIMIT 1`;
+    if (rows.length > 0) {
+      const r = rows[0];
+      return {
+        protectedAdminUid: String(r.protected_admin_uid || "emp-admin-master"),
+        authorizedUids: Array.isArray(r.authorized_uids) ? r.authorized_uids : [],
+        version: Number(r.version || 1)
+      };
     }
-  } catch (err) {
-    console.warn("Neon persistAuditLogToNeon error:", err.message);
+  } catch {
+    return null;
+  }
+  return null;
+}
+function persistLoginLockToNeon(lock) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !lock || !lock.identifier) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_login_locks (identifier, consecutive_failures, blocked_until, last_failure_at, updated_at)
+          VALUES (${String(lock.identifier)}, ${Number(lock.consecutiveFailures || 0)}, ${lock.blockedUntil ? Number(lock.blockedUntil) : null}, ${Number(lock.lastFailureAt || 0)}, CURRENT_TIMESTAMP)
+          ON CONFLICT (identifier) DO UPDATE SET
+            consecutive_failures = EXCLUDED.consecutive_failures,
+            blocked_until = EXCLUDED.blocked_until,
+            last_failure_at = EXCLUDED.last_failure_at,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistLoginLockToNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadLoginLocksFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return {};
+  try {
+    const rows = await sql`SELECT * FROM rodovar_login_locks`;
+    const out = {};
+    for (const r of rows) {
+      out[String(r.identifier)] = {
+        identifier: String(r.identifier),
+        consecutiveFailures: Number(r.consecutive_failures || 0),
+        blockedUntil: r.blocked_until !== null && r.blocked_until !== void 0 ? Number(r.blocked_until) : null,
+        lastFailureAt: Number(r.last_failure_at || 0)
+      };
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
-async function persistChatMessageToNeon(msg) {
-  if (!isNeonConfigured || !msg || !msg.id) return;
+function persistPasswordResetTokenToNeon(token) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !token || !token.tokenHash) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_password_reset_tokens (token_hash, user_id, created_at, expires_at, used, onboarding)
+          VALUES (${String(token.tokenHash)}, ${String(token.userId)}, ${Number(token.createdAt || Date.now())}, ${Number(token.expiresAt)}, ${Boolean(token.used)}, ${Boolean(token.onboarding)})
+          ON CONFLICT (token_hash) DO UPDATE SET
+            used = EXCLUDED.used,
+            expires_at = EXCLUDED.expires_at,
+            onboarding = EXCLUDED.onboarding
+        `;
+      } catch (err) {
+        console.warn("Neon persistPasswordResetTokenToNeon error:", err.message);
+      }
+    })()
+  );
+}
+function markUserPasswordResetTokensUsedInNeon(userId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`UPDATE rodovar_password_reset_tokens SET used = TRUE WHERE user_id = ${String(userId)}`;
+      } catch (err) {
+        console.warn("Neon markUserPasswordResetTokensUsedInNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadPasswordResetTokensFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_chats (id, thread_id, sender_id, sender_name, text)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text`,
-        [
-          String(msg.id),
-          String(msg.threadId).slice(0, 64),
-          String(msg.senderId).slice(0, 64),
-          String(msg.senderName || "Colaborador").slice(0, 255),
-          String(msg.text)
-        ]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistChatMessageToNeon error:", err.message);
+    const cutoff = Date.now() - 864e5;
+    const rows = await sql`SELECT * FROM rodovar_password_reset_tokens WHERE expires_at > ${cutoff}`;
+    return rows.map((r) => ({
+      tokenHash: String(r.token_hash),
+      userId: String(r.user_id),
+      createdAt: Number(r.created_at),
+      expiresAt: Number(r.expires_at),
+      used: Boolean(r.used),
+      ...r.onboarding ? { onboarding: true } : {}
+    }));
+  } catch {
+    return [];
   }
 }
-async function persistStateSnapshotToNeon(key, data) {
-  if (!isNeonConfigured || !key) return;
+function persistAccessDecisionToNeon(d) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !d || !d.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_access_decisions (
+            id, target_user_id, target_name, target_login, admin_id, admin_name,
+            action, new_status, access_level, permissoes_paginas, reason, timestamp_iso, timestamp_formatted
+          ) VALUES (
+            ${String(d.id)}, ${String(d.targetUserId || "")}, ${String(d.targetName || "")}, ${String(d.targetLogin || "")},
+            ${String(d.adminId || "")}, ${String(d.adminName || "")}, ${String(d.action || "APROVAR")},
+            ${String(d.newStatus || "APROVADO")}, ${String(d.accessLevel || "FUNCIONARIO")},
+            ${JSON.stringify(Array.isArray(d.permissoesPaginas) ? d.permissoesPaginas : [])}::jsonb,
+            ${d.reason ? String(d.reason) : null}, ${String(d.timestampIso || (/* @__PURE__ */ new Date()).toISOString())},
+            ${String(d.timestampFormatted || "")}
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+      } catch (err) {
+        console.warn("Neon persistAccessDecisionToNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadAccessDecisionsFromNeon(limit = 100) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [key, JSON.stringify(data)]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistStateSnapshotToNeon error:", err.message);
+    const rows = await sql`SELECT * FROM rodovar_access_decisions ORDER BY timestamp_iso DESC LIMIT ${limit}`;
+    return rows.map((r) => ({
+      id: String(r.id),
+      targetUserId: String(r.target_user_id),
+      targetName: String(r.target_name),
+      targetLogin: String(r.target_login),
+      adminId: String(r.admin_id),
+      adminName: String(r.admin_name),
+      action: String(r.action),
+      newStatus: String(r.new_status),
+      accessLevel: String(r.access_level),
+      permissoesPaginas: Array.isArray(r.permissoes_paginas) ? r.permissoes_paginas : [],
+      ...r.reason ? { reason: String(r.reason) } : {},
+      timestampIso: String(r.timestamp_iso),
+      timestampFormatted: String(r.timestamp_formatted)
+    }));
+  } catch {
+    return [];
   }
 }
-async function persistSocialProfileToNeon(p) {
-  if (!isNeonConfigured || !p || !p.userId) return;
+function persistSessionRevocationToNeon(sessionId, userId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !sessionId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_revoked_sessions (session_id, user_id, revoked_at)
+          VALUES (${String(sessionId)}, ${userId ? String(userId) : null}, ${Date.now()})
+          ON CONFLICT (session_id) DO NOTHING
+        `;
+      } catch {
+      }
+    })()
+  );
+}
+function persistUserSessionsRevocationToNeon(userId, revokedAfterMs) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !userId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_user_revocations (user_id, revoked_after_ms)
+          VALUES (${String(userId)}, ${Number(revokedAfterMs)})
+          ON CONFLICT (user_id) DO UPDATE SET revoked_after_ms = EXCLUDED.revoked_after_ms
+        `;
+      } catch {
+      }
+    })()
+  );
+}
+async function loadSessionRevocationsFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) {
+    return { revokedSessions: [], userRevocations: {} };
+  }
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (user_id) DO UPDATE SET
-           cover_url = EXCLUDED.cover_url,
-           bio = EXCLUDED.bio,
-           custom_display_name = EXCLUDED.custom_display_name,
-           phone = EXCLUDED.phone,
-           location = EXCLUDED.location,
-           social_links = EXCLUDED.social_links,
-           updated_at = CURRENT_TIMESTAMP`,
-        [
-          p.userId,
-          p.coverUrl || null,
-          p.bio || null,
-          p.customDisplayName || null,
-          p.phone || null,
-          p.location || null,
-          JSON.stringify(p.socialLinks || {})
-        ]
-      );
-    } finally {
-      client.release();
+    const cutoff = Date.now() - 15 * 864e5;
+    const [sessRows, userRows] = await Promise.all([
+      sql`SELECT session_id FROM rodovar_revoked_sessions WHERE revoked_at > ${cutoff}`,
+      sql`SELECT user_id, revoked_after_ms FROM rodovar_user_revocations`
+    ]);
+    const userRevocations = {};
+    for (const r of userRows) {
+      userRevocations[String(r.user_id)] = Number(r.revoked_after_ms);
     }
-  } catch (err) {
-    console.warn("Neon persistSocialProfileToNeon error:", err.message);
+    return {
+      revokedSessions: sessRows.map((r) => String(r.session_id)),
+      userRevocations
+    };
+  } catch {
+    return { revokedSessions: [], userRevocations: {} };
   }
 }
-async function persistSocialPostToNeon(post) {
-  if (!isNeonConfigured || !post || !post.id) return;
+function persistFreightToNeon(f) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !f || !f.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        const seqId = String(f.protocol || f.code || f.id).slice(0, 32);
+        const destRaw = String(f.destinoCidadeUf || f.destino || "Destino");
+        const destParts = destRaw.split("/");
+        const destCity = (destParts[0] || destRaw).trim().slice(0, 255) || "Destino";
+        const destState = (destParts[1] || "BA").trim().slice(0, 8) || "BA";
+        const agreedReais = typeof f.valorTotal === "number" ? Number(f.valorTotal.toFixed(2)) : Number(
+          ((f.valorCobradoClienteCentavos || f.valorContratadoCentavos || f.valorFreteMotoristaCentavos || 0) / 100).toFixed(2)
+        );
+        const status = String(
+          f.situacaoMonitoramento && f.situacaoMonitoramento !== "NAO_LIBERADO" ? f.situacaoMonitoramento : f.situacaoOperacional && f.situacaoOperacional !== "NAO_ENVIADO" ? f.situacaoOperacional : f.situacaoComercial || f.status || "EM_ANDAMENTO"
+        ).slice(0, 64);
+        const payloadJson = JSON.stringify(f);
+        const updatedAtIso = f.updatedAtIso ? String(f.updatedAtIso) : null;
+        await dbSql`
+          INSERT INTO rodovar_fretes (
+             id, sequential_id, client_name, client_cnpj, origin,
+             destination_city, destination_state, destination_address, cargo_description,
+             agreed_value, driver_name, driver_cpf, driver_phone, truck_plate, status,
+             situacao_comercial, situacao_operacional, situacao_monitoramento,
+             comercial_responsavel_id, expedicao_responsavel_id, monitoramento_responsavel_id,
+             data_coleta_iso, data_entrega_prevista_iso, entrega_comprovada_em, payload, updated_at
+           ) VALUES (
+             ${String(f.id).slice(0, 64)}, ${seqId}, ${String(f.cliente || "Cliente").slice(0, 255)},
+             ${f.clienteCnpj ? String(f.clienteCnpj).slice(0, 32) : null},
+             ${String(f.origemCidadeUf || f.origem || "Origem").slice(0, 255)},
+             ${destCity}, ${destState}, ${f.enderecoEntrega ? String(f.enderecoEntrega) : null},
+             ${f.tipoCarga ? String(f.tipoCarga) : null}, ${agreedReais},
+             ${f.motoristaNome ? String(f.motoristaNome).slice(0, 255) : null},
+             ${f.motoristaCpf ? String(f.motoristaCpf).slice(0, 32) : null},
+             ${f.motoristaTelefone ? String(f.motoristaTelefone).slice(0, 64) : null},
+             ${f.placaVeiculo ? String(f.placaVeiculo).slice(0, 32) : null},
+             ${status},
+             ${f.situacaoComercial ? String(f.situacaoComercial).slice(0, 64) : null},
+             ${f.situacaoOperacional ? String(f.situacaoOperacional).slice(0, 64) : null},
+             ${f.situacaoMonitoramento ? String(f.situacaoMonitoramento).slice(0, 64) : null},
+             ${f.comercialResponsavelId ? String(f.comercialResponsavelId).slice(0, 64) : null},
+             ${f.expedicaoResponsavelId ? String(f.expedicaoResponsavelId).slice(0, 64) : null},
+             ${f.monitoramentoResponsavelId ? String(f.monitoramentoResponsavelId).slice(0, 64) : null},
+             ${f.dataColetaIso ? String(f.dataColetaIso).slice(0, 32) : null},
+             ${f.dataEntregaPrevistaIso ? String(f.dataEntregaPrevistaIso).slice(0, 32) : null},
+             ${f.entregaComprovadaEm ? String(f.entregaComprovadaEm).slice(0, 64) : null},
+             ${payloadJson}::jsonb,
+             COALESCE(${updatedAtIso}::timestamptz, CURRENT_TIMESTAMP)
+           )
+           ON CONFLICT (id) DO UPDATE SET
+             sequential_id = EXCLUDED.sequential_id,
+             client_name = EXCLUDED.client_name,
+             client_cnpj = EXCLUDED.client_cnpj,
+             origin = EXCLUDED.origin,
+             destination_city = EXCLUDED.destination_city,
+             destination_state = EXCLUDED.destination_state,
+             destination_address = EXCLUDED.destination_address,
+             cargo_description = EXCLUDED.cargo_description,
+             agreed_value = EXCLUDED.agreed_value,
+             driver_name = EXCLUDED.driver_name,
+             driver_cpf = EXCLUDED.driver_cpf,
+             driver_phone = EXCLUDED.driver_phone,
+             truck_plate = EXCLUDED.truck_plate,
+             status = EXCLUDED.status,
+             situacao_comercial = EXCLUDED.situacao_comercial,
+             situacao_operacional = EXCLUDED.situacao_operacional,
+             situacao_monitoramento = EXCLUDED.situacao_monitoramento,
+             comercial_responsavel_id = EXCLUDED.comercial_responsavel_id,
+             expedicao_responsavel_id = EXCLUDED.expedicao_responsavel_id,
+             monitoramento_responsavel_id = EXCLUDED.monitoramento_responsavel_id,
+             data_coleta_iso = EXCLUDED.data_coleta_iso,
+             data_entrega_prevista_iso = EXCLUDED.data_entrega_prevista_iso,
+             entrega_comprovada_em = EXCLUDED.entrega_comprovada_em,
+             payload = EXCLUDED.payload,
+             updated_at = EXCLUDED.updated_at
+        `;
+      } catch (err) {
+        console.warn("Neon persistFreightToNeon notice:", err.message);
+      }
+    })()
+  );
+}
+async function queryMonitoringFreightsFromNeon(params) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           content = EXCLUDED.content,
-           images = EXCLUDED.images,
-           likes = EXCLUDED.likes,
-           audience = EXCLUDED.audience,
-           updated_at = CURRENT_TIMESTAMP`,
-        [
-          post.id,
-          post.authorId,
-          post.authorName,
-          post.authorAvatar || null,
-          post.authorRole || null,
-          post.authorDepartment || null,
-          post.content,
-          JSON.stringify(post.images || []),
-          JSON.stringify(post.likes || []),
-          post.audience || "P\xFAblico"
-        ]
-      );
-    } finally {
-      client.release();
+    const searchLike = params.search ? `%${params.search.toLowerCase()}%` : "";
+    const offset = Math.max(0, (Math.max(1, params.page) - 1) * Math.max(1, params.limit));
+    const respFilter = params.responsavelFilterId || "";
+    const situacao = params.situacao || "TODAS";
+    const periodo = params.periodo || "TODOS";
+    const [counterRows, listRows] = await Promise.all([
+      sql`
+        SELECT
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR')::int AS novo_para_carregar,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA')::int AS em_deslocamento_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA')::int AS no_local_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE')::int AS carregado_em_transporte,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA')::int AS no_local_entrega,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE')::int AS entregue,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO')::int AS finalizado,
+          COUNT(*) FILTER (
+            WHERE data_coleta_iso = ${params.todaySp}
+              AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR','EM_DESLOCAMENTO_COLETA','NO_LOCAL_COLETA','CARREGADO_EM_TRANSPORTE','NO_LOCAL_ENTREGA')
+          )::int AS coletas_hoje,
+          COUNT(*) FILTER (
+            WHERE (
+              COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+              OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+              OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+            )
+          )::int AS pendencias
+        FROM rodovar_fretes
+        WHERE payload IS NOT NULL
+          AND situacao_monitoramento IS NOT NULL
+          AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
+          AND (
+            ${params.includeCanceled}::boolean = true
+            OR (
+              COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+            )
+          )
+          AND (
+            (
+              ${params.scope} = 'EQUIPE'
+              AND (
+                (${respFilter} <> '' AND ${respFilter} <> 'TODOS' AND monitoramento_responsavel_id = ${respFilter})
+                OR ((${respFilter} = '' OR ${respFilter} = 'TODOS') AND monitoramento_responsavel_id IS NOT NULL)
+              )
+            )
+            OR (
+              ${params.scope} <> 'EQUIPE'
+              AND (
+                monitoramento_responsavel_id = ${params.userId}
+                OR (${params.isTesteLogin}::boolean = true AND monitoramento_responsavel_id IN ('emp-teste-logistica', 'emp-4'))
+              )
+            )
+          )
+      `,
+      sql`
+        SELECT
+          COUNT(*) OVER()::int AS total_matched,
+          id,
+          sequential_id,
+          client_name,
+          origin,
+          destination_city,
+          destination_state,
+          driver_name,
+          situacao_monitoramento,
+          data_coleta_iso,
+          data_entrega_prevista_iso,
+          entrega_comprovada_em,
+          updated_at,
+          payload->>'protocol' AS p_protocol,
+          payload->>'origemCidadeUf' AS p_origem,
+          payload->>'destinoCidadeUf' AS p_destino,
+          payload->>'monitoramentoResponsavelNome' AS p_mon_resp_nome,
+          payload->>'monitoramentoResponsavelId' AS p_mon_resp_id,
+          payload->>'updatedAtIso' AS p_updated_at_iso,
+          payload->>'updatedAtFormatted' AS p_updated_at_fmt,
+          payload->>'comprovanteEntregaConferido' AS p_comp_conferido,
+          payload->>'revision' AS p_revision,
+          CASE WHEN ${Boolean(params.compact)}::boolean = true THEN NULL::jsonb ELSE payload END AS full_payload
+        FROM rodovar_fretes
+        WHERE payload IS NOT NULL
+          AND situacao_monitoramento IS NOT NULL
+          AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
+          AND (
+            ${params.includeCanceled}::boolean = true
+            OR (
+              COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+            )
+          )
+          AND (
+            (
+              ${params.scope} = 'EQUIPE'
+              AND (
+                (${respFilter} <> '' AND ${respFilter} <> 'TODOS' AND monitoramento_responsavel_id = ${respFilter})
+                OR ((${respFilter} = '' OR ${respFilter} = 'TODOS') AND monitoramento_responsavel_id IS NOT NULL)
+              )
+            )
+            OR (
+              ${params.scope} <> 'EQUIPE'
+              AND (
+                monitoramento_responsavel_id = ${params.userId}
+                OR (${params.isTesteLogin}::boolean = true AND monitoramento_responsavel_id IN ('emp-teste-logistica', 'emp-4'))
+              )
+            )
+          )
+          AND (
+            ${params.viewMode} = 'ALL'
+            OR (
+              ${params.viewMode} = 'ATIVOS'
+              AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR', 'EM_DESLOCAMENTO_COLETA', 'NO_LOCAL_COLETA', 'CARREGADO_EM_TRANSPORTE', 'NO_LOCAL_ENTREGA')
+            )
+            OR (
+              ${params.viewMode} = 'FINALIZADOS'
+              AND situacao_monitoramento IN ('ENTREGUE', 'FINALIZADO')
+            )
+          )
+          AND (
+            ${situacao} = 'TODAS'
+            OR situacao_monitoramento = ${situacao}
+          )
+          AND (
+            ${searchLike} = ''
+            OR LOWER(COALESCE(sequential_id, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(client_name, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(origin, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(destination_city, '') || '/' || COALESCE(destination_state, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(driver_name, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(truck_plate, '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(payload->>'ultimaLocalizacaoInformada', '')) LIKE ${searchLike}
+            OR LOWER(COALESCE(payload->>'monitoramentoResponsavelNome', '')) LIKE ${searchLike}
+          )
+          AND (
+            ${periodo} = 'TODOS'
+            OR (
+              ${periodo} = 'HOJE'
+              AND (
+                data_coleta_iso = ${params.todaySp}
+                OR data_entrega_prevista_iso = ${params.todaySp}
+                OR SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10) = ${params.todaySp}
+              )
+            )
+            OR (
+              ${periodo} = 'SEMANA'
+              AND COALESCE(NULLIF(data_coleta_iso, ''), SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10)) BETWEEN ${params.weekStartIso} AND ${params.weekEndIso}
+            )
+            OR (
+              ${periodo} = 'MES'
+              AND SUBSTRING(COALESCE(NULLIF(data_coleta_iso, ''), SUBSTRING(COALESCE(payload->>'updatedAtIso', ''), 1, 10)), 1, 7) = ${params.monthPrefix}
+            )
+            OR (
+              ${periodo} = 'ATRASADOS'
+              AND (
+                (data_coleta_iso < ${params.todaySp} AND situacao_comercial NOT IN ('EM_MONITORAMENTO', 'EM_TRANSPORTE', 'FINALIZADO', 'CANCELADO'))
+                OR (data_entrega_prevista_iso < ${params.todaySp} AND situacao_comercial <> 'FINALIZADO')
+                OR COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+              )
+            )
+          )
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ${params.limit}
+        OFFSET ${offset}
+      `
+    ]);
+    const c = counterRows[0];
+    if (!c) return null;
+    const totalCheck = Number(c.novo_para_carregar || 0) + Number(c.em_deslocamento_coleta || 0) + Number(c.no_local_coleta || 0) + Number(c.carregado_em_transporte || 0) + Number(c.no_local_entrega || 0) + Number(c.entregue || 0) + Number(c.finalizado || 0);
+    if (totalCheck === 0 && listRows.length === 0) {
+      const anyPayloads = await sql`SELECT 1 FROM rodovar_fretes WHERE payload IS NOT NULL LIMIT 1`;
+      if (anyPayloads.length === 0) return null;
     }
+    const totalAtivos = Number(c.novo_para_carregar || 0) + Number(c.em_deslocamento_coleta || 0) + Number(c.no_local_coleta || 0) + Number(c.carregado_em_transporte || 0) + Number(c.no_local_entrega || 0);
+    const completedCount = Number(c.entregue || 0) + Number(c.finalizado || 0);
+    const items = listRows.map((r) => {
+      if (r.full_payload) return r.full_payload;
+      return {
+        id: String(r.id),
+        protocol: String(r.p_protocol || r.sequential_id || ""),
+        cliente: String(r.client_name || ""),
+        motoristaNome: r.driver_name ? String(r.driver_name) : "",
+        origemCidadeUf: String(r.p_origem || r.origin || ""),
+        destinoCidadeUf: String(
+          r.p_destino || `${r.destination_city || ""}/${r.destination_state || ""}`
+        ),
+        dataColetaIso: String(r.data_coleta_iso || ""),
+        dataEntregaPrevistaIso: String(r.data_entrega_prevista_iso || ""),
+        entregaComprovadaEm: r.entrega_comprovada_em ? String(r.entrega_comprovada_em) : void 0,
+        situacaoMonitoramento: String(r.situacao_monitoramento || "FINALIZADO"),
+        monitoramentoResponsavelId: r.p_mon_resp_id ? String(r.p_mon_resp_id) : void 0,
+        monitoramentoResponsavelNome: r.p_mon_resp_nome ? String(r.p_mon_resp_nome) : void 0,
+        comprovanteEntregaConferido: r.p_comp_conferido === "true",
+        updatedAtIso: String(r.p_updated_at_iso || r.updated_at || ""),
+        updatedAtFormatted: String(r.p_updated_at_fmt || ""),
+        revision: Number(r.p_revision || 1)
+      };
+    });
+    return {
+      items,
+      totalMatched: listRows[0] ? Number(listRows[0].total_matched || 0) : 0,
+      counters: {
+        NOVO_PARA_CARREGAR: Number(c.novo_para_carregar || 0),
+        EM_DESLOCAMENTO_COLETA: Number(c.em_deslocamento_coleta || 0),
+        NO_LOCAL_COLETA: Number(c.no_local_coleta || 0),
+        CARREGADO_EM_TRANSPORTE: Number(c.carregado_em_transporte || 0),
+        NO_LOCAL_ENTREGA: Number(c.no_local_entrega || 0),
+        ENTREGUE: Number(c.entregue || 0),
+        FINALIZADO: Number(c.finalizado || 0),
+        PENDENCIAS: Number(c.pendencias || 0),
+        COLETAS_HOJE: Number(c.coletas_hoje || 0),
+        TOTAL_ATIVOS: totalAtivos,
+        completedCount
+      }
+    };
   } catch (err) {
-    console.warn("Neon persistSocialPostToNeon error:", err.message);
+    console.warn("Neon queryMonitoringFreightsFromNeon notice:", err.message);
+    return null;
   }
 }
-async function deleteSocialPostFromNeon(postId) {
-  if (!isNeonConfigured || !postId) return;
+function persistRequestToNeon(r) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !r || !r.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_requests (id, title, department, requester_name, status, details)
+          VALUES (
+            ${String(r.id).slice(0, 64)},
+            ${String(r.subject || r.protocol || "Solicita\xE7\xE3o").slice(0, 255)},
+            ${String(r.targetDepartment || "Administrativo").slice(0, 100)},
+            ${String(r.requesterName || "Colaborador").slice(0, 255)},
+            ${String(r.status || "Aberta").slice(0, 64)},
+            ${String(r.description || "")}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            department = EXCLUDED.department,
+            requester_name = EXCLUDED.requester_name,
+            status = EXCLUDED.status,
+            details = EXCLUDED.details
+        `;
+      } catch (err) {
+        console.warn("Neon persistRequestToNeon notice:", err.message);
+      }
+    })()
+  );
+}
+function persistPaymentReceiptToNeon(rec) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !rec || !rec.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_payments (id, frete_id, type, amount, status)
+          VALUES (
+            ${String(rec.id).slice(0, 64)},
+            ${rec.freightId ? String(rec.freightId).slice(0, 64) : null},
+            ${String(rec.installmentType || "ADIANTAMENTO").slice(0, 64)},
+            ${Number(rec.expectedAmountBRL || (rec.expectedAmountCentavos || 0) / 100)},
+            ${String(rec.verificationStatus || rec.uploadStatus || "SALVO_NO_SERVIDOR").slice(0, 64)}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            type = EXCLUDED.type,
+            amount = EXCLUDED.amount,
+            status = EXCLUDED.status
+        `;
+      } catch (err) {
+        console.warn("Neon persistPaymentReceiptToNeon notice:", err.message);
+      }
+    })()
+  );
+}
+function persistAnnouncementToNeon(a) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !a || !a.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_announcements (id, title, author_name, target_audience, priority, content, data)
+          VALUES (
+            ${String(a.id).slice(0, 64)},
+            ${String(a.title || "Comunicado").slice(0, 255)},
+            ${String(a.authorName || "Diretoria").slice(0, 255)},
+            ${String(a.targetAudience || "Todos").slice(0, 100)},
+            ${String(a.priority || "Normal").slice(0, 50)},
+            ${String(a.content || a.summary || "")},
+            ${JSON.stringify(a)}::jsonb
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            author_name = EXCLUDED.author_name,
+            target_audience = EXCLUDED.target_audience,
+            priority = EXCLUDED.priority,
+            content = EXCLUDED.content,
+            data = EXCLUDED.data
+        `;
+      } catch (err) {
+        console.warn("Neon persistAnnouncementToNeon notice:", err.message);
+      }
+    })()
+  );
+}
+function persistAgendaEventToNeon(e) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !e || !e.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_agenda (id, title, date_iso, start_time, end_time, category, data)
+          VALUES (
+            ${String(e.id).slice(0, 64)},
+            ${String(e.title || "Evento").slice(0, 255)},
+            ${String(e.dateIso || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)).slice(0, 32)},
+            ${String(e.start || "08:00").slice(0, 16)},
+            ${String(e.end || "09:00").slice(0, 16)},
+            ${String(e.category || "Geral").slice(0, 100)},
+            ${JSON.stringify(e)}::jsonb
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            date_iso = EXCLUDED.date_iso,
+            start_time = EXCLUDED.start_time,
+            end_time = EXCLUDED.end_time,
+            category = EXCLUDED.category,
+            data = EXCLUDED.data
+        `;
+      } catch (err) {
+        console.warn("Neon persistAgendaEventToNeon notice:", err.message);
+      }
+    })()
+  );
+}
+function persistAuditLogToNeon(log) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !log || !log.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        const now = /* @__PURE__ */ new Date();
+        await dbSql`
+          INSERT INTO rodovar_audit_logs (
+            id, actor_id, actor_name, actor_role, action, details, ip_address, timestamp_iso, timestamp_formatted
+          ) VALUES (
+            ${String(log.id)},
+            ${log.actorId ? String(log.actorId).slice(0, 64) : null},
+            ${log.actorName ? String(log.actorName).slice(0, 255) : null},
+            ${log.actorRole ? String(log.actorRole).slice(0, 64) : "FUNCIONARIO"},
+            ${String(log.action).slice(0, 100)},
+            ${log.details ? String(log.details) : null},
+            ${log.ip ? String(log.ip).slice(0, 64) : null},
+            ${log.timestampIso || now.toISOString()},
+            ${log.timestampFormatted || now.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+      } catch (err) {
+        console.warn("Neon persistAuditLogToNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadAuditLogsFromNeon(limit = 200) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(`DELETE FROM rodovar_social_comments WHERE post_id = $1`, [postId]);
-      await client.query(`DELETE FROM rodovar_social_posts WHERE id = $1`, [postId]);
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon deleteSocialPostFromNeon error:", err.message);
+    const rows = await sql`SELECT * FROM rodovar_audit_logs ORDER BY created_at DESC LIMIT ${limit}`;
+    return rows.map((r) => {
+      const dt = r.created_at ? new Date(r.created_at) : /* @__PURE__ */ new Date();
+      return {
+        id: String(r.id),
+        timestampIso: String(r.timestamp_iso || dt.toISOString()),
+        timestampFormatted: String(
+          r.timestamp_formatted || dt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
+        ),
+        actorId: String(r.actor_id || "anon"),
+        actorName: String(r.actor_name || "Sistema"),
+        actorRole: String(r.actor_role || "FUNCIONARIO"),
+        action: String(r.action || ""),
+        details: String(r.details || ""),
+        ...r.ip_address ? { ip: String(r.ip_address) } : {}
+      };
+    });
+  } catch {
+    return [];
   }
 }
-async function persistSocialCommentToNeon(c) {
-  if (!isNeonConfigured || !c || !c.id) return;
+function persistStateSnapshotToNeon(key, data) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !key) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_state_store (key, payload, updated_at)
+          VALUES (${key}, ${JSON.stringify(data)}::jsonb, CURRENT_TIMESTAMP)
+          ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistStateSnapshotToNeon error:", err.message);
+      }
+    })()
+  );
+}
+async function loadStateSnapshotFromNeon(key) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !key) return null;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content`,
-        [
-          c.id,
-          c.postId,
-          c.authorId,
-          c.authorName,
-          c.authorAvatar || null,
-          c.authorRole || null,
-          c.content
-        ]
-      );
-    } finally {
-      client.release();
+    const rows = await sql`
+      SELECT payload, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+      FROM rodovar_state_store
+      WHERE key = ${key}
+      LIMIT 1
+    `;
+    if (rows.length > 0 && rows[0].payload) {
+      return {
+        payload: rows[0].payload,
+        updatedAtMs: Number(rows[0].updated_at_ms || Date.now())
+      };
     }
   } catch (err) {
-    console.warn("Neon persistSocialCommentToNeon error:", err.message);
+    console.warn(`Neon loadStateSnapshotFromNeon(${key}) notice:`, err.message);
+  }
+  return null;
+}
+async function fetchNeonStateTimestamps() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return {};
+  try {
+    const rows = await sql`
+      SELECT key, EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+      FROM rodovar_state_store
+    `;
+    const map = {};
+    for (const row of rows) {
+      if (row.key) {
+        map[String(row.key)] = Number(row.updated_at_ms || 0);
+      }
+    }
+    return map;
+  } catch {
+    return {};
   }
 }
-async function deleteSocialCommentFromNeon(commentId) {
-  if (!isNeonConfigured || !commentId) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(`DELETE FROM rodovar_social_comments WHERE id = $1`, [commentId]);
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon deleteSocialCommentFromNeon error:", err.message);
-  }
+function persistSocialProfileToNeon(p) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !p || !p.userId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
+          VALUES (
+            ${p.userId}, ${p.coverUrl || null}, ${p.bio || null}, ${p.customDisplayName || null},
+            ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT (user_id) DO UPDATE SET
+            cover_url = EXCLUDED.cover_url,
+            bio = EXCLUDED.bio,
+            custom_display_name = EXCLUDED.custom_display_name,
+            phone = EXCLUDED.phone,
+            location = EXCLUDED.location,
+            social_links = EXCLUDED.social_links,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistSocialProfileToNeon error:", err.message);
+      }
+    })()
+  );
 }
-async function persistSystemAssetToNeon(asset) {
-  if (!isNeonConfigured || !asset.id) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           slot = EXCLUDED.slot,
-           mime_type = EXCLUDED.mime_type,
-           data_base64 = EXCLUDED.data_base64,
-           width = EXCLUDED.width,
-           height = EXCLUDED.height,
-           updated_at = CURRENT_TIMESTAMP`,
-        [asset.id, asset.slot, asset.mimeType, asset.dataBase64, asset.width || null, asset.height || null]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistSystemAssetToNeon error:", err.message);
-  }
+function persistSocialPostToNeon(post) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !post || !post.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
+          VALUES (
+            ${post.id}, ${post.authorId}, ${post.authorName}, ${post.authorAvatar || null},
+            ${post.authorRole || null}, ${post.authorDepartment || null}, ${post.content},
+            ${JSON.stringify(post.images || [])}::jsonb, ${JSON.stringify(post.likes || [])}::jsonb,
+            ${post.audience || "P\xFAblico"}, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            content = EXCLUDED.content,
+            images = EXCLUDED.images,
+            likes = EXCLUDED.likes,
+            audience = EXCLUDED.audience,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistSocialPostToNeon error:", err.message);
+      }
+    })()
+  );
+}
+function deleteSocialPostFromNeon(postId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !postId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await Promise.all([
+          dbSql`DELETE FROM rodovar_social_comments WHERE post_id = ${postId}`,
+          dbSql`DELETE FROM rodovar_social_posts WHERE id = ${postId}`
+        ]);
+      } catch (err) {
+        console.warn("Neon deleteSocialPostFromNeon error:", err.message);
+      }
+    })()
+  );
+}
+function persistSocialCommentToNeon(c) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !c || !c.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
+          VALUES (${c.id}, ${c.postId}, ${c.authorId}, ${c.authorName}, ${c.authorAvatar || null}, ${c.authorRole || null}, ${c.content})
+          ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content
+        `;
+      } catch (err) {
+        console.warn("Neon persistSocialCommentToNeon error:", err.message);
+      }
+    })()
+  );
+}
+function deleteSocialCommentFromNeon(commentId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !commentId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`DELETE FROM rodovar_social_comments WHERE id = ${commentId}`;
+      } catch (err) {
+        console.warn("Neon deleteSocialCommentFromNeon error:", err.message);
+      }
+    })()
+  );
+}
+function persistSystemAssetToNeon(asset) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
+          VALUES (${asset.id}, ${asset.slot}, ${asset.mimeType}, ${asset.dataBase64}, ${asset.width || null}, ${asset.height || null}, CURRENT_TIMESTAMP)
+          ON CONFLICT (id) DO UPDATE SET
+            slot = EXCLUDED.slot,
+            mime_type = EXCLUDED.mime_type,
+            data_base64 = EXCLUDED.data_base64,
+            width = EXCLUDED.width,
+            height = EXCLUDED.height,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistSystemAssetToNeon error:", err.message);
+      }
+    })()
+  );
 }
 async function getSystemAssetFromNeon(id) {
-  if (!isNeonConfigured || !id) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !id) return null;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = $1 LIMIT 1`,
-        [id]
-      );
-      if (res.rows.length > 0 && res.rows[0].data_base64) {
-        return {
-          mimeType: res.rows[0].mime_type,
-          buffer: Buffer.from(res.rows[0].data_base64, "base64")
-        };
-      }
-    } finally {
-      client.release();
+    const rows = await sql`
+      SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = ${id} LIMIT 1
+    `;
+    if (rows.length > 0 && rows[0].data_base64) {
+      return {
+        mimeType: rows[0].mime_type,
+        buffer: Buffer.from(rows[0].data_base64, "base64")
+      };
     }
   } catch (err) {
     console.warn("Neon getSystemAssetFromNeon error:", err.message);
   }
   return null;
 }
-async function persistSystemConfigToNeon(config) {
-  if (!isNeonConfigured || !config) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ('rodovar-system-config', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify(config)]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistSystemConfigToNeon error:", err.message);
-  }
+function persistSystemConfigToNeon(config) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !config) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_state_store (key, payload, updated_at)
+          VALUES ('rodovar-system-config', ${JSON.stringify(config)}::jsonb, CURRENT_TIMESTAMP)
+          ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistSystemConfigToNeon error:", err.message);
+      }
+    })()
+  );
 }
 async function loadSystemConfigFromNeon() {
-  if (!isNeonConfigured) return null;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-system-config' LIMIT 1`
-      );
-      if (res.rows.length > 0 && res.rows[0].payload) {
-        return res.rows[0].payload;
-      }
-    } finally {
-      client.release();
+    const rows = await sql`SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-system-config' LIMIT 1`;
+    if (rows.length > 0 && rows[0].payload) {
+      return rows[0].payload;
     }
   } catch (err) {
     console.warn("Neon loadSystemConfigFromNeon notice:", err.message);
   }
   return null;
 }
-async function persistNotificationToNeon(notif) {
-  if (!isNeonConfigured || !notif.id || !notif.recipientId) return false;
-  try {
-    const client = await pool.connect();
-    try {
-      if (notif.dedupeKey) {
-        const check = await client.query(
-          `SELECT id FROM rodovar_notifications WHERE recipient_id = $1 AND dedupe_key = $2 LIMIT 1`,
-          [notif.recipientId, notif.dedupeKey]
-        );
-        if (check.rows.length > 0) return false;
+function persistNotificationToNeon(notif) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notif.id || !notif.recipientId) return Promise.resolve(false);
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        if (notif.dedupeKey) {
+          const check = await dbSql`
+            SELECT id FROM rodovar_notifications WHERE recipient_id = ${notif.recipientId} AND dedupe_key = ${notif.dedupeKey} LIMIT 1
+          `;
+          if (check.length > 0) return false;
+        }
+        await dbSql`
+          INSERT INTO rodovar_notifications (
+            id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
+          ) VALUES (
+            ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || "blue"}, ${notif.title},
+            ${notif.subtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)},
+            ${notif.targetSection}, ${notif.targetId || null}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+        return true;
+      } catch (err) {
+        console.warn("Neon persistNotificationToNeon error:", err.message);
+        return false;
       }
-      await client.query(
-        `INSERT INTO rodovar_notifications (
-          id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-        ON CONFLICT (id) DO NOTHING`,
-        [
-          notif.id,
-          notif.recipientId,
-          notif.type,
-          notif.dotColor || "blue",
-          notif.title,
-          notif.subtitle || null,
-          notif.timeLabel || null,
-          Boolean(notif.read),
-          notif.targetSection,
-          notif.targetId,
-          notif.dedupeKey || null
-        ]
-      );
-      return true;
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistNotificationToNeon error:", err.message);
-    return false;
-  }
+    })()
+  );
 }
 async function loadNotificationsFromNeon(recipientId, limit = 50) {
-  if (!isNeonConfigured || !recipientId) return [];
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return [];
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
-                time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
-                dedupe_key AS "dedupeKey", created_at AS "createdAt"
-         FROM rodovar_notifications
-         WHERE recipient_id = $1
-         ORDER BY created_at DESC
-         LIMIT $2`,
-        [recipientId, limit]
-      );
-      return res.rows;
-    } finally {
-      client.release();
-    }
+    const rows = await sql`
+      SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
+              time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
+              dedupe_key AS "dedupeKey", created_at AS "createdAt"
+       FROM rodovar_notifications
+       WHERE recipient_id = ${recipientId}
+       ORDER BY created_at DESC
+       LIMIT ${limit}
+    `;
+    return rows;
   } catch (err) {
     console.warn("Neon loadNotificationsFromNeon error:", err.message);
     return [];
   }
 }
-async function markNotificationReadInNeon(notifId, recipientId) {
-  if (!isNeonConfigured || !notifId) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE rodovar_notifications SET read = TRUE WHERE id = $1 AND recipient_id = $2`,
-        [notifId, recipientId]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon markNotificationReadInNeon error:", err.message);
-  }
+function markNotificationReadInNeon(notifId, recipientId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`UPDATE rodovar_notifications SET read = TRUE WHERE id = ${notifId} AND recipient_id = ${recipientId}`;
+      } catch (err) {
+        console.warn("Neon markNotificationReadInNeon error:", err.message);
+      }
+    })()
+  );
 }
-async function markAllNotificationsReadInNeon(recipientId) {
-  if (!isNeonConfigured || !recipientId) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE rodovar_notifications SET read = TRUE WHERE recipient_id = $1 AND read = FALSE`,
-        [recipientId]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon markAllNotificationsReadInNeon error:", err.message);
-  }
+function markAllNotificationsReadInNeon(recipientId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`UPDATE rodovar_notifications SET read = TRUE WHERE recipient_id = ${recipientId} AND read = FALSE`;
+      } catch (err) {
+        console.warn("Neon markAllNotificationsReadInNeon error:", err.message);
+      }
+    })()
+  );
 }
-async function persistEconomicModeToNeon(enabled) {
-  if (!isNeonConfigured) return;
-  try {
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `INSERT INTO rodovar_state_store (key, payload, updated_at)
-         VALUES ('rodovar-economic-mode', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify({ enabled, updatedAt: (/* @__PURE__ */ new Date()).toISOString() })]
-      );
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn("Neon persistEconomicModeToNeon error:", err.message);
-  }
+function persistEconomicModeToNeon(enabled) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          INSERT INTO rodovar_state_store (key, payload, updated_at)
+          VALUES ('rodovar-economic-mode', ${JSON.stringify({ enabled, updatedAt: (/* @__PURE__ */ new Date()).toISOString() })}::jsonb, CURRENT_TIMESTAMP)
+          ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+        `;
+      } catch (err) {
+        console.warn("Neon persistEconomicModeToNeon error:", err.message);
+      }
+    })()
+  );
 }
 async function loadEconomicModeFromNeon() {
-  if (!isNeonConfigured) return true;
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return true;
   try {
-    const client = await pool.connect();
-    try {
-      const res = await client.query(
-        `SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-economic-mode' LIMIT 1`
-      );
-      if (res.rows.length > 0 && res.rows[0].payload) {
-        return Boolean(res.rows[0].payload.enabled ?? true);
-      }
-    } finally {
-      client.release();
+    const rows = await sql`SELECT payload FROM rodovar_state_store WHERE key = 'rodovar-economic-mode' LIMIT 1`;
+    if (rows.length > 0 && rows[0].payload) {
+      return Boolean(rows[0].payload.enabled ?? true);
     }
   } catch {
     return true;
@@ -1708,123 +2443,423 @@ async function loadEconomicModeFromNeon() {
   return true;
 }
 
-// src/server/chats.ts
-function registerChats(app, guard, dbState2) {
-  const dataDir = path6.join(resolveDataRoot(), "data");
-  const chatFile = path6.join(dataDir, "chats-store.json");
-  let chatsState = {
-    threads: [],
-    keys: {}
+// src/server/agenda.ts
+var agendaCreator = (u) => u.accessLevel === "ADMINISTRADOR" || ["DIRETORIA", "RH"].includes(u.accessProfile) || u.accessLevel === "DIRETORIA" || u.roleTitle === "Ger\xEAncia Administrativa" || u.permissoesPaginas?.includes("agenda_criar");
+var activeAgendaState = null;
+function hydrateAgendaFromPayload(payload) {
+  if (!activeAgendaState || !payload || typeof payload !== "object") return;
+  if (Array.isArray(payload.events)) activeAgendaState.events = payload.events;
+  if (Array.isArray(payload.notifications)) activeAgendaState.notifications = payload.notifications;
+  if (typeof payload.imported === "boolean") activeAgendaState.imported = payload.imported;
+  if (payload.keys && typeof payload.keys === "object") activeAgendaState.keys = payload.keys;
+}
+function registerAgenda(app, guard, users) {
+  const file = path3.join(resolveDataRoot(), "data", "agenda-local.json");
+  const state = fs3.existsSync(file) ? JSON.parse(fs3.readFileSync(file, "utf8")) : { events: [], notifications: [], imported: false, keys: {} };
+  activeAgendaState = state;
+  const save = () => {
+    fs3.mkdirSync(path3.dirname(file), { recursive: true });
+    fs3.writeFileSync(file + ".tmp", JSON.stringify(state));
+    fs3.renameSync(file + ".tmp", file);
+    void persistStateSnapshotToNeon("rodovar-agenda", state);
   };
-  if (fs6.existsSync(chatFile)) {
-    try {
-      chatsState = JSON.parse(fs6.readFileSync(chatFile, "utf8"));
-    } catch {
-    }
-  }
-  const saveChats = () => {
-    try {
-      fs6.mkdirSync(dataDir, { recursive: true });
-      fs6.writeFileSync(chatFile, JSON.stringify(chatsState, null, 2), "utf8");
-      void persistStateSnapshotToNeon("rodovar-chats", chatsState);
-    } catch (err) {
-      console.warn("Chat persistence warning:", err.message);
+  const manage = (e, u) => u.accessLevel === "ADMINISTRADOR" || agendaCreator(u) && (e.ownerId === u.id || !e.ownerId && ["DIRETORIA", "RH"].includes(u.accessProfile));
+  const invited = (e, u) => e.visibility === "Todos" || e.invitees?.includes(u.id) || e.sectors?.includes(u.department) || e.ownerId === u.id || !e.visibility;
+  const visible = (e, u) => manage(e, u) || invited(e, u);
+  const audience = (e) => users().filter((u) => u.active && invited(e, u));
+  const notify = (e, title, key) => {
+    for (const u of audience(e)) {
+      const id = "agenda:" + key + ":" + u.id;
+      if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId: u.id, targetId: e.id, type: "agenda", title, subtitle: e.title, targetSection: "agenda", read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString(), timeLabel: "Agenda" });
     }
   };
-  app.get("/api/chats", guard, (req, res) => {
+  const audit = (e, u, action) => {
+    e.history ||= [];
+    e.history.push({ id: crypto3.randomUUID(), actor: u.name, action, at: (/* @__PURE__ */ new Date()).toISOString() });
+  };
+  const view = (e, u) => {
+    const c = structuredClone(e);
+    c.canManage = manage(e, u);
+    c.participantCount = audience(e).length;
+    c.confirmedCount = (e.attendees || []).length;
+    c.response = e.responses?.[u.id] || (e.attendees?.includes(u.id) ? "Confirmado" : "Pendente");
+    if (!c.canManage && !["ADMINISTRADOR", "DIRETORIA"].includes(u.accessLevel)) {
+      delete c.responses;
+      delete c.attendees;
+      delete c.invitees;
+      delete c.confirmedCount;
+      delete c.participantCount;
+      c.history = (c.history || []).filter((h) => !h.action.startsWith("Participa\xE7\xE3o:") || h.actor === u.name);
+    }
+    return c;
+  };
+  app.get("/api/agenda", guard, (req, res) => {
+    let changed = false;
+    for (const e of state.events) {
+      const hours = (Date.parse(e.dateIso + "T" + (e.start || e.time?.match(/\d\d:\d\d/)?.[0] || "00:00") + ":00-03:00") - Date.now()) / 36e5;
+      if (!e.cancelled && hours > 0 && hours <= 24) {
+        const before = state.notifications.length;
+        notify(e, "Lembrete: evento nas pr\xF3ximas 24h", "upcoming:" + e.id + ":" + e.dateIso);
+        if (state.notifications.length > before) changed = true;
+      }
+    }
+    if (changed) save();
     res.setHeader("Cache-Control", "no-store");
-    res.json({
-      threads: chatsState.threads || []
-    });
+    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id) });
   });
-  app.post("/api/chats/:threadId/messages", guard, (req, res) => {
-    const threadId = req.params.threadId;
-    const { text, attachment, attachmentSize, extra } = req.body || {};
-    const user = req.sessionUser;
-    if (!text && !attachment) {
-      return res.status(400).json({ error: "Mensagem vazia." });
+  app.post("/api/agenda/import", guard, (req, res) => {
+    if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return res.status(403).json({ error: "Importa\xE7\xE3o n\xE3o autorizada." });
+    if (!state.imported) {
+      for (const e of req.body.events || []) {
+        if (e.id && !state.events.some((r) => r.id === e.id)) state.events.push({ ...e, history: e.history || [], responses: e.responses || {}, visibility: e.visibility || "Todos" });
+      }
+      state.imported = true;
+      save();
     }
-    let thread = chatsState.threads.find((t) => t.id === threadId);
-    if (!thread) {
-      thread = {
-        id: threadId,
-        participantId: threadId,
-        name: threadId.startsWith("g-") ? "Canal Geral" : "Conversa Corporativa",
-        role: "Colaborador",
-        avatar: "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
-        online: true,
-        unreadCount: 0,
-        messages: []
+    res.json({ ok: true });
+  });
+  app.post("/api/agenda/read", guard, (req, res) => {
+    for (const n of state.notifications) if (n.recipientId === req.sessionUser.id && req.body.ids?.includes(n.id)) n.read = true;
+    save();
+    res.json({ ok: true });
+  });
+  app.post("/api/agenda", guard, (req, res) => {
+    const b = req.body || {}, u = req.sessionUser;
+    let e = state.events.find((r) => r.id === b.id);
+    if (!agendaCreator(u) || e && !manage(e, u)) return res.status(403).json({ error: "Evento n\xE3o autorizado." });
+    if (u.accessProfile === "FINANCEIRO" && b.department !== u.department) return res.status(403).json({ error: "Cria\xE7\xE3o restrita ao pr\xF3prio setor." });
+    if (b.id && !e) return res.status(404).json({ error: "Evento n\xE3o encontrado." });
+    if (e?.cancelled) return res.status(409).json({ error: "Evento cancelado." });
+    if (!b.id && !req.headers["x-idempotency-key"]) return res.status(400).json({ error: "Identificador obrigat\xF3rio." });
+    if (!String(b.title || "").trim() || String(b.title).length > 200 || !/^\d{4}-\d{2}-\d{2}$/.test(b.dateIso) || !Number.isFinite(Date.parse(b.dateIso)) || new Date(b.dateIso).toISOString().slice(0, 10) !== b.dateIso || !b.allDay && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(b.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(b.end) || b.end <= b.start)) return res.status(400).json({ error: "Confira t\xEDtulo, data e hor\xE1rios inicial/final." });
+    if (!["Reuni\xE3o", "Treinamento", "Evento Corporativo", "Comunicado de Agenda", "Outro"].includes(b.category)) return res.status(400).json({ error: "Categoria inv\xE1lida." });
+    if ((b.attachments || []).some((a) => !/^data:(application\/pdf|image\/png|image\/jpeg);base64,/.test(a.dataUrl) || a.dataUrl.length > 7e6)) return res.status(400).json({ error: "Anexo inv\xE1lido: PDF, PNG ou JPEG at\xE9 5 MB." });
+    const key = u.id + ":" + String(req.headers["x-idempotency-key"] || "");
+    if (!b.id && state.keys[key]) return res.json(view(state.events.find((r) => r.id === state.keys[key]), u));
+    const id = e?.id || crypto3.randomUUID();
+    const prior = e;
+    if (!e) {
+      e = { id, ownerId: u.id, attendees: [], responses: {}, history: [] };
+      state.events.push(e);
+    }
+    for (const field of ["title", "description", "category", "dateIso", "start", "end", "allDay", "location", "organizer", "department", "invitees", "sectors", "priority", "visibility", "attachments", "recurrence", "requireRsvp"]) e[field] = b[field];
+    e.time = b.allDay ? "Dia inteiro" : b.start + " - " + b.end;
+    e.day = b.dateIso.slice(8);
+    e.monthShort = (/* @__PURE__ */ new Date(b.dateIso + "T12:00:00")).toLocaleString("pt-BR", { month: "short" }).toUpperCase();
+    audit(e, u, prior ? "Evento atualizado" : "Evento criado");
+    state.keys[key] = id;
+    notify(e, prior ? "Evento alterado" : "Novo convite recebido", crypto3.randomUUID());
+    save();
+    void persistAgendaEventToNeon(e);
+    res.json(view(e, u));
+  });
+  app.post("/api/agenda/:id/:action", guard, (req, res) => {
+    const e = state.events.find((r) => r.id === req.params.id), u = req.sessionUser, a = req.params.action;
+    if (!e || !visible(e, u)) return res.status(404).json({ error: "Evento indispon\xEDvel." });
+    if (a === "rsvp") {
+      if (e.cancelled || !invited(e, u)) return res.status(409).json({ error: "Convite indispon\xEDvel." });
+      const response = req.body.response;
+      if (!["Confirmado", "Recusado", "Pendente"].includes(response)) return res.status(400).json({ error: "Resposta inv\xE1lida." });
+      e.responses ||= {};
+      if (e.responses[u.id] === response) return res.json({ ok: true });
+      e.responses[u.id] = response;
+      e.attendees = (e.attendees || []).filter((id) => id !== u.id);
+      if (response === "Confirmado") e.attendees.push(u.id);
+      audit(e, u, "Participa\xE7\xE3o: " + response);
+      if (e.ownerId) state.notifications.push({ id: "agenda:" + crypto3.randomUUID(), recipientId: e.ownerId, targetId: e.id, targetSection: "agenda", type: "agenda", title: u.name + " \u2014 " + response, subtitle: e.title, read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
+    } else {
+      if (!manage(e, u)) return res.status(403).json({ error: "Gerenciamento n\xE3o autorizado." });
+      if (a === "cancel") {
+        e.cancelled = true;
+        audit(e, u, "Evento cancelado");
+        notify(e, "Evento cancelado", crypto3.randomUUID());
+      } else if (a === "remind") {
+        audit(e, u, "Lembrete enviado");
+        notify(e, "Lembrete de participa\xE7\xE3o", crypto3.randomUUID());
+      } else return res.status(400).json({ error: "A\xE7\xE3o inv\xE1lida." });
+    }
+    save();
+    void persistAgendaEventToNeon(e);
+    res.json({ ok: true });
+  });
+}
+
+// src/server/muralPolls.ts
+import fs4 from "node:fs";
+import path4 from "node:path";
+import crypto4 from "node:crypto";
+var canManagePolls = (u) => u?.accessLevel === "ADMINISTRADOR" || ["DIRETORIA", "FINANCEIRO", "RH"].includes(u?.accessProfile) || u?.accessLevel === "DIRETORIA" || u?.roleTitle === "Ger\xEAncia Administrativa";
+var activePollsRef = null;
+function hydrateMuralPollsFromPayload(payload) {
+  if (!activePollsRef || !Array.isArray(payload)) return;
+  activePollsRef.splice(0, activePollsRef.length, ...payload);
+}
+function registerPolls(app, guard, storageFile = path4.join(resolveDataRoot(), "data", "mural-polls.local.json")) {
+  const isDefaultStorage = storageFile === path4.join(resolveDataRoot(), "data", "mural-polls.local.json");
+  const polls = fs4.existsSync(storageFile) ? JSON.parse(fs4.readFileSync(storageFile, "utf8")) : [];
+  if (!Array.isArray(polls)) throw Error("Arquivo local de enquetes inv\xE1lido.");
+  if (isDefaultStorage) activePollsRef = polls;
+  const save = () => {
+    fs4.mkdirSync(path4.dirname(storageFile), { recursive: true });
+    const temporary = storageFile + ".tmp";
+    fs4.writeFileSync(temporary, JSON.stringify(polls), { mode: 384 });
+    fs4.renameSync(temporary, storageFile);
+    if (isDefaultStorage) void persistStateSnapshotToNeon("rodovar-mural-polls", polls);
+  };
+  app.use("/api/mural-polls", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
+  const view = (p, u) => {
+    const total = Object.keys(p.votes).length, own = p.votes[u.id], ended = p.closed || Date.now() >= Date.parse(p.deadline), show = canManagePolls(u) || p.results === "always" || own !== void 0 || ended;
+    return { id: p.id, question: p.question, options: p.options, deadline: p.deadline, closed: ended, draft: p.draft, results: p.results, total, own, counts: show ? p.options.map((_, i) => Object.values(p.votes).filter((v) => v === i).length) : null };
+  };
+  app.get("/api/mural-polls", guard, (req, res) => res.json({ canManage: canManagePolls(req.sessionUser), polls: polls.filter((p) => !p.draft || canManagePolls(req.sessionUser)).map((p) => view(p, req.sessionUser)) }));
+  app.post("/api/mural-polls", guard, (req, res) => {
+    const u = req.sessionUser, b = req.body || {};
+    if (!canManagePolls(u)) return res.status(403).json({ error: "Sem permiss\xE3o para administrar enquetes." });
+    let p = polls.find((p2) => p2.id === b.id);
+    if (b.action === "close") {
+      if (!p) return res.status(404).json({ error: "Enquete indispon\xEDvel." });
+      p.closed = true;
+      save();
+      return res.json(view(p, u));
+    }
+    const options = Array.isArray(b.options) ? b.options.map((v) => String(v).trim()) : [];
+    if (!String(b.question || "").trim() || String(b.question).length > 240 || options.length < 2 || options.length > 6 || options.some((v) => !v || v.length > 120) || new Set(options).size !== options.length || !Number.isFinite(Date.parse(b.deadline)) || Date.parse(b.deadline) <= Date.now()) return res.status(400).json({ error: "Informe pergunta, 2 a 6 alternativas distintas e prazo futuro." });
+    if (p && (Object.keys(p.votes).length || p.closed)) return res.status(409).json({ error: "Enquetes com votos ou encerradas n\xE3o podem ser editadas." });
+    if (!p) {
+      p = { id: crypto4.randomUUID(), votes: {}, closed: false };
+      polls.push(p);
+    }
+    Object.assign(p, { question: String(b.question).trim(), options, deadline: b.deadline, draft: !!b.draft, results: b.results === "always" ? "always" : "after", authorId: u.id });
+    save();
+    res.json(view(p, u));
+  });
+  app.post("/api/mural-polls/:id/vote", guard, (req, res) => {
+    const p = polls.find((p2) => p2.id === req.params.id), u = req.sessionUser, i = req.body?.option;
+    if (!p || p.draft) return res.status(404).json({ error: "Enquete indispon\xEDvel." });
+    if (p.closed || Date.now() >= Date.parse(p.deadline)) return res.status(409).json({ error: "Vota\xE7\xE3o encerrada." });
+    if (!Number.isInteger(i) || i < 0 || i >= p.options.length) return res.status(400).json({ error: "Alternativa inv\xE1lida." });
+    if (p.votes[u.id] !== void 0) {
+      if (p.votes[u.id] !== i) return res.status(409).json({ error: "Seu voto j\xE1 foi registrado." });
+      return res.json(view(p, u));
+    }
+    p.votes[u.id] = i;
+    save();
+    res.json(view(p, u));
+  });
+}
+
+// src/server/mural.ts
+import crypto5 from "node:crypto";
+import fs5 from "node:fs";
+import path5 from "node:path";
+function registerMural(app, guard, db, save, initial) {
+  registerPolls(app, guard);
+  const directory = path5.join(resolveDataRoot(), "data", "mural-attachments");
+  db.mural ||= { announcements: structuredClone(initial), notifications: [], keys: {}, audit: [], imported: false };
+  const state = db.mural;
+  const publisher = (u) => hasPagePermission(u, "comunicados") && ["ADMINISTRADOR", "DIRETORIA"].includes(u.accessLevel);
+  const matchesSector = (target, u) => target === "Todos" || target === u.department || target === "Comercial" && u.accessProfile === "COMERCIAL" || target === "Expedi\xE7\xE3o" && u.accessProfile === "EXPEDICAO" || target === "Monitoramento" && u.accessProfile === "MONITORAMENTO";
+  const visible = (a, u) => hasPagePermission(u, "comunicados") && (publisher(u) || !a.draft && matchesSector(a.targetAudience, u));
+  const stamp = () => (/* @__PURE__ */ new Date()).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const audit = (u, id, action) => state.audit.push({ id: crypto5.randomUUID(), announcementId: id, actorId: u.id, actorName: u.name, action, at: (/* @__PURE__ */ new Date()).toISOString() });
+  const fail = (res, status, error) => res.status(status).json({ error });
+  const check = (req, res, next) => hasPagePermission(req.sessionUser, "comunicados") ? (res.setHeader("Cache-Control", "no-store"), next()) : fail(res, 403, "Sem acesso ao Mural.");
+  const get = (id) => state.announcements.find((a) => a.id === id);
+  const notify = (a) => {
+    if (a.draft || a.archived) return;
+    for (const u of db.users.filter((u2) => visible(a, u2) && matchesSector(a.targetAudience, u2))) {
+      const id = "mural:" + a.id + ":" + u.id;
+      if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId: u.id, targetId: a.id, publicationId: a.id, type: "comunicado", title: "Novo comunicado publicado", subtitle: a.title, read: false, timeLabel: "Mural", targetSection: "comunicados", createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
+    }
+  };
+  const publicRecord = (a, u) => {
+    const copy = structuredClone(a);
+    if (!publisher(u)) {
+      copy.readReceipts = copy.readReceipts.filter((r) => r.userId === u.id);
+      copy.readCount = a.readReceipts.length;
+      delete copy.editHistory;
+      delete copy.versions;
+    }
+    return copy;
+  };
+  const cleanFile = (input) => {
+    if (!input.dataUrl) return input.url && /^\/(assets|uploads)\/[a-zA-Z0-9_./%() -]+$/.test(input.url) && !input.url.includes("..") ? { name: String(input.name).slice(0, 160), size: String(input.size || ""), type: String(input.type || ""), url: input.url } : null;
+    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(input.dataUrl);
+    if (!match) throw Error("Arquivo inv\xE1lido.");
+    const bytes = Buffer.from(match[2], "base64");
+    const extension = String(input.name || "").split(".").pop()?.toLowerCase();
+    const signature = bytes.subarray(0, 8);
+    const allowed = extension === "pdf" ? bytes.subarray(0, 5).toString() === "%PDF-" : ["docx", "xlsx"].includes(extension || "") ? bytes[0] === 80 && bytes[1] === 75 : ["doc", "xls"].includes(extension || "") ? signature.equals(Buffer.from([208, 207, 17, 224, 161, 177, 26, 225])) : ["png"].includes(extension || "") ? signature.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : ["jpg", "jpeg"].includes(extension || "") ? bytes[0] === 255 && bytes[1] === 216 : extension === "webp" ? bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP" : false;
+    if (!allowed || !bytes.length || bytes.length > 5 * 1024 * 1024) throw Error("Envie PDF, Word, Excel ou imagem v\xE1lida de at\xE9 5 MB.");
+    const mime = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", doc: "application/msword", xls: "application/vnd.ms-excel", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+    const id = crypto5.randomUUID();
+    fs5.mkdirSync(directory, { recursive: true });
+    fs5.writeFileSync(path5.join(directory, id), bytes, { mode: 384 });
+    void persistSystemAssetToNeon({ id, slot: "mural-attachment", mimeType: mime[extension], dataBase64: bytes.toString("base64") });
+    return { id, name: String(input.name).replace(/[\r\n<>"/\\]/g, "_").slice(0, 160), size: Math.ceil(bytes.length / 1024) + " KB", type: extension.toUpperCase(), mimeType: mime[extension], hash: crypto5.createHash("sha256").update(bytes).digest("hex") };
+  };
+  app.get("/api/mural", guard, check, (req, res) => res.json({ announcements: state.announcements.filter((a) => visible(a, req.sessionUser)).map((a) => publicRecord(a, req.sessionUser)), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed), canPublish: publisher(req.sessionUser) }));
+  app.post("/api/mural/notifications/read", guard, check, (req, res) => {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length > 500) return fail(res, 400, "Notifica\xE7\xF5es inv\xE1lidas.");
+    for (const n of state.notifications.filter((n2) => n2.recipientId === req.sessionUser.id && ids.includes(n2.id))) {
+      n.read = true;
+      if (req.body.dismiss) n.dismissed = true;
+    }
+    save();
+    res.json({ ok: true });
+  });
+  app.post("/api/mural/import", guard, check, (req, res) => {
+    if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return fail(res, 403, "Importa\xE7\xE3o exclusiva do administrador.");
+    if (!state.imported) {
+      const incoming = req.body?.announcements;
+      if (!Array.isArray(incoming) || incoming.length > 1e3) return fail(res, 400, "Origem inv\xE1lida.");
+      for (const old of incoming) {
+        if (!old?.id || !old.title || !Array.isArray(old.readReceipts) || !Array.isArray(old.comments) || !Array.isArray(old.likes)) continue;
+        const current = get(old.id);
+        if (current) {
+          const reads = current.readReceipts, comments = current.comments, likes = current.likes, history = current.editHistory || [];
+          Object.assign(current, structuredClone(old));
+          current.editHistory = [...new Map([...history, ...old.editHistory || []].map((h) => [h.id, h])).values()];
+          current.readReceipts = [...new Map([...reads, ...old.readReceipts].map((r) => [r.userId, r])).values()];
+          current.comments = [...new Map([...comments, ...old.comments].map((c) => [c.id, c])).values()];
+          current.likes = [.../* @__PURE__ */ new Set([...likes, ...old.likes])];
+        } else state.announcements.push(structuredClone(old));
+      }
+      state.imported = true;
+      audit(req.sessionUser, "migration", "Hist\xF3rico existente importado sem substituir registros");
+      save();
+    }
+    res.json({ ok: true });
+  });
+  app.post("/api/mural", guard, check, async (req, res) => {
+    if (!publisher(req.sessionUser)) return fail(res, 403, "Publica\xE7\xE3o n\xE3o autorizada.");
+    const b = req.body || {}, u = req.sessionUser;
+    const key = String(req.headers["x-idempotency-key"] || "");
+    if (!key || key.length > 160) return fail(res, 400, "Identificador do envio obrigat\xF3rio.");
+    const fingerprint = crypto5.createHash("sha256").update(JSON.stringify(b)).digest("hex"), composite = u.id + ":" + key;
+    if (state.keys[composite]) return state.keys[composite].fingerprint === fingerprint ? res.json({ announcement: get(state.keys[composite].id) }) : fail(res, 409, "Envio repetido com dados diferentes.");
+    const existing = b.id ? get(b.id) : null;
+    if (b.id && !existing) return fail(res, 404, "Comunicado n\xE3o encontrado.");
+    if (typeof b.title !== "string" || !b.title.trim() || b.title.length > 180 || typeof b.content !== "string" || !b.draft && !b.content.trim() || b.content.length > 2e4 || !["Normal", "Importante", "Urgente"].includes(b.priority) || !["Comunicado Geral", "Importante", "Urgente", "Recursos Humanos", "Seguran\xE7a", "Operacional", "Log\xEDstica", "Comercial", "Expedi\xE7\xE3o", "Monitoramento", "Financeiro", "Administrativo", "Eventos", "Diretoria"].includes(b.category) || !["Todos", "Operacional", "Log\xEDstica", "Comercial", "Expedi\xE7\xE3o", "Monitoramento", "Administrativo", "Financeiro", "Recursos Humanos", "Seguran\xE7a", "Diretoria"].includes(b.targetAudience)) return fail(res, 400, "Confira t\xEDtulo, conte\xFAdo, categoria, prioridade e p\xFAblico.");
+    try {
+      const attachments = b.attachments || [];
+      if (!Array.isArray(attachments) || attachments.length > 12) throw Error("Limite de 12 anexos.");
+      const stored = attachments.map((item) => {
+        if (item.id) {
+          const known = existing?.attachments?.find((d) => d.id === item.id);
+          if (!known) throw Error("Anexo n\xE3o autorizado.");
+          return known;
+        }
+        const legacy = existing?.attachments?.find((d) => !d.id && d.name === item.name && d.url === item.url);
+        return legacy || cleanFile(item) || { name: String(item.name).slice(0, 160), size: String(item.size || ""), type: String(item.type || "") };
+      }).filter(Boolean);
+      const cover = String(b.coverImage || "");
+      const banner = String(b.bannerImage || "");
+      if (banner && !/^\/(assets|uploads|api)\//.test(banner) && !/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(banner)) throw Error("Imagem do banner inv\xE1lida.");
+      if (banner.length > 7 * 1024 * 1024) throw Error("Imagem do banner muito grande.");
+      if (cover && !/^\/(assets|uploads|api)\//.test(cover) && !/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(cover)) throw Error("Imagem de capa inv\xE1lida.");
+      if (cover.length > 7 * 1024 * 1024) throw Error("Imagem muito grande.");
+      const validImage = (value) => {
+        if (!value) return true;
+        if (value.startsWith("/assets/") || value.startsWith("/uploads/") || value.startsWith("/api/")) return !value.includes("..") && !/[\r\n]/.test(value);
+        const match = /^data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(value);
+        if (!match) return false;
+        const data = Buffer.from(match[2], "base64");
+        if (data.length > 5 * 1024 * 1024 || data.length < 4) return false;
+        return match[1] === "png" ? data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : match[1] === "jpeg" || match[1] === "jpg" ? data[0] === 255 && data[1] === 216 : match[1] === "webp" ? data.subarray(0, 4).toString() === "RIFF" && data.subarray(8, 12).toString() === "WEBP" : true;
       };
-      chatsState.threads.push(thread);
+      if (!validImage(cover) || !validImage(banner)) throw Error("Imagem inv\xE1lida: envie imagem v\xE1lida de at\xE9 5 MB.");
+      const versions = [...existing?.versions || []];
+      if (existing) versions.push({ id: crypto5.randomUUID(), at: stamp(), editorName: u.name, title: existing.title, content: existing.content, attachments: structuredClone(existing.attachments || []) });
+      const now = /* @__PURE__ */ new Date(), record = { ...existing || {}, id: existing?.id || crypto5.randomUUID(), title: b.title.trim(), summary: String(b.summary || "").slice(0, 500), content: b.content.trim(), category: b.category, priority: b.priority, targetAudience: b.targetAudience, requireReadConfirmation: !!b.requireReadConfirmation, pinned: !!b.pinned, featured: !!b.featured, draft: !!b.draft, versions, coverImage: cover, bannerImage: String(b.bannerImage || cover || "/assets/login-rodovar-sunset-v2.png"), attachments: stored, authorId: existing?.authorId || u.id, authorName: existing?.authorName || u.name, department: existing?.department || u.department, createdAtIso: existing?.createdAtIso || now.toISOString(), dateFormatted: existing?.dateFormatted || now.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }), readReceipts: existing?.readReceipts || [], comments: existing?.comments || [], likes: existing?.likes || [], editHistory: [{ id: crypto5.randomUUID(), editedAt: stamp(), editorName: u.name, editorRole: u.accessLevel, note: String(b.editNote || "Publica\xE7\xE3o atualizada").slice(0, 1e3) }, ...existing?.editHistory || []] };
+      if (existing) Object.assign(existing, record);
+      else state.announcements.unshift(record);
+      state.keys[composite] = { id: record.id, fingerprint };
+      audit(u, record.id, record.draft ? "Rascunho salvo" : "Publica\xE7\xE3o salva");
+      notify(record);
+      await Promise.resolve(save());
+      await persistAnnouncementToNeon(record).catch(() => {
+      });
+      res.status(201).json({ announcement: record });
+    } catch (e) {
+      fail(res, 400, e.message);
     }
-    const nowStr = (/* @__PURE__ */ new Date()).toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-    const msgId = `m-${Date.now()}-${crypto6.randomBytes(2).toString("hex")}`;
-    const newMsg = {
-      id: msgId,
-      senderId: user.id,
-      senderName: user.name,
-      senderRole: user.roleTitle || user.accessLevel,
-      text: String(text || "").slice(0, 4e3),
-      timestamp: nowStr,
-      status: "delivered",
-      attachment: attachment ? String(attachment).slice(0, 200) : void 0,
-      attachmentSize: attachmentSize ? String(attachmentSize).slice(0, 30) : void 0,
-      mediaType: extra?.mediaType,
-      mediaUrl: extra?.mediaUrl,
-      audioDuration: extra?.audioDuration,
-      forwardedFrom: extra?.forwardedFrom
-    };
-    thread.messages.push(newMsg);
-    saveChats();
-    void persistChatMessageToNeon({
-      id: msgId,
-      threadId,
-      senderId: user.id,
-      senderName: user.name,
-      text: newMsg.text || "Anexo compartilhado"
-    });
-    res.status(201).json({
-      ok: true,
-      message: newMsg,
-      thread
-    });
   });
-  app.post("/api/chats/groups", guard, (req, res) => {
-    const { name, description, memberIds } = req.body || {};
-    const user = req.sessionUser;
-    if (!name || String(name).trim().length < 2) {
-      return res.status(400).json({ error: "Nome do grupo obrigat\xF3rio." });
+  app.post("/api/mural/:id/action", guard, check, (req, res) => {
+    const a = get(req.params.id), u = req.sessionUser;
+    if (!a || !visible(a, u)) return fail(res, 404, "Comunicado indispon\xEDvel.");
+    const b = req.body || {};
+    if (b.action === "READ") {
+      if (a.draft || a.archived) return fail(res, 409, "Publica\xE7\xE3o indispon\xEDvel para confirma\xE7\xE3o.");
+      if (!a.readReceipts.some((r) => r.userId === u.id)) {
+        a.readReceipts.push({ userId: u.id, userName: u.name, department: u.department, confirmedAt: stamp() });
+        audit(u, a.id, "Leitura confirmada explicitamente");
+      }
+      for (const n of state.notifications.filter((n2) => n2.recipientId === u.id && n2.targetId === a.id)) n.read = true;
+    } else if (b.action === "LIKE") {
+      a.likes = a.likes.includes(u.id) ? a.likes.filter((id) => id !== u.id) : [...a.likes, u.id];
+    } else if (b.action === "COMMENT") {
+      const text = String(b.text || "").trim();
+      if (!text || text.length > 3e3) return fail(res, 400, "Coment\xE1rio de at\xE9 3000 caracteres.");
+      const key = String(req.headers["x-idempotency-key"] || "");
+      if (!key) return fail(res, 400, "Identificador obrigat\xF3rio.");
+      const prior = a.comments.find((c) => c.key === u.id + ":" + key);
+      if (prior) {
+        if (prior.content !== text) return fail(res, 409, "Coment\xE1rio repetido com conte\xFAdo diferente.");
+        return res.json({ announcement: publicRecord(a, u) });
+      }
+      a.comments.push({ id: crypto5.randomUUID(), key: u.id + ":" + key, authorId: u.id, authorName: u.name, authorRole: u.roleTitle || u.accessLevel, authorAvatar: u.avatar, content: text, createdAt: stamp() });
+      audit(u, a.id, "Coment\xE1rio registrado");
+    } else if (b.action === "DELETE_COMMENT") {
+      const c = a.comments.find((c2) => c2.id === b.commentId);
+      if (!c || !publisher(u) && c.authorId !== u.id) return fail(res, 403, "Coment\xE1rio n\xE3o autorizado.");
+      a.comments = a.comments.filter((c2) => c2.id !== b.commentId);
+      audit(u, a.id, "Coment\xE1rio removido");
+    } else {
+      if (!publisher(u)) return fail(res, 403, "A\xE7\xE3o administrativa n\xE3o autorizada.");
+      if (b.action === "PIN") a.pinned = !a.pinned;
+      else if (b.action === "FEATURE") a.featured = !a.featured;
+      else if (b.action === "ARCHIVE") a.archived = !a.archived;
+      else return fail(res, 400, "A\xE7\xE3o inv\xE1lida.");
+      audit(u, a.id, b.action);
     }
-    const groupId = `g-${Date.now()}-${crypto6.randomBytes(2).toString("hex")}`;
-    const newGroup = {
-      id: groupId,
-      name: String(name).trim().slice(0, 100),
-      description: description ? String(description).slice(0, 255) : "",
-      avatar: "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
-      isGroup: true,
-      createdBy: user.id,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-      memberIds: Array.isArray(memberIds) ? memberIds : [user.id],
-      unreadCount: 0,
-      messages: []
-    };
-    chatsState.threads.unshift(newGroup);
-    saveChats();
-    res.status(201).json({
-      ok: true,
-      group: newGroup
-    });
+    save();
+    void persistAnnouncementToNeon(a);
+    res.json({ announcement: publicRecord(a, u) });
+  });
+  app.get("/api/mural/:id/attachments/:fileId", guard, check, async (req, res) => {
+    const a = get(req.params.id), u = req.sessionUser;
+    if (!a || !visible(a, u)) return fail(res, 404, "Documento indispon\xEDvel.");
+    const d = a.attachments?.find((d2) => d2.id === req.params.fileId) || (publisher(u) ? a.versions?.flatMap((v) => v.attachments).find((d2) => d2.id === req.params.fileId) : void 0);
+    if (!d) return fail(res, 404, "Arquivo n\xE3o encontrado.");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    audit(u, a.id, "Download autorizado de anexo");
+    save();
+    const localPath = path5.join(directory, d.id);
+    if (fs5.existsSync(localPath)) {
+      return res.type(d.mimeType).attachment(d.name).sendFile(localPath);
+    }
+    const neonAsset = await getSystemAssetFromNeon(d.id);
+    if (neonAsset) {
+      try {
+        fs5.mkdirSync(directory, { recursive: true });
+        fs5.writeFileSync(localPath, neonAsset.buffer, { mode: 384 });
+      } catch {
+      }
+      return res.type(d.mimeType || neonAsset.mimeType).attachment(d.name).send(neonAsset.buffer);
+    }
+    return fail(res, 404, "Arquivo n\xE3o encontrado.");
   });
 }
 
 // src/server/externalRh.ts
-import fs7 from "node:fs";
-import path7 from "node:path";
-import crypto7 from "node:crypto";
+import fs6 from "node:fs";
+import path6 from "node:path";
+import crypto6 from "node:crypto";
 var canAccessExternalRh = (u) => !!u && u.accessProfile === "RH" && hasPagePermission(u, "solicitacoes");
 function validDocument(value) {
   if (![11, 14].includes(value.length) || /^(\d)\1+$/.test(value)) return false;
@@ -1838,35 +2873,71 @@ function validDocument(value) {
   }
   return digit(value.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(value[12]) && digit(value.slice(0, 13), [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(value[13]);
 }
+var activeRhDecrypt = null;
+var activeRhStateRef = null;
+function hydrateExternalRhFromPayload(payload) {
+  if (!activeRhStateRef || !activeRhDecrypt || !payload || typeof payload.encBase64 !== "string") return;
+  try {
+    const parsed = JSON.parse(activeRhDecrypt(Buffer.from(payload.encBase64, "base64")).toString("utf8"));
+    if (parsed && typeof parsed === "object") {
+      activeRhStateRef.clients = Array.isArray(parsed.clients) ? parsed.clients : [];
+      activeRhStateRef.services = Array.isArray(parsed.services) ? parsed.services : [];
+      activeRhStateRef.requests = Array.isArray(parsed.requests) ? parsed.requests : [];
+      activeRhStateRef.keys = parsed.keys && typeof parsed.keys === "object" ? parsed.keys : {};
+      activeRhStateRef.events = parsed.events && typeof parsed.events === "object" ? parsed.events : {};
+    }
+  } catch (err) {
+    console.warn("hydrateExternalRhFromPayload notice:", err.message);
+  }
+}
 function registerExternalRh(app, guard, provider) {
-  const dir = path7.join(resolveDataRoot(), "data", "rh-external");
-  fs7.mkdirSync(dir, { recursive: true });
-  const keyFile = path7.join(dir, "encryption.key");
-  if (!fs7.existsSync(keyFile)) fs7.writeFileSync(keyFile, crypto7.randomBytes(32), { mode: 384, flag: "wx" });
-  const key = fs7.readFileSync(keyFile), file = path7.join(dir, "records.enc");
+  const dir = path6.join(resolveDataRoot(), "data", "rh-external");
+  fs6.mkdirSync(dir, { recursive: true });
+  const keyFile = path6.join(dir, "encryption.key");
+  const useLocalKeyFile = isIsolatedTestEnv() || !process.env.VERCEL && !process.env.VERCEL_ENV;
+  let key;
+  if (useLocalKeyFile) {
+    if (!fs6.existsSync(keyFile)) fs6.writeFileSync(keyFile, crypto6.randomBytes(32), { mode: 384, flag: "wx" });
+    key = fs6.readFileSync(keyFile);
+  } else {
+    key = crypto6.createHash("sha256").update(`rodovar-rh-ext:${process.env.SESSION_SECRET || process.env.DATABASE_URL || "rodovar-default-rh-key"}`).digest();
+  }
+  const file = path6.join(dir, "records.enc");
   const encrypt = (bytes) => {
-    const iv = crypto7.randomBytes(12), cipher = crypto7.createCipheriv("aes-256-gcm", key, iv);
+    const iv = crypto6.randomBytes(12), cipher = crypto6.createCipheriv("aes-256-gcm", key, iv);
     const encrypted = Buffer.concat([cipher.update(bytes), cipher.final()]);
     return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
   };
   const decrypt = (bytes) => {
-    const decipher = crypto7.createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+    const decipher = crypto6.createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
     decipher.setAuthTag(bytes.subarray(12, 28));
     return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]);
   };
-  const state = fs7.existsSync(file) ? JSON.parse(decrypt(fs7.readFileSync(file)).toString()) : { clients: [], services: [], requests: [], keys: {}, events: {} };
+  const state = fs6.existsSync(file) ? JSON.parse(decrypt(fs6.readFileSync(file)).toString()) : { clients: [], services: [], requests: [], keys: {}, events: {} };
+  if (!isIsolatedTestEnv()) {
+    activeRhDecrypt = decrypt;
+    activeRhStateRef = state;
+  }
   const save = () => {
-    fs7.writeFileSync(file + ".tmp", encrypt(Buffer.from(JSON.stringify(state))), { mode: 384 });
-    fs7.renameSync(file + ".tmp", file);
+    const encryptedBytes = encrypt(Buffer.from(JSON.stringify(state)));
+    fs6.writeFileSync(file + ".tmp", encryptedBytes, { mode: 384 });
+    fs6.renameSync(file + ".tmp", file);
+    if (!isIsolatedTestEnv()) {
+      void persistStateSnapshotToNeon("rodovar-external-rh", { encBase64: encryptedBytes.toString("base64"), updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
   };
-  const audit = (r, u, action) => r.history.push({ id: crypto7.randomUUID(), at: (/* @__PURE__ */ new Date()).toISOString(), actorId: u.id, actorName: u.name, action });
+  const audit = (r, u, action) => r.history.push({ id: crypto6.randomUUID(), at: (/* @__PURE__ */ new Date()).toISOString(), actorId: u.id, actorName: u.name, action });
   const fail = (res, status, error) => res.status(status).json({ error });
   const rh = (req, res, next) => canAccessExternalRh(req.sessionUser) ? (res.setHeader("Cache-Control", "no-store"), next()) : fail(res, 403, "Acesso exclusivo \xE0 permiss\xE3o RH.");
   const find = (id) => state.requests.find((r) => r.id === id);
   const locks = /* @__PURE__ */ new Set();
   const storeDoc = (r, name, mimeType, bytes, kind, u) => {
-    const id = crypto7.randomUUID();
-    fs7.writeFileSync(path7.join(dir, id + ".enc"), encrypt(bytes), { mode: 384 });
+    const id = crypto6.randomUUID();
+    const encBytes = encrypt(bytes);
+    fs6.writeFileSync(path6.join(dir, id + ".enc"), encBytes, { mode: 384 });
+    if (!isIsolatedTestEnv()) {
+      void persistSystemAssetToNeon({ id: `rh-ext-${id}`, slot: "rh-external-doc", mimeType, dataBase64: encBytes.toString("base64") });
+    }
     const doc = { id, name: name.replace(/[\r\n<>"/\\]/g, "_").slice(0, 150), mimeType, size: bytes.length, kind, at: (/* @__PURE__ */ new Date()).toISOString() };
     r.documents.push(doc);
     audit(r, u, "Documento anexado: " + kind);
@@ -1877,26 +2948,26 @@ function registerExternalRh(app, guard, provider) {
     const b = req.body || {}, name = String(b.clientName || "").trim(), document = String(b.document || "").replace(/\D/g, ""), service = String(b.service || "").trim(), reference = String(b.reference || "").trim(), email = String(b.email || "").trim(), dueDate = String(b.dueDate || "");
     const amountCents = b.amountCents, idempotency = String(req.headers["x-idempotency-key"] || "");
     if (!idempotency || idempotency.length > 160) return fail(res, 400, "Identificador do envio obrigat\xF3rio.");
-    const fingerprint = crypto7.createHash("sha256").update(JSON.stringify(b)).digest("hex"), composite = req.sessionUser.id + ":" + idempotency;
+    const fingerprint = crypto6.createHash("sha256").update(JSON.stringify(b)).digest("hex"), composite = req.sessionUser.id + ":" + idempotency;
     if (state.keys[composite]) {
       const old = state.keys[composite];
       return old.fingerprint === fingerprint ? res.json({ request: find(old.id) }) : fail(res, 409, "Identificador j\xE1 utilizado com dados diferentes.");
     }
     if (name.length < 2 || name.length > 160 || !validDocument(document) || !service || service.length > 160 || !reference || reference.length > 100 || !Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > 1e8 || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || Number.isNaN(Date.parse(dueDate)) || email.length > 180 || email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(res, 400, "Confira cliente, CPF/CNPJ, servi\xE7o, refer\xEAncia, valor e vencimento.");
-    const businessKey = crypto7.createHash("sha256").update(document + "|" + service.toLocaleLowerCase("pt-BR") + "|" + reference.toLocaleLowerCase("pt-BR")).digest("hex");
+    const businessKey = crypto6.createHash("sha256").update(document + "|" + service.toLocaleLowerCase("pt-BR") + "|" + reference.toLocaleLowerCase("pt-BR")).digest("hex");
     if (state.requests.some((r2) => r2.businessKey === businessKey)) return fail(res, 409, "J\xE1 existe atendimento para este cliente, servi\xE7o e refer\xEAncia.");
     let client = state.clients.find((c) => c.document === document);
     if (client && (client.name !== name || client.email !== email)) return fail(res, 409, "Cliente j\xE1 cadastrado com dados diferentes. Confira a identidade antes de reutilizar.");
     if (!client) {
-      client = { id: crypto7.randomUUID(), name, document, email };
+      client = { id: crypto6.randomUUID(), name, document, email };
       state.clients.push(client);
     }
     let catalog = state.services.find((s) => s.name.toLocaleLowerCase("pt-BR") === service.toLocaleLowerCase("pt-BR"));
     if (!catalog) {
-      catalog = { id: crypto7.randomUUID(), name: service };
+      catalog = { id: crypto6.randomUUID(), name: service };
       state.services.push(catalog);
     }
-    const r = { id: crypto7.randomUUID(), protocol: "RH-EXT-" + String(state.requests.length + 1).padStart(6, "0"), client: { ...client }, serviceId: catalog.id, service: catalog.name, reference, amountCents, dueDate, businessKey, status: "Solicita\xE7\xE3o", createdAt: (/* @__PURE__ */ new Date()).toISOString(), documents: [], history: [], notes: [] };
+    const r = { id: crypto6.randomUUID(), protocol: "RH-EXT-" + String(state.requests.length + 1).padStart(6, "0"), client: { ...client }, serviceId: catalog.id, service: catalog.name, reference, amountCents, dueDate, businessKey, status: "Solicita\xE7\xE3o", createdAt: (/* @__PURE__ */ new Date()).toISOString(), documents: [], history: [], notes: [] };
     audit(r, req.sessionUser, "Solicita\xE7\xE3o cadastrada");
     state.requests.unshift(r);
     state.keys[composite] = { id: r.id, fingerprint };
@@ -1916,7 +2987,7 @@ function registerExternalRh(app, guard, provider) {
     if (action === "NOTE") {
       const text = String(req.body?.text || "").trim();
       if (!text || text.length > 3e3) return fail(res, 400, "Informe uma observa\xE7\xE3o de at\xE9 3000 caracteres.");
-      r.notes.push({ id: crypto7.randomUUID(), text, actorName: req.sessionUser.name, at: (/* @__PURE__ */ new Date()).toISOString() });
+      r.notes.push({ id: crypto6.randomUUID(), text, actorName: req.sessionUser.name, at: (/* @__PURE__ */ new Date()).toISOString() });
       audit(r, req.sessionUser, "Observa\xE7\xE3o registrada");
       save();
       return res.json({ request: r });
@@ -2002,27 +3073,50 @@ function registerExternalRh(app, guard, provider) {
     const bytes = Buffer.from(match[2], "base64");
     const valid = match[1] === "application/pdf" ? bytes.subarray(0, 5).toString() === "%PDF-" : match[1] === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
     if (!valid || bytes.length > 5 * 1024 * 1024) return fail(res, 400, "Formato inv\xE1lido ou arquivo maior que 5 MB.");
-    const hash = crypto7.createHash("sha256").update(bytes).digest("hex");
+    const hash = crypto6.createHash("sha256").update(bytes).digest("hex");
     if (r.documents.some((d) => d.hash === hash)) return res.json({ request: r });
     const doc = storeDoc(r, name, match[1], bytes, kind, req.sessionUser);
     Object.assign(doc, { hash });
     save();
     res.status(201).json({ request: r });
   });
-  app.get("/api/rh-external/:id/documents/:documentId", guard, rh, (req, res) => {
+  app.get("/api/rh-external/:id/documents/:documentId", guard, rh, async (req, res) => {
     const r = find(req.params.id), doc = r?.documents.find((d) => d.id === req.params.documentId);
     if (!doc) return fail(res, 404, "Documento n\xE3o encontrado.");
+    const localPath = path6.join(dir, doc.id + ".enc");
+    let rawEnc = fs6.existsSync(localPath) ? fs6.readFileSync(localPath) : null;
+    if (!rawEnc && !isIsolatedTestEnv()) {
+      const neonAsset = await getSystemAssetFromNeon(`rh-ext-${doc.id}`);
+      if (neonAsset?.buffer) {
+        rawEnc = neonAsset.buffer;
+        try {
+          fs6.writeFileSync(localPath, rawEnc, { mode: 384 });
+        } catch {
+        }
+      }
+    }
+    if (!rawEnc) return fail(res, 404, "Arquivo do documento n\xE3o encontrado.");
     audit(r, req.sessionUser, "Download de documento: " + doc.kind);
     save();
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.type(doc.mimeType).attachment(doc.name).send(decrypt(fs7.readFileSync(path7.join(dir, doc.id + ".enc"))));
+    res.type(doc.mimeType).attachment(doc.name).send(decrypt(rawEnc));
   });
 }
 
 // src/server/socialProfile.ts
-import crypto8 from "node:crypto";
-import fs8 from "node:fs";
-import path8 from "node:path";
+import crypto7 from "node:crypto";
+import fs7 from "node:fs";
+import path7 from "node:path";
+var activeSocialState = null;
+function hydrateSocialProfileFromPayload(payload) {
+  if (!activeSocialState || !payload || typeof payload !== "object") return;
+  if (payload.profiles && typeof payload.profiles === "object") {
+    activeSocialState.profiles = payload.profiles;
+  }
+  if (Array.isArray(payload.posts)) {
+    activeSocialState.posts = payload.posts;
+  }
+}
 var DEFAULT_COVER = "/assets/banner-rodovar-conecta-highway.png";
 var INITIAL_SAMPLE_POSTS = [
   {
@@ -2092,16 +3186,16 @@ var INITIAL_SAMPLE_POSTS = [
   }
 ];
 function registerSocialProfileRoutes(app, guard, dbState2) {
-  const dataDir = path8.join(resolveDataRoot(), "data");
-  const uploadsDir = path8.join(resolveDataRoot(), "public", "uploads");
-  const socialStoreFile = path8.join(dataDir, "social-store.json");
+  const dataDir = path7.join(resolveDataRoot(), "data");
+  const uploadsDir = path7.join(resolveDataRoot(), "public", "uploads");
+  const socialStoreFile = path7.join(dataDir, "social-store.json");
   let state = {
     profiles: {},
     posts: [...INITIAL_SAMPLE_POSTS]
   };
-  if (fs8.existsSync(socialStoreFile)) {
+  if (fs7.existsSync(socialStoreFile)) {
     try {
-      const raw = JSON.parse(fs8.readFileSync(socialStoreFile, "utf8"));
+      const raw = JSON.parse(fs7.readFileSync(socialStoreFile, "utf8"));
       if (raw && typeof raw === "object") {
         state.profiles = raw.profiles || {};
         state.posts = Array.isArray(raw.posts) ? raw.posts : [...INITIAL_SAMPLE_POSTS];
@@ -2110,13 +3204,14 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       console.warn("Failed to parse social-store.json:", e.message);
     }
   }
+  activeSocialState = state;
   const persistState = () => {
     try {
-      fs8.mkdirSync(dataDir, { recursive: true });
-      fs8.writeFileSync(socialStoreFile, JSON.stringify(state, null, 2), "utf8");
+      fs7.mkdirSync(dataDir, { recursive: true });
+      fs7.writeFileSync(socialStoreFile, JSON.stringify(state, null, 2), "utf8");
       void persistStateSnapshotToNeon("rodovar-social", {
-        profilesCount: Object.keys(state.profiles).length,
-        postsCount: state.posts.length,
+        profiles: state.profiles,
+        posts: state.posts,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
     } catch (err) {
@@ -2206,7 +3301,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       photos
     });
   });
-  app.put("/api/profile/social", guard, (req, res) => {
+  app.put("/api/profile/social", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const {
       bio,
@@ -2245,33 +3340,41 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     }
     profile.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     persistState();
-    void persistSocialProfileToNeon(profile);
+    await persistSocialProfileToNeon(profile).catch(() => {
+    });
     res.json({
       ok: true,
       profile
     });
   });
-  app.post("/api/profile/cover", guard, (req, res) => {
+  app.post("/api/profile/cover", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { dataUrl, imageUrl } = req.body || {};
     let targetCoverUrl = imageUrl;
     if (dataUrl && typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
       try {
-        fs8.mkdirSync(uploadsDir, { recursive: true });
+        fs7.mkdirSync(uploadsDir, { recursive: true });
         const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
         if (!matches) {
           return res.status(400).json({ error: "Formato de imagem inv\xE1lido." });
         }
-        const ext = matches[1] === "jpeg" ? "jpg" : matches[1];
+        const mimeType = `image/${matches[1]}`;
+        const ext = matches[1] === "jpeg" ? "jpg" : matches[1].replace(/[^a-z0-9]/gi, "");
         const buffer = Buffer.from(matches[2], "base64");
         if (buffer.length > 5 * 1024 * 1024) {
           return res.status(400).json({ error: "A foto de capa excede o limite de 5 MB." });
         }
-        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext}`;
-        const filePath = path8.join(uploadsDir, fileName);
-        fs8.writeFileSync(filePath, buffer);
+        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext || "jpg"}`;
+        const filePath = path7.join(uploadsDir, fileName);
+        fs7.writeFileSync(filePath, buffer);
+        await persistSystemAssetToNeon({
+          id: fileName,
+          slot: "social-cover",
+          mimeType,
+          dataBase64: matches[2]
+        });
         targetCoverUrl = `/uploads/${fileName}`;
-      } catch (err) {
+      } catch {
         targetCoverUrl = dataUrl;
       }
     }
@@ -2282,7 +3385,8 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     profile.coverUrl = targetCoverUrl;
     profile.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     persistState();
-    void persistSocialProfileToNeon(profile);
+    await persistSocialProfileToNeon(profile).catch(() => {
+    });
     res.json({
       ok: true,
       coverUrl: targetCoverUrl,
@@ -2301,7 +3405,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       posts
     });
   });
-  app.post("/api/profile/posts", guard, (req, res) => {
+  app.post("/api/profile/posts", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { content, images, audience } = req.body || {};
     if (!content && (!Array.isArray(images) || images.length === 0)) {
@@ -2314,13 +3418,20 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
         if (typeof img === "string") {
           if (img.startsWith("data:image/")) {
             try {
-              fs8.mkdirSync(uploadsDir, { recursive: true });
+              fs7.mkdirSync(uploadsDir, { recursive: true });
               const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
               if (matches) {
-                const ext = matches[1] === "jpeg" ? "jpg" : matches[1];
+                const mimeType = `image/${matches[1]}`;
+                const ext = matches[1] === "jpeg" ? "jpg" : matches[1].replace(/[^a-z0-9]/gi, "");
                 const buffer = Buffer.from(matches[2], "base64");
-                const fileName = `post-img-${Date.now()}-${crypto8.randomBytes(3).toString("hex")}.${ext}`;
-                fs8.writeFileSync(path8.join(uploadsDir, fileName), buffer);
+                const fileName = `post-img-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}.${ext || "jpg"}`;
+                fs7.writeFileSync(path7.join(uploadsDir, fileName), buffer);
+                await persistSystemAssetToNeon({
+                  id: fileName,
+                  slot: "social-post",
+                  mimeType,
+                  dataBase64: matches[2]
+                });
                 validImages.push(`/uploads/${fileName}`);
                 continue;
               }
@@ -2333,7 +3444,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     }
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
     const newPost = {
-      id: `post-${Date.now()}-${crypto8.randomBytes(3).toString("hex")}`,
+      id: `post-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}`,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
       authorAvatar: sessionUser.avatar || "/assets/avatar-joao.jpg",
@@ -2442,7 +3553,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     }
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
     const newComment = {
-      id: `comment-${Date.now()}-${crypto8.randomBytes(3).toString("hex")}`,
+      id: `comment-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}`,
       postId,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
@@ -2491,24 +3602,39 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
 }
 
 // src/server/requestQueue.ts
-import fs9 from "node:fs";
-import path9 from "node:path";
-import crypto9 from "node:crypto";
+import fs8 from "node:fs";
+import path8 from "node:path";
+import crypto8 from "node:crypto";
 var DESTINATIONS = ["Recursos Humanos", "Administrativo", "Financeiro"];
 var STATUSES = ["Aberta", "Em an\xE1lise", "Em andamento", "Aguardando funcion\xE1rio", "Conclu\xEDda", "Cancelada"];
 var terminal = (r) => ["Conclu\xEDda", "Cancelada"].includes(r.status);
+var activeQueueState = null;
+function hydrateRequestQueueFromPayload(payload) {
+  if (!activeQueueState || !payload || typeof payload !== "object") return;
+  if (Array.isArray(payload.requests)) activeQueueState.requests = payload.requests;
+  if (Array.isArray(payload.notifications)) activeQueueState.notifications = payload.notifications;
+  if (payload.keys && typeof payload.keys === "object") activeQueueState.keys = payload.keys;
+}
 function canHandleRequest(u, r) {
   return u.active && u.approvalStatus === "APROVADO" && (u.accessLevel === "ADMINISTRADOR" || u.accessProfile === "RH" || u.accessProfile === "FINANCEIRO" && r.targetDepartment === "Financeiro");
 }
 function registerRequestQueue(app, guard, users, initial = []) {
-  const directory = path9.join(resolveDataRoot(), "data");
-  const file = path9.join(directory, "requests-server.json");
-  const attachmentsDir = path9.join(directory, "request-attachments");
-  const state = fs9.existsSync(file) ? JSON.parse(fs9.readFileSync(file, "utf8")) : { requests: structuredClone(initial), notifications: [], keys: {} };
-  const save = () => {
-    fs9.mkdirSync(directory, { recursive: true });
-    fs9.writeFileSync(file + ".tmp", JSON.stringify(state, null, 2));
-    fs9.renameSync(file + ".tmp", file);
+  const directory = path8.join(resolveDataRoot(), "data");
+  const file = path8.join(directory, "requests-server.json");
+  const attachmentsDir = path8.join(directory, "request-attachments");
+  const state = fs8.existsSync(file) ? JSON.parse(fs8.readFileSync(file, "utf8")) : { requests: structuredClone(initial), notifications: [], keys: {} };
+  activeQueueState = state;
+  const save = (skipNeon = false) => {
+    try {
+      fs8.mkdirSync(directory, { recursive: true });
+      fs8.writeFileSync(file + ".tmp", JSON.stringify(state, null, 2));
+      fs8.renameSync(file + ".tmp", file);
+    } catch (err) {
+      console.warn("requestQueue local save notice:", err.message);
+    }
+    if (!skipNeon) {
+      void persistStateSnapshotToNeon("rodovar-requests-state", state);
+    }
   };
   const visible = (u, r) => r.requesterId === u.id || canHandleRequest(u, r);
   const notify = (r, recipientId, title, eventId) => {
@@ -2516,7 +3642,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId, targetId: r.id, title, read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
   };
   const history = (r, u, action, note) => {
-    const id = crypto9.randomUUID();
+    const id = crypto8.randomUUID();
     r.history.push({ id, timestamp: (/* @__PURE__ */ new Date()).toISOString(), actorName: u.name, action, ...note ? { note } : {} });
     return id;
   };
@@ -2533,14 +3659,20 @@ function registerRequestQueue(app, guard, users, initial = []) {
   };
   const addAttachment = (r, u, parsed) => {
     if (!parsed) return;
-    fs9.mkdirSync(attachmentsDir, { recursive: true });
-    const attachment = { id: crypto9.randomUUID(), name: parsed.name, mimeType: parsed.mimeType, size: parsed.bytes.length, uploadedById: u.id, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() };
-    fs9.writeFileSync(path9.join(attachmentsDir, attachment.id), parsed.bytes);
+    fs8.mkdirSync(attachmentsDir, { recursive: true });
+    const attachment = { id: crypto8.randomUUID(), name: parsed.name, mimeType: parsed.mimeType, size: parsed.bytes.length, uploadedById: u.id, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() };
+    fs8.writeFileSync(path8.join(attachmentsDir, attachment.id), parsed.bytes);
+    void persistSystemAssetToNeon({
+      id: attachment.id,
+      slot: "request-attachment",
+      mimeType: parsed.mimeType,
+      dataBase64: parsed.bytes.toString("base64")
+    });
     (r.attachments ||= []).push(attachment);
     r.attachmentName ||= attachment.name;
   };
   const fail = (res, message, status = 400) => res.status(status).json({ error: message });
-  if (!fs9.existsSync(file)) save();
+  if (!fs8.existsSync(file)) save(true);
   app.get("/api/requests", guard, (req, res) => {
     const u = req.sessionUser;
     if (!hasPagePermission(u, "solicitacoes")) return fail(res, "Sem acesso \xE0 fila.", 403);
@@ -2551,7 +3683,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
       financeActive: activeUsers.filter((person) => person.accessProfile === "FINANCEIRO").length
     } });
   });
-  app.post("/api/requests", guard, (req, res) => {
+  app.post("/api/requests", guard, async (req, res) => {
     const u = req.sessionUser;
     if (!hasPagePermission(u, "solicitacoes")) return fail(res, "Sem acesso.", 403);
     const { subject, description, targetDepartment, priority, attachment } = req.body || {};
@@ -2566,7 +3698,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     } catch (e) {
       return fail(res, e.message);
     }
-    const id = crypto9.randomUUID(), now = /* @__PURE__ */ new Date(), due = new Date(now.getTime() + 48 * 36e5).toISOString();
+    const id = crypto8.randomUUID(), now = /* @__PURE__ */ new Date(), due = new Date(now.getTime() + 48 * 36e5).toISOString();
     const maxProtocol = state.requests.reduce((max, r) => Math.max(max, /^#\d+$/.test(r.protocol) ? Number(r.protocol.slice(1)) : 0), 1025);
     const record = { id, protocol: "#" + (maxProtocol + 1), requesterId: u.id, requesterName: u.name, requesterDepartment: u.department, targetDepartment, subject: subject.trim(), description: description.trim(), priority: ["Baixa", "M\xE9dia", "Alta", "Urgente"].includes(priority) ? priority : "M\xE9dia", status: "Aberta", createdAtIso: now.toISOString(), originalDueAtIso: due, currentDueAtIso: due, history: [] };
     history(record, u, "Solicita\xE7\xE3o aberta", "Prazo inicial de 48 horas corridas.");
@@ -2575,20 +3707,33 @@ function registerRequestQueue(app, guard, users, initial = []) {
     state.keys[composite] = id;
     for (const recipient of users().filter((r) => r.active && r.approvalStatus === "APROVADO" && (targetDepartment === "Financeiro" ? r.accessProfile === "FINANCEIRO" : r.accessProfile === "RH"))) notify(record, recipient.id, "Nova solicita\xE7\xE3o " + record.protocol, id);
     save();
+    void persistRequestToNeon(record);
+    await flushPendingNeonWrites();
     res.status(201).json({ request: record });
   });
-  app.get("/api/requests/:id/attachments/:attachmentId", guard, (req, res) => {
+  app.get("/api/requests/:id/attachments/:attachmentId", guard, async (req, res) => {
     const u = req.sessionUser, r = state.requests.find((r2) => r2.id === req.params.id);
     if (!hasPagePermission(u, "solicitacoes") || !r || !visible(u, r)) return fail(res, "Arquivo n\xE3o encontrado.", 404);
     const attachment = r.attachments?.find((a) => a.id === req.params.attachmentId);
     if (!attachment) return fail(res, "Arquivo n\xE3o encontrado.", 404);
-    const storedPath = path9.join(attachmentsDir, attachment.id);
-    if (!fs9.existsSync(storedPath)) return fail(res, "Arquivo indispon\xEDvel no servidor.", 404);
+    const storedPath = path8.join(attachmentsDir, attachment.id);
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("Content-Type", attachment.mimeType);
-    res.attachment(attachment.name).sendFile(storedPath);
+    if (fs8.existsSync(storedPath)) {
+      return res.attachment(attachment.name).sendFile(storedPath);
+    }
+    const neonAsset = await getSystemAssetFromNeon(attachment.id);
+    if (neonAsset) {
+      try {
+        fs8.mkdirSync(attachmentsDir, { recursive: true });
+        fs8.writeFileSync(storedPath, neonAsset.buffer);
+      } catch {
+      }
+      return res.attachment(attachment.name).send(neonAsset.buffer);
+    }
+    return fail(res, "Arquivo indispon\xEDvel no servidor.", 404);
   });
-  app.post("/api/requests/:id/:action", guard, (req, res) => {
+  app.post("/api/requests/:id/:action", guard, async (req, res) => {
     const u = req.sessionUser, r = state.requests.find((r2) => r2.id === req.params.id);
     if (!hasPagePermission(u, "solicitacoes") || !r || !visible(u, r)) return fail(res, "Solicita\xE7\xE3o n\xE3o encontrada.", 404);
     const action = req.params.action, isHandler = canHandleRequest(u, r), assigned = r.assignedToId === u.id;
@@ -2599,6 +3744,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     if (action === "read") {
       for (const n of state.notifications) if (n.targetId === r.id && n.recipientId === u.id) n.read = true;
       save();
+      await flushPendingNeonWrites();
       return res.json({ request: r });
     }
     if (terminal(r)) return fail(res, "Protocolo encerrado. O hist\xF3rico permanece dispon\xEDvel.", 409);
@@ -2660,12 +3806,14 @@ function registerRequestQueue(app, guard, users, initial = []) {
     }
     if (actionKey) state.keys[composite] = r.id;
     save();
+    void persistRequestToNeon(r);
+    await flushPendingNeonWrites();
     res.json({ request: r });
   });
 }
 
 // src/server/accountLifecycle.ts
-import crypto10 from "node:crypto";
+import crypto9 from "node:crypto";
 var AccountDeletionError = class extends Error {
   constructor(message, status) {
     super(message);
@@ -2689,7 +3837,21 @@ function archiveAccount(db, targetId, actorId, reason) {
   db.passwordResetTokens = db.passwordResetTokens.filter((t) => t.userId !== targetId);
   delete db.loginLocks["user:" + targetId];
   delete db.loginLocks[target.login];
-  db.auditLogs.unshift({ id: crypto10.randomUUID(), timestampIso: stamp, timestampFormatted: new Date(stamp).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }), actorId, actorName: actor.name, actorRole: "ADMINISTRADOR", action: "EXCLUSAO_CADASTRO", details: `Cadastro ${target.name} (${target.login}, UID ${targetId}) exclu\xEDdo dos acessos. Hist\xF3rico preservado. ${reason}` });
+  const auditEntry = {
+    id: crypto9.randomUUID(),
+    timestampIso: stamp,
+    timestampFormatted: new Date(stamp).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+    actorId,
+    actorName: actor.name,
+    actorRole: "ADMINISTRADOR",
+    action: "EXCLUSAO_CADASTRO",
+    details: `Cadastro ${target.name} (${target.login}, UID ${targetId}) exclu\xEDdo dos acessos. Hist\xF3rico preservado. ${reason}`
+  };
+  db.auditLogs.unshift(auditEntry);
+  void deleteUserFromNeon(targetId, archived);
+  void persistAccessPolicyToNeon(policy);
+  void persistUserSessionsRevocationToNeon(targetId, Date.now());
+  void persistAuditLogToNeon(auditEntry);
   return archived;
 }
 function registerAccountDeletionRoutes(app, guard, db, save) {
@@ -2987,9 +4149,9 @@ var INITIAL_REQUESTS = [
 
 // server.ts
 import express from "express";
-import crypto13 from "crypto";
-import fs12 from "fs";
-import path12 from "path";
+import crypto12 from "crypto";
+import fs11 from "fs";
+import path11 from "path";
 import zlib2 from "zlib";
 
 // src/lib/expeditionValidation.ts
@@ -3016,16 +4178,30 @@ function expeditionChecklistCount(f) {
 }
 
 // src/server/unifiedFreightEngine.ts
-import crypto11 from "crypto";
-import fs10 from "fs";
-import path10 from "path";
-var RODOVAR_CNPJ = "49.908.710/0001-03";
-var RODOVAR_RAZAO_SOCIAL = "RODOVAR LOG\xCDSTICA E TRANSPORTES RODOVI\xC1RIOS LTDA";
+import crypto10 from "crypto";
+import fs9 from "fs";
+import path9 from "path";
+var COMPANY_OFFICIAL_PROFILES = {
+  RODOVAR: {
+    razaoSocial: "RODOVAR TRANSPORTES E LOGISTICA",
+    cnpj: "49908710000103",
+    ie: "205429099",
+    endereco: "TRAVESSA ACALANTO / JARDIM DAS MARGARIDAS - SALVADOR - BA",
+    telefone: "(71) 9 9920-2476"
+  },
+  "VL TRANSPORTES": {
+    razaoSocial: "VL TRANSPORTES LTDA",
+    cnpj: "54506363000122",
+    ie: "",
+    endereco: "R JUBIABA, 292 - LUIS EDUARDO MAGALHAES - SIMOES FILHO / BA",
+    telefone: "(71) 9 9920-2476"
+  }
+};
 var ROOT_DIR = resolveDataRoot();
-var FREIGHTS_STORE_DIR = path10.join(ROOT_DIR, "data", "freights-store");
-var FREIGHT_ATTACHMENTS_DIR = path10.join(ROOT_DIR, "data", "freight-attachments");
-var NOTIFICATIONS_FILE = path10.join(FREIGHTS_STORE_DIR, "_notifications.json");
-var SEQUENCE_FILE = path10.join(FREIGHTS_STORE_DIR, "_sequence.json");
+var FREIGHTS_STORE_DIR = path9.join(ROOT_DIR, "data", "freights-store");
+var FREIGHT_ATTACHMENTS_DIR = path9.join(ROOT_DIR, "data", "freight-attachments");
+var NOTIFICATIONS_FILE = path9.join(FREIGHTS_STORE_DIR, "_notifications.json");
+var SEQUENCE_FILE = path9.join(FREIGHTS_STORE_DIR, "_sequence.json");
 var MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 function formatSaoPauloDateTime(date = /* @__PURE__ */ new Date()) {
   const iso = date.toISOString();
@@ -3061,27 +4237,36 @@ var idempotencyCache = /* @__PURE__ */ new Map();
 var activeFreightLocks = /* @__PURE__ */ new Set();
 var serverNotifications = [];
 var nextProtocolNumber = 843;
+var nextOrderSeqByBrand = {
+  RODOVAR: 1,
+  "VL TRANSPORTES": 1
+};
+var freightsDataVersion = 1;
+var seededFromDefaultsOnly = false;
+function bumpFreightsDataVersion() {
+  freightsDataVersion += 1;
+}
 function ensureDirectories() {
-  if (!fs10.existsSync(FREIGHTS_STORE_DIR)) {
-    fs10.mkdirSync(FREIGHTS_STORE_DIR, { recursive: true });
+  if (!fs9.existsSync(FREIGHTS_STORE_DIR)) {
+    fs9.mkdirSync(FREIGHTS_STORE_DIR, { recursive: true });
   }
-  if (!fs10.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
-    fs10.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
+  if (!fs9.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
+    fs9.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
   }
 }
 function getFreightDocPath(freightId) {
   const safeId = freightId.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path10.join(FREIGHTS_STORE_DIR, `${safeId}.json`);
+  return path9.join(FREIGHTS_STORE_DIR, `${safeId}.json`);
 }
 function getFreightSubDocPath(freightId) {
   const safeId = freightId.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path10.join(FREIGHTS_STORE_DIR, `${safeId}.sub.json`);
+  return path9.join(FREIGHTS_STORE_DIR, `${safeId}.sub.json`);
 }
 function writeJsonAtomically(targetPath, data) {
   ensureDirectories();
   const tmp = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  fs10.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  fs10.renameSync(tmp, targetPath);
+  fs9.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+  fs9.renameSync(tmp, targetPath);
 }
 function computePendingForExpedicao(freight) {
   const pending = [];
@@ -3147,7 +4332,66 @@ var subscribeUnifiedFinance = (listener) => {
   return () => financeListeners.delete(listener);
 };
 var unifiedFinanceFreights = () => [...freightsIndex.values()].filter((f) => f.situacaoMonitoramento !== "NAO_LIBERADO" && f.situacaoMonitoramento !== "DEVOLVIDO_EXPEDICAO" && f.situacaoOperacional !== "CANCELADO");
-function persistFreightAndSubDoc(freight, sub) {
+function saveFreightsSnapshotToNeon() {
+  void persistStateSnapshotToNeon("rodovar-freights-state", {
+    nextProtocolNumber,
+    nextOrderSeqByBrand,
+    freights: Array.from(freightsIndex.values()),
+    subDocs: Array.from(freightSubDocs.values()),
+    notifications: serverNotifications.slice(0, 300),
+    updatedAtIso: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
+function hydrateUnifiedFreightsFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (typeof payload.nextProtocolNumber === "number" && payload.nextProtocolNumber > nextProtocolNumber) {
+    nextProtocolNumber = payload.nextProtocolNumber;
+  }
+  if (payload.nextOrderSeqByBrand && typeof payload.nextOrderSeqByBrand === "object") {
+    const rdv = Number(payload.nextOrderSeqByBrand.RODOVAR);
+    const vl = Number(payload.nextOrderSeqByBrand["VL TRANSPORTES"]);
+    if (!Number.isNaN(rdv) && rdv > nextOrderSeqByBrand.RODOVAR) nextOrderSeqByBrand.RODOVAR = rdv;
+    if (!Number.isNaN(vl) && vl > nextOrderSeqByBrand["VL TRANSPORTES"]) nextOrderSeqByBrand["VL TRANSPORTES"] = vl;
+  }
+  if (seededFromDefaultsOnly && Array.isArray(payload.freights) && payload.freights.length > 0) {
+    freightsIndex.clear();
+    freightSubDocs.clear();
+    seededFromDefaultsOnly = false;
+  }
+  if (Array.isArray(payload.subDocs)) {
+    for (const sub of payload.subDocs) {
+      if (sub && sub.freightId) {
+        freightSubDocs.set(sub.freightId, sub);
+      }
+    }
+  }
+  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+    for (const f of payload.freights) {
+      if (!f || !f.id) continue;
+      const existing = freightsIndex.get(f.id);
+      if (!existing || Number(f.revision || 0) >= Number(existing.revision || 0)) {
+        freightsIndex.set(f.id, f);
+      }
+      if (typeof f.ordemColetaSequencia === "number" && f.empresaMarca !== "AXD") {
+        const b = f.empresaMarca === "VL TRANSPORTES" ? "VL TRANSPORTES" : "RODOVAR";
+        if (f.ordemColetaSequencia >= nextOrderSeqByBrand[b]) {
+          nextOrderSeqByBrand[b] = f.ordemColetaSequencia + 1;
+        }
+      }
+    }
+  }
+  if (Array.isArray(payload.notifications) && payload.notifications.length > 0) {
+    const existingIds = new Set(serverNotifications.map((n) => n.id));
+    for (const n of payload.notifications) {
+      if (n && n.id && !existingIds.has(n.id)) {
+        serverNotifications.push(n);
+        existingIds.add(n.id);
+      }
+    }
+  }
+  bumpFreightsDataVersion();
+}
+function persistFreightAndSubDoc(freight, sub, options) {
   const existingSub = sub || freightSubDocs.get(freight.id) || {
     freightId: freight.id,
     anexos: [],
@@ -3158,15 +4402,53 @@ function persistFreightAndSubDoc(freight, sub) {
   syncSubDocCounters(freight, existingSub);
   freightsIndex.set(freight.id, freight);
   freightSubDocs.set(freight.id, existingSub);
+  if (!options?.skipNeon) {
+    seededFromDefaultsOnly = false;
+  }
+  bumpFreightsDataVersion();
   writeJsonAtomically(getFreightDocPath(freight.id), freight);
   writeJsonAtomically(getFreightSubDocPath(freight.id), existingSub);
   for (const listener of financeListeners) listener(freight);
+  if (!options?.skipNeon) {
+    void persistFreightToNeon(freight);
+    saveFreightsSnapshotToNeon();
+  }
 }
 function saveNotifications() {
+  bumpFreightsDataVersion();
   writeJsonAtomically(NOTIFICATIONS_FILE, serverNotifications);
+  saveFreightsSnapshotToNeon();
 }
-function saveSequence() {
-  writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber });
+function saveSequence(skipNeon = false) {
+  writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber, nextOrderSeqByBrand });
+  if (!skipNeon) {
+    saveFreightsSnapshotToNeon();
+  }
+}
+function allocateNextOrderNumber(brand, year) {
+  const spYear = year || Number(formatSaoPauloDateTime().dateOnlyIso.slice(0, 4)) || (/* @__PURE__ */ new Date()).getFullYear();
+  let nextSeq = Math.max(1, nextOrderSeqByBrand[brand] || 1);
+  const prefix = brand === "VL TRANSPORTES" ? "OC-VL-" : "OC-RDV-";
+  for (const rec of freightsIndex.values()) {
+    const recBrand = rec.empresaMarca === "VL TRANSPORTES" ? "VL TRANSPORTES" : rec.empresaMarca === "RODOVAR" ? "RODOVAR" : null;
+    if (recBrand !== brand) continue;
+    if (typeof rec.ordemColetaSequencia === "number" && rec.ordemColetaSequencia >= nextSeq) {
+      nextSeq = rec.ordemColetaSequencia + 1;
+    }
+    if (rec.ordemCarregamentoNumero && rec.ordemCarregamentoNumero.startsWith(prefix)) {
+      const m = rec.ordemCarregamentoNumero.match(/^OC-(?:RDV|VL)-(\d+)/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (!Number.isNaN(parsed) && parsed >= nextSeq) {
+          nextSeq = parsed + 1;
+        }
+      }
+    }
+  }
+  nextOrderSeqByBrand[brand] = nextSeq + 1;
+  saveSequence();
+  const orderNumber = `${prefix}${String(nextSeq).padStart(6, "0")}/${spYear}`;
+  return { orderNumber, sequence: nextSeq, year: spYear };
 }
 function formatProtocolNumber(seq) {
   if (seq < 1e3) {
@@ -3202,7 +4484,7 @@ function pushFreightNotification(params) {
   }
   const sp = formatSaoPauloDateTime();
   const notif = {
-    id: `fnotif-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+    id: `fnotif-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
     recipientId: params.recipientId,
     type: "prazo",
     dotColor: params.dotColor || "blue",
@@ -3341,24 +4623,30 @@ function normalizeLegacyFreightRecord(rec) {
 }
 function loadOrSeedUnifiedFreights() {
   ensureDirectories();
-  if (fs10.existsSync(NOTIFICATIONS_FILE)) {
+  if (fs9.existsSync(NOTIFICATIONS_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(NOTIFICATIONS_FILE, "utf8"));
+      const parsed = JSON.parse(fs9.readFileSync(NOTIFICATIONS_FILE, "utf8"));
       if (Array.isArray(parsed)) serverNotifications = parsed;
     } catch {
       serverNotifications = [];
     }
   }
-  if (fs10.existsSync(SEQUENCE_FILE)) {
+  if (fs9.existsSync(SEQUENCE_FILE)) {
     try {
-      const seq = JSON.parse(fs10.readFileSync(SEQUENCE_FILE, "utf8"));
+      const seq = JSON.parse(fs9.readFileSync(SEQUENCE_FILE, "utf8"));
       if (seq && typeof seq.nextProtocolNumber === "number") {
         nextProtocolNumber = Math.max(843, seq.nextProtocolNumber);
+      }
+      if (seq && seq.nextOrderSeqByBrand && typeof seq.nextOrderSeqByBrand === "object") {
+        const rdv = Number(seq.nextOrderSeqByBrand.RODOVAR);
+        const vl = Number(seq.nextOrderSeqByBrand["VL TRANSPORTES"]);
+        if (!Number.isNaN(rdv) && rdv > nextOrderSeqByBrand.RODOVAR) nextOrderSeqByBrand.RODOVAR = rdv;
+        if (!Number.isNaN(vl) && vl > nextOrderSeqByBrand["VL TRANSPORTES"]) nextOrderSeqByBrand["VL TRANSPORTES"] = vl;
       }
     } catch {
     }
   }
-  const files = fs10.readdirSync(FREIGHTS_STORE_DIR);
+  const files = fs9.readdirSync(FREIGHTS_STORE_DIR);
   const freightDocFiles = files.filter(
     (f) => f.endsWith(".json") && !f.endsWith(".sub.json") && !f.startsWith("_")
   );
@@ -3367,8 +4655,8 @@ function loadOrSeedUnifiedFreights() {
     freightSubDocs.clear();
     for (const file of freightDocFiles) {
       try {
-        const fullPath = path10.join(FREIGHTS_STORE_DIR, file);
-        const rec = JSON.parse(fs10.readFileSync(fullPath, "utf8"));
+        const fullPath = path9.join(FREIGHTS_STORE_DIR, file);
+        const rec = JSON.parse(fs9.readFileSync(fullPath, "utf8"));
         if (rec && rec.id) {
           const subPath = getFreightSubDocPath(rec.id);
           let sub = {
@@ -3378,8 +4666,8 @@ function loadOrSeedUnifiedFreights() {
             ocorrencias: [],
             historico: []
           };
-          if (fs10.existsSync(subPath)) {
-            sub = JSON.parse(fs10.readFileSync(subPath, "utf8"));
+          if (fs9.existsSync(subPath)) {
+            sub = JSON.parse(fs9.readFileSync(subPath, "utf8"));
           }
           const mutated = normalizeLegacyFreightRecord(rec);
           syncSubDocCounters(rec, sub);
@@ -3393,12 +4681,18 @@ function loadOrSeedUnifiedFreights() {
           if (!isNaN(parsedNum) && parsedNum >= nextProtocolNumber) {
             nextProtocolNumber = parsedNum + 1;
           }
+          if (typeof rec.ordemColetaSequencia === "number" && rec.empresaMarca !== "AXD") {
+            const b = rec.empresaMarca === "VL TRANSPORTES" ? "VL TRANSPORTES" : "RODOVAR";
+            if (rec.ordemColetaSequencia >= nextOrderSeqByBrand[b]) {
+              nextOrderSeqByBrand[b] = rec.ordemColetaSequencia + 1;
+            }
+          }
         }
       } catch (err) {
         console.error("Error loading freight doc:", file, err);
       }
     }
-    saveSequence();
+    saveSequence(true);
     return;
   }
   const sp = formatSaoPauloDateTime();
@@ -3805,10 +5099,11 @@ function loadOrSeedUnifiedFreights() {
       }
     }
   ];
+  seededFromDefaultsOnly = true;
   for (const item of initialRecords) {
-    persistFreightAndSubDoc(item.freight, item.sub);
+    persistFreightAndSubDoc(item.freight, item.sub, { skipNeon: true });
   }
-  saveSequence();
+  saveSequence(true);
 }
 function validateAttachmentFileBuffer(buf, originalFileName) {
   if (!buf || buf.length < 8) {
@@ -3930,7 +5225,7 @@ function canUserAccessFreightRecord(freight, user) {
 function appendHistoryEntry(sub, params) {
   const sp = formatSaoPauloDateTime();
   const entry = {
-    id: `fhist-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+    id: `fhist-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
     freightId: sub.freightId,
     timestampIso: sp.iso,
     timestampFormatted: sp.formatted,
@@ -3950,9 +5245,9 @@ function appendHistoryEntry(sub, params) {
 }
 function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServerUsers, appendServerAuditLog) {
   loadOrSeedUnifiedFreights();
-  const idemFile = path10.join(FREIGHTS_STORE_DIR, "_idempotency.json");
-  if (fs10.existsSync(idemFile)) {
-    for (const [key, value] of Object.entries(JSON.parse(fs10.readFileSync(idemFile, "utf8")))) idempotencyCache.set(key, value);
+  const idemFile = path9.join(FREIGHTS_STORE_DIR, "_idempotency.json");
+  if (fs9.existsSync(idemFile)) {
+    for (const [key, value] of Object.entries(JSON.parse(fs9.readFileSync(idemFile, "utf8")))) idempotencyCache.set(key, value);
   }
   function checkIdempotency(req, res, userId) {
     const rawKey = req.headers["x-idempotency-key"] || (req.body && typeof req.body.idempotencyKey === "string" ? req.body.idempotencyKey : "") || `auto-${Date.now()}-${Math.random()}`;
@@ -4106,18 +5401,30 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       res.json({ ok: true });
     }
   );
-  app.get("/api/meus-fretes", requireApprovedSession2, (req, res) => {
+  app.get("/api/meus-fretes", requireApprovedSession2, async (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Vary", "Authorization, Cookie");
     const user = req.sessionUser;
     const area = String(req.query.area || "COMERCIAL").toUpperCase();
     const scope = String(req.query.scope || "MEUS").toUpperCase();
+    const viewModeRaw = String(req.query.viewMode || "ALL").toUpperCase();
+    const viewMode = viewModeRaw === "ATIVOS" || viewModeRaw === "FINALIZADOS" ? viewModeRaw : "ALL";
     const responsavelFilterId = String(req.query.responsavelId || "").trim();
     const search = String(req.query.search || "").trim().toLowerCase();
     const periodo = String(req.query.periodo || "TODOS").toUpperCase();
     const situacao = String(req.query.situacao || "TODAS").toUpperCase();
     const includeCanceled = req.query.includeCanceled === "true" || situacao === "CANCELADO";
     const cursor = String(req.query.cursor || "").trim();
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 25));
+    const hasExplicitPage = req.query.page !== void 0 && req.query.page !== "";
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const defaultLimit = viewMode === "ATIVOS" || viewMode === "FINALIZADOS" ? 12 : 25;
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || defaultLimit));
     const columnLimit = Math.min(25, Math.max(2, Number(req.query.columnLimit) || 10));
+    const omitKanban = req.query.omitKanban === "true";
+    const compact = req.query.compact === "true";
+    const checkOnly = req.query.checkOnly === "true";
+    const sinceVersion = req.query.sinceVersion !== void 0 ? Number(req.query.sinceVersion) : null;
     if (area === "COMERCIAL") {
       if (!canAccessComercialFreights(user)) {
         res.status(403).json({
@@ -4156,8 +5463,139 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         return;
       }
     }
+    const querySignature = [
+      freightsDataVersion,
+      user.id,
+      area,
+      scope,
+      viewMode,
+      responsavelFilterId,
+      search,
+      periodo,
+      situacao,
+      includeCanceled ? "1" : "0",
+      cursor,
+      page,
+      limit,
+      columnLimit,
+      omitKanban ? "1" : "0",
+      compact ? "1" : "0"
+    ].join("|");
+    const etag = `W/"fretes-v${freightsDataVersion}-${crypto10.createHash("sha1").update(querySignature).digest("hex").slice(0, 12)}"`;
+    res.setHeader("ETag", etag);
+    if (req.headers["if-none-match"] === etag) {
+      res.status(304).end();
+      return;
+    }
+    if (checkOnly) {
+      if (sinceVersion !== null && sinceVersion === freightsDataVersion) {
+        res.json({ ok: true, unchanged: true, dataVersion: freightsDataVersion });
+        return;
+      }
+      res.json({ ok: true, unchanged: false, dataVersion: freightsDataVersion });
+      return;
+    }
+    const nowDate = /* @__PURE__ */ new Date();
+    const todaySp = formatSaoPauloDateTime(nowDate).dateOnlyIso;
+    const weekStartDate = new Date(nowDate.getTime() - 7 * 864e5);
+    const weekEndDate = new Date(nowDate.getTime() + 7 * 864e5);
+    const weekStartIso = formatSaoPauloDateTime(weekStartDate).dateOnlyIso;
+    const weekEndIso = formatSaoPauloDateTime(weekEndDate).dateOnlyIso;
+    const monthPrefix = todaySp.slice(0, 7);
+    const emptyComercialCounters = {
+      EM_NEGOCIACAO: 0,
+      CONTRATADO: 0,
+      AGUARDANDO_EXPEDICAO: 0,
+      NA_EXPEDICAO: 0,
+      EM_MONITORAMENTO: 0,
+      EM_TRANSPORTE: 0,
+      FINALIZADO: 0,
+      CANCELADO: 0
+    };
+    const emptyExpedicaoCounters = {
+      RECEBIDO: 0,
+      EM_PREPARACAO: 0,
+      LIBERADO_MONITORAMENTO: 0,
+      AGUARDANDO_FECHAMENTO: 0,
+      FECHADO: 0,
+      AGUARDANDO_COLETA: 0,
+      EM_TRANSPORTE: 0,
+      CONCLUIDO: 0,
+      COLETAS_HOJE: 0,
+      PENDENCIAS: 0,
+      DISPONIVEIS_FILA: 0
+    };
+    const projectCompactFinalizedRow = (f) => ({
+      id: f.id,
+      protocol: f.protocol,
+      empresaMarca: f.empresaMarca,
+      cliente: f.cliente,
+      motoristaNome: f.motoristaNome || "",
+      origemCidadeUf: f.origemCidadeUf,
+      destinoCidadeUf: f.destinoCidadeUf,
+      dataColetaIso: f.dataColetaIso,
+      dataEntregaPrevistaIso: f.dataEntregaPrevistaIso,
+      entregaComprovadaEm: f.entregaComprovadaEm,
+      situacaoComercial: f.situacaoComercial,
+      situacaoOperacional: f.situacaoOperacional,
+      situacaoMonitoramento: f.situacaoMonitoramento,
+      comprovanteEntregaConferido: Boolean(f.comprovanteEntregaConferido),
+      monitoramentoResponsavelId: f.monitoramentoResponsavelId,
+      monitoramentoResponsavelNome: f.monitoramentoResponsavelNome,
+      updatedAtIso: f.updatedAtIso,
+      updatedAtFormatted: f.updatedAtFormatted,
+      revision: f.revision
+    });
+    if (area === "MONITORAMENTO" && (viewMode === "ATIVOS" || viewMode === "FINALIZADOS") && !cursor && isNeonConfigured && !isIsolatedTestEnv()) {
+      const neonResult = await queryMonitoringFreightsFromNeon({
+        scope: scope === "EQUIPE" ? "EQUIPE" : "MEUS",
+        userId: user.id,
+        isTesteLogin: user.login === "teste",
+        responsavelFilterId,
+        viewMode,
+        search,
+        periodo,
+        situacao,
+        includeCanceled,
+        todaySp,
+        weekStartIso,
+        weekEndIso,
+        monthPrefix,
+        page,
+        limit,
+        compact: compact && viewMode === "FINALIZADOS"
+      });
+      if (neonResult) {
+        const sanitizedNeonItems = neonResult.items.map(
+          (item) => compact && viewMode === "FINALIZADOS" ? projectCompactFinalizedRow(item) : sanitizeFreightForUser(item, user, false)
+        );
+        const totalMatched = neonResult.totalMatched;
+        const totalPages2 = Math.max(1, Math.ceil(totalMatched / limit));
+        const hasMore2 = page * limit < totalMatched;
+        const nextCursor2 = hasMore2 && sanitizedNeonItems.length > 0 ? sanitizedNeonItems[sanitizedNeonItems.length - 1].id : null;
+        res.json({
+          ok: true,
+          area,
+          scope,
+          viewMode,
+          page,
+          limit,
+          totalPages: totalPages2,
+          totalMatched,
+          items: sanitizedNeonItems,
+          nextCursor: nextCursor2,
+          hasMore: hasMore2,
+          dataVersion: freightsDataVersion,
+          comercialCounters: emptyComercialCounters,
+          expedicaoCounters: emptyExpedicaoCounters,
+          monitoramentoCounters: neonResult.counters,
+          kanbanColumns: {},
+          serverTimeFormatted: formatSaoPauloDateTime().formatted
+        });
+        return;
+      }
+    }
     const allRecords = Array.from(freightsIndex.values());
-    const todaySp = formatSaoPauloDateTime().dateOnlyIso;
     let scopedRecords = allRecords.filter((f) => {
       if (area === "COMERCIAL") {
         if (scope === "EQUIPE" && hasTeamPerm) {
@@ -4180,7 +5618,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         }
         return f.expedicaoResponsavelId === user.id || (user.login === "teste" || user.id === "emp-teste-logistica") && (f.expedicaoResponsavelId === "emp-teste-logistica" || f.expedicaoResponsavelId === "emp-4" || f.expedicaoResponsavelId === "emp-expedicao-2" || f.expedicaoResponsavelNome === "teste");
       } else {
-        const isReleasedToMon = f.situacaoMonitoramento && f.situacaoMonitoramento !== "NAO_LIBERADO" && f.situacaoMonitoramento !== "CANCELADO";
+        const isReleasedToMon = f.situacaoMonitoramento && f.situacaoMonitoramento !== "NAO_LIBERADO" && f.situacaoMonitoramento !== "DEVOLVIDO_EXPEDICAO" && f.situacaoMonitoramento !== "CANCELADO";
         if (!isReleasedToMon && !includeCanceled) return false;
         if (scope === "EQUIPE" && hasTeamPerm) {
           if (responsavelFilterId && responsavelFilterId !== "TODOS") {
@@ -4199,6 +5637,52 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         (f) => f.situacaoComercial !== "CANCELADO" && f.situacaoOperacional !== "CANCELADO" && f.situacaoMonitoramento !== "CANCELADO"
       );
     }
+    const monActiveStages = [
+      "NOVO_PARA_CARREGAR",
+      "EM_DESLOCAMENTO_COLETA",
+      "NO_LOCAL_COLETA",
+      "CARREGADO_EM_TRANSPORTE",
+      "NO_LOCAL_ENTREGA"
+    ];
+    const monCompletedStages = ["ENTREGUE", "FINALIZADO"];
+    const monScopeNovo = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "NOVO_PARA_CARREGAR"
+    ).length;
+    const monScopeDesloc = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "EM_DESLOCAMENTO_COLETA"
+    ).length;
+    const monScopeNoLocalColeta = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "NO_LOCAL_COLETA"
+    ).length;
+    const monScopeTransporte = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "CARREGADO_EM_TRANSPORTE"
+    ).length;
+    const monScopeNoLocalEntrega = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "NO_LOCAL_ENTREGA"
+    ).length;
+    const monScopeEntregue = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "ENTREGUE"
+    ).length;
+    const monScopeFinalizado = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === "FINALIZADO"
+    ).length;
+    const monitoramentoCounters = {
+      NOVO_PARA_CARREGAR: monScopeNovo,
+      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
+      NO_LOCAL_COLETA: monScopeNoLocalColeta,
+      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
+      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
+      ENTREGUE: monScopeEntregue,
+      FINALIZADO: monScopeFinalizado,
+      COLETAS_HOJE: scopedRecords.filter(
+        (f) => f.dataColetaIso === todaySp && monActiveStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
+      ).length,
+      PENDENCIAS: scopedRecords.filter(
+        (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido
+      ).length,
+      TOTAL_ATIVOS: monScopeNovo + monScopeDesloc + monScopeNoLocalColeta + monScopeTransporte + monScopeNoLocalEntrega,
+      completedCount: monScopeEntregue + monScopeFinalizado
+    };
     if (search) {
       scopedRecords = scopedRecords.filter((f) => {
         const hay = [
@@ -4220,8 +5704,18 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
     }
     if (periodo === "HOJE") {
       scopedRecords = scopedRecords.filter(
-        (f) => f.dataColetaIso === todaySp || f.dataEntregaPrevistaIso === todaySp
+        (f) => f.dataColetaIso === todaySp || f.dataEntregaPrevistaIso === todaySp || (f.updatedAtIso || "").slice(0, 10) === todaySp
       );
+    } else if (periodo === "SEMANA") {
+      scopedRecords = scopedRecords.filter((f) => {
+        const refDate = f.dataColetaIso || (f.updatedAtIso || "").slice(0, 10);
+        return refDate >= weekStartIso && refDate <= weekEndIso;
+      });
+    } else if (periodo === "MES") {
+      scopedRecords = scopedRecords.filter((f) => {
+        const refDate = f.dataColetaIso || (f.updatedAtIso || "").slice(0, 10);
+        return refDate.slice(0, 7) === monthPrefix;
+      });
     } else if (periodo === "ATRASADOS") {
       scopedRecords = scopedRecords.filter(
         (f) => f.dataColetaIso < todaySp && !["EM_MONITORAMENTO", "EM_TRANSPORTE", "FINALIZADO", "CANCELADO"].includes(
@@ -4306,107 +5800,108 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       ).length,
       DISPONIVEIS_FILA: availableToClaimCount
     };
-    const monitoramentoCounters = {
-      NOVO_PARA_CARREGAR: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === "NOVO_PARA_CARREGAR"
-      ).length,
-      EM_DESLOCAMENTO_COLETA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === "EM_DESLOCAMENTO_COLETA"
-      ).length,
-      NO_LOCAL_COLETA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === "NO_LOCAL_COLETA"
-      ).length,
-      CARREGADO_EM_TRANSPORTE: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === "CARREGADO_EM_TRANSPORTE"
-      ).length,
-      NO_LOCAL_ENTREGA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === "NO_LOCAL_ENTREGA"
-      ).length,
-      ENTREGUE: scopedRecords.filter((f) => f.situacaoMonitoramento === "ENTREGUE").length,
-      FINALIZADO: scopedRecords.filter((f) => f.situacaoMonitoramento === "FINALIZADO").length,
-      PENDENCIAS: scopedRecords.filter(
-        (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido
-      ).length
-    };
     let filteredList = scopedRecords;
+    if (area === "MONITORAMENTO") {
+      if (viewMode === "ATIVOS") {
+        filteredList = filteredList.filter(
+          (f) => monActiveStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
+        );
+      } else if (viewMode === "FINALIZADOS") {
+        filteredList = filteredList.filter(
+          (f) => monCompletedStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
+        );
+      }
+    }
     if (situacao && situacao !== "TODAS") {
       if (area === "COMERCIAL") {
-        filteredList = scopedRecords.filter((f) => matchesComercialStage(f, situacao));
+        filteredList = filteredList.filter((f) => matchesComercialStage(f, situacao));
       } else if (area === "EXPEDICAO") {
-        filteredList = scopedRecords.filter((f) => matchesExpedicaoStage(f, situacao));
+        filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
       } else {
-        filteredList = scopedRecords.filter((f) => f.situacaoMonitoramento === situacao);
+        filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
       }
     }
     let startIdx = 0;
     if (cursor) {
       const foundIdx = filteredList.findIndex((f) => f.id === cursor);
       if (foundIdx >= 0) startIdx = foundIdx + 1;
+    } else if (hasExplicitPage) {
+      startIdx = (page - 1) * limit;
     }
     const pageSlice = filteredList.slice(startIdx, startIdx + limit);
+    const totalPages = Math.max(1, Math.ceil(filteredList.length / limit));
     const hasMore = startIdx + limit < filteredList.length;
     const nextCursor = hasMore && pageSlice.length > 0 ? pageSlice[pageSlice.length - 1].id : null;
     const isSharedQueue = area === "EXPEDICAO" && scope === "DISPONIVEIS";
-    const sanitizedItems = pageSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue));
+    const sanitizedItems = pageSlice.map(
+      (f) => compact && area === "MONITORAMENTO" && viewMode === "FINALIZADOS" ? projectCompactFinalizedRow(sanitizeFreightForUser(f, user, isSharedQueue)) : sanitizeFreightForUser(f, user, isSharedQueue)
+    );
     const kanbanColumns = {};
-    if (area === "COMERCIAL") {
-      const colKeys = [
-        "EM_NEGOCIACAO",
-        "AGUARDANDO_EXPEDICAO",
-        "EM_MONITORAMENTO",
-        "FINALIZADO"
-      ];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => matchesComercialStage(f, col));
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
-        };
-      }
-    } else if (area === "EXPEDICAO") {
-      const colKeys = ["RECEBIDO", "EM_PREPARACAO", "LIBERADO_MONITORAMENTO"];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => matchesExpedicaoStage(f, col));
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
-        };
-      }
-    } else {
-      const colKeys = [
-        "NOVO_PARA_CARREGAR",
-        "EM_DESLOCAMENTO_COLETA",
-        "NO_LOCAL_COLETA",
-        "CARREGADO_EM_TRANSPORTE",
-        "NO_LOCAL_ENTREGA",
-        "ENTREGUE",
-        "FINALIZADO"
-      ];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => f.situacaoMonitoramento === col);
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
-        };
+    if (!omitKanban) {
+      if (area === "COMERCIAL") {
+        const colKeys = [
+          "EM_NEGOCIACAO",
+          "AGUARDANDO_EXPEDICAO",
+          "EM_MONITORAMENTO",
+          "FINALIZADO"
+        ];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => matchesComercialStage(f, col));
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
+          };
+        }
+      } else if (area === "EXPEDICAO") {
+        const colKeys = ["RECEBIDO", "EM_PREPARACAO", "LIBERADO_MONITORAMENTO"];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => matchesExpedicaoStage(f, col));
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
+          };
+        }
+      } else {
+        const colKeys = [
+          "NOVO_PARA_CARREGAR",
+          "EM_DESLOCAMENTO_COLETA",
+          "NO_LOCAL_COLETA",
+          "CARREGADO_EM_TRANSPORTE",
+          "NO_LOCAL_ENTREGA",
+          "ENTREGUE",
+          "FINALIZADO"
+        ];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => f.situacaoMonitoramento === col);
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null
+          };
+        }
       }
     }
     res.json({
       ok: true,
       area,
       scope,
+      viewMode,
+      page,
+      limit,
+      totalPages,
       totalMatched: filteredList.length,
       items: sanitizedItems,
       nextCursor,
       hasMore,
+      dataVersion: freightsDataVersion,
       comercialCounters,
       expedicaoCounters,
       monitoramentoCounters,
@@ -4415,6 +5910,9 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
     });
   });
   app.get("/api/meus-fretes/:freightId", requireApprovedSession2, (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Vary", "Authorization, Cookie");
     const user = req.sessionUser;
     const freightId = String(req.params.freightId || "");
     const freight = freightsIndex.get(freightId);
@@ -4444,7 +5942,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       ocorrencias: isSharedQueueItem ? [] : sub.ocorrencias,
       historico: sub.historico
     };
-    res.json({ ok: true, ...payload });
+    res.json({ ok: true, dataVersion: freightsDataVersion, ...payload });
   });
   app.post("/api/meus-fretes", requireApprovedSession2, (req, res) => {
     const user = req.sessionUser;
@@ -4516,12 +6014,20 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         assignedExpUser = candidate;
       }
     }
+    const rawBrand = String(body.empresaMarca || "RODOVAR").trim();
+    if (rawBrand === "AXD") {
+      res.status(400).json({
+        error: "A empresa AXD foi descontinuada para novas opera\xE7\xF5es. Selecione RODOVAR ou VL TRANSPORTES.",
+        code: "DISCONTINUED_COMPANY_BRAND"
+      });
+      return;
+    }
     const protocol = allocateNextProtocol();
     const id = `frete-${protocol.replace("#", "")}-${Date.now().toString(36)}`;
     const newFreight = {
       id,
       protocol,
-      empresaMarca: ["RODOVAR", "VL TRANSPORTES", "AXD"].includes(body.empresaMarca) ? body.empresaMarca : "RODOVAR",
+      empresaMarca: ["RODOVAR", "VL TRANSPORTES"].includes(rawBrand) ? rawBrand : "RODOVAR",
       unidadeOperacional: ["BA - Salvador", "SP - Guarulhos"].includes(body.unidadeOperacional) ? body.unidadeOperacional : "BA - Salvador",
       cliente: cliente.slice(0, 140),
       clienteCnpj: String(body.clienteCnpj || "").trim().slice(0, 30) || void 0,
@@ -4766,8 +6272,17 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       if (body.clienteContato !== void 0) {
         freight.clienteContato = String(body.clienteContato).trim().slice(0, 80) || void 0;
       }
-      if (body.empresaMarca && ["RODOVAR", "VL TRANSPORTES", "AXD"].includes(body.empresaMarca)) {
-        freight.empresaMarca = body.empresaMarca;
+      if (body.empresaMarca !== void 0) {
+        if (String(body.empresaMarca).trim() === "AXD") {
+          res.status(400).json({
+            error: "A empresa AXD foi descontinuada para novas opera\xE7\xF5es. Selecione RODOVAR ou VL TRANSPORTES.",
+            code: "DISCONTINUED_COMPANY_BRAND"
+          });
+          return;
+        }
+        if (["RODOVAR", "VL TRANSPORTES"].includes(String(body.empresaMarca).trim())) {
+          freight.empresaMarca = String(body.empresaMarca).trim();
+        }
       }
       if (body.unidadeOperacional && ["BA - Salvador", "SP - Guarulhos"].includes(body.unidadeOperacional)) {
         freight.unidadeOperacional = body.unidadeOperacional;
@@ -5224,6 +6739,61 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       if (body.observacoes !== void 0) {
         freight.observacoes = String(body.observacoes).trim().slice(0, 1e3) || void 0;
       }
+      if (body.motoristaRg !== void 0) {
+        freight.motoristaRg = String(body.motoristaRg).trim().slice(0, 30) || void 0;
+      }
+      if (body.motoristaCnh !== void 0) {
+        freight.motoristaCnh = String(body.motoristaCnh).trim().slice(0, 30) || void 0;
+      }
+      if (body.placaBitrem !== void 0) {
+        freight.placaBitrem = String(body.placaBitrem).trim().toUpperCase().slice(0, 12) || void 0;
+      }
+      if (body.numeroPedido !== void 0) {
+        freight.numeroPedido = String(body.numeroPedido).trim().slice(0, 60) || void 0;
+      }
+      if (body.numeroOrcamento !== void 0) {
+        freight.numeroOrcamento = String(body.numeroOrcamento).trim().slice(0, 60) || void 0;
+      }
+      if (body.pontoReferencia !== void 0) {
+        freight.pontoReferencia = String(body.pontoReferencia).trim().slice(0, 240) || void 0;
+      }
+      if (body.especieCarga !== void 0) {
+        freight.especieCarga = String(body.especieCarga).trim().slice(0, 80) || void 0;
+      }
+      if (body.embalagemCarga !== void 0) {
+        freight.embalagemCarga = String(body.embalagemCarga).trim().slice(0, 80) || void 0;
+      }
+      if (body.valorMercadoriaCentavos !== void 0) {
+        const valMerc = Math.round(Number(body.valorMercadoriaCentavos) || 0);
+        freight.valorMercadoriaCentavos = valMerc > 0 ? valMerc : void 0;
+      }
+      if (body.quantidadeEntregas !== void 0) {
+        const qtd = Math.round(Number(body.quantidadeEntregas) || 0);
+        freight.quantidadeEntregas = qtd > 0 ? qtd : void 0;
+      }
+      const optionalTextFields = [
+        "remetenteNome",
+        "remetenteCnpjCpf",
+        "remetenteIe",
+        "remetenteTelefone",
+        "remetenteEndereco",
+        "remetenteBairro",
+        "remetenteMunicipio",
+        "remetenteCep",
+        "destinatarioNome",
+        "destinatarioCnpjCpf",
+        "destinatarioIe",
+        "destinatarioTelefone",
+        "destinatarioEndereco",
+        "destinatarioBairro",
+        "destinatarioMunicipio",
+        "destinatarioCep"
+      ];
+      for (const field of optionalTextFields) {
+        if (body[field] !== void 0) {
+          freight[field] = String(body[field]).trim().slice(0, 200) || void 0;
+        }
+      }
       if (body.monitoramentoResponsavelId !== void 0) {
         const monId = String(body.monitoramentoResponsavelId || "").trim();
         if (monId) {
@@ -5374,11 +6944,33 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sp = formatSaoPauloDateTime();
       const sub = freightSubDocs.get(freight.id);
       if (action === "EMITIR_ORDEM_CARREGAMENTO" || action === "EMITIR_ORDEM") {
+        if (freight.empresaMarca === "AXD") {
+          res.status(400).json({
+            error: "A empresa AXD foi descontinuada e n\xE3o permite emiss\xE3o de nova Ordem de Coleta. Atualize a empresa do frete para RODOVAR ou VL TRANSPORTES caso seja uma nova contrata\xE7\xE3o.",
+            code: "DISCONTINUED_COMPANY_BRAND"
+          });
+          return;
+        }
+        const activeBrand = freight.empresaMarca === "VL TRANSPORTES" ? "VL TRANSPORTES" : "RODOVAR";
+        const companyProfile = COMPANY_OFFICIAL_PROFILES[activeBrand];
         const missingForOrder = [];
-        if (!freight.enderecoColeta || freight.enderecoColeta.trim().length < 3)
-          missingForOrder.push("Endere\xE7o de coleta");
+        if (!freight.cliente || freight.cliente.trim().length < 2)
+          missingForOrder.push("Cliente");
+        if (!freight.origemCidadeUf || !freight.enderecoColeta || freight.enderecoColeta.trim().length < 3)
+          missingForOrder.push("Cidade e endere\xE7o de coleta");
+        if (!freight.destinoCidadeUf)
+          missingForOrder.push("Cidade/UF de entrega");
+        if (!freight.tipoCarga || freight.tipoCarga.trim().length < 2)
+          missingForOrder.push("Produto / descri\xE7\xE3o da carga");
+        if (!freight.pesoKg || freight.pesoKg <= 0)
+          missingForOrder.push("Peso da carga maior que zero");
+        if (!freight.veiculoNecessario || freight.veiculoNecessario.trim().length < 2)
+          missingForOrder.push("Tipo de ve\xEDculo");
         if (!freight.motoristaNome || freight.motoristaNome.trim().length < 3)
           missingForOrder.push("Nome do motorista");
+        const cpfDigits = String(freight.motoristaCpf || "").replace(/\D/g, "");
+        if (cpfDigits.length !== 11)
+          missingForOrder.push("CPF v\xE1lido do motorista (11 d\xEDgitos)");
         if (!freight.placaVeiculo || freight.placaVeiculo.trim().length < 6)
           missingForOrder.push("Placa do ve\xEDculo");
         if (missingForOrder.length > 0) {
@@ -5389,9 +6981,19 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           });
           return;
         }
-        const orderNum = freight.ordemCarregamentoNumero || `OC-RDV-${freight.protocol.replace("#", "")}-2027`;
+        const spYear = Number(sp.dateOnlyIso.slice(0, 4)) || (/* @__PURE__ */ new Date()).getFullYear();
+        let orderNum = freight.ordemCarregamentoNumero;
+        if (!orderNum || !freight.ordemColetaSequencia) {
+          const allocated = allocateNextOrderNumber(activeBrand, spYear);
+          orderNum = allocated.orderNumber;
+          freight.ordemColetaSequencia = allocated.sequence;
+          freight.ordemColetaAno = allocated.year;
+        } else if (!freight.ordemColetaAno) {
+          freight.ordemColetaAno = spYear;
+        }
         freight.ordemCarregamentoNumero = orderNum;
         freight.ordemCarregamentoEmitidaEm = sp.formatted;
+        freight.ordemColetaPendente = false;
         if (freight.situacaoOperacional === "RECEBIDO") {
           freight.situacaoOperacional = "EM_PREPARACAO";
         }
@@ -5403,30 +7005,68 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           actorName: user.name,
           actorSector: "Expedi\xE7\xE3o",
           eventType: "EMISSAO_ORDEM_COLETA",
-          summary: `Ordem de Coleta ${orderNum} gerada no padr\xE3o oficial RODOVAR (CNPJ ${RODOVAR_CNPJ}) por ${user.name}.`
+          summary: `Ordem de Coleta ${orderNum} gerada no padr\xE3o oficial ${activeBrand} (CNPJ ${companyProfile.cnpj}) por ${user.name}.`
         });
         persistFreightAndSubDoc(freight, sub);
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          "EMISSAO_ORDEM_COLETA",
+          `Emitiu Ordem de Coleta ${orderNum} (${activeBrand}) para o frete ${freight.protocol}.`,
+          req.ip
+        );
         const payload = {
           ok: true,
           freight: sanitizeFreightForUser(freight, user),
           historico: sub.historico,
           loadingOrder: {
             orderNumber: orderNum,
+            sequence: freight.ordemColetaSequencia,
+            year: freight.ordemColetaAno,
             issuedAt: sp.formatted,
             issuedBy: user.name,
-            razaoSocial: RODOVAR_RAZAO_SOCIAL,
-            cnpj: RODOVAR_CNPJ,
+            razaoSocial: companyProfile.razaoSocial,
+            cnpj: companyProfile.cnpj,
+            ie: companyProfile.ie,
+            enderecoEmpresa: companyProfile.endereco,
+            telefoneEmpresa: companyProfile.telefone,
             protocol: freight.protocol,
-            empresaMarca: freight.empresaMarca,
+            empresaMarca: activeBrand,
             unidadeOperacional: freight.unidadeOperacional,
             cliente: freight.cliente,
+            clienteCnpj: freight.clienteCnpj,
             clienteContato: freight.clienteContato,
+            comercialResponsavelNome: freight.comercialResponsavelNome,
+            numeroPedido: freight.numeroPedido,
+            numeroOrcamento: freight.numeroOrcamento,
             origemCidadeUf: freight.origemCidadeUf,
             enderecoColeta: freight.enderecoColeta,
             destinoCidadeUf: freight.destinoCidadeUf,
             enderecoEntrega: freight.enderecoEntrega,
+            pontoReferencia: freight.pontoReferencia,
+            remetenteNome: freight.remetenteNome,
+            remetenteCnpjCpf: freight.remetenteCnpjCpf,
+            remetenteIe: freight.remetenteIe,
+            remetenteTelefone: freight.remetenteTelefone,
+            remetenteEndereco: freight.remetenteEndereco,
+            remetenteBairro: freight.remetenteBairro,
+            remetenteMunicipio: freight.remetenteMunicipio,
+            remetenteCep: freight.remetenteCep,
+            destinatarioNome: freight.destinatarioNome,
+            destinatarioCnpjCpf: freight.destinatarioCnpjCpf,
+            destinatarioIe: freight.destinatarioIe,
+            destinatarioTelefone: freight.destinatarioTelefone,
+            destinatarioEndereco: freight.destinatarioEndereco,
+            destinatarioBairro: freight.destinatarioBairro,
+            destinatarioMunicipio: freight.destinatarioMunicipio,
+            destinatarioCep: freight.destinatarioCep,
             instrucoesColetaEntrega: freight.instrucoesColetaEntrega,
             tipoCarga: freight.tipoCarga,
+            especieCarga: freight.especieCarga,
+            embalagemCarga: freight.embalagemCarga,
+            valorMercadoriaCentavos: freight.valorMercadoriaCentavos,
+            quantidadeEntregas: freight.quantidadeEntregas,
             pesoKg: freight.pesoKg,
             volumes: freight.volumes,
             veiculoNecessario: freight.veiculoNecessario,
@@ -5436,14 +7076,63 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
             janelaEntrega: `${freight.janelaEntregaInicio}${freight.janelaEntregaFim ? ` \xE0s ${freight.janelaEntregaFim}` : ""}`,
             motoristaNome: freight.motoristaNome,
             motoristaCpf: freight.motoristaCpf,
+            motoristaRg: freight.motoristaRg,
+            motoristaCnh: freight.motoristaCnh,
             motoristaTelefone: freight.motoristaTelefone,
             transportadorNome: freight.transportadorNome,
             transportadorDocumento: freight.transportadorDocumento,
             placaVeiculo: freight.placaVeiculo,
             placaCarreta: freight.placaCarreta,
+            placaBitrem: freight.placaBitrem,
             condicoesOperacionais: freight.condicoesOperacionais,
             expedicaoResponsavelNome: freight.expedicaoResponsavelNome || user.name
           }
+        };
+        storeIdempotentResponse(idemKey, 200, payload);
+        res.json(payload);
+        return;
+      }
+      if (action === "IGNORAR_ORDEM_COLETA") {
+        if (freight.situacaoOperacional === "CONCLUIDO" || freight.situacaoOperacional === "CANCELADO" || freight.situacaoMonitoramento === "FINALIZADO") {
+          res.status(409).json({
+            error: "N\xE3o \xE9 poss\xEDvel adiar a Ordem de Coleta em um frete conclu\xEDdo ou cancelado.",
+            code: "TERMINAL_STATE_LOCKED"
+          });
+          return;
+        }
+        const skipReason = String(reason || "").trim().slice(0, 300);
+        freight.ordemColetaPendente = true;
+        freight.ordemColetaIgnoradaEm = sp.formatted;
+        freight.ordemColetaIgnoradaPorId = user.id;
+        freight.ordemColetaIgnoradaPorNome = user.name;
+        freight.ordemColetaIgnoradaMotivo = skipReason || void 0;
+        if (freight.situacaoOperacional === "RECEBIDO") {
+          freight.situacaoOperacional = "EM_PREPARACAO";
+        }
+        freight.updatedAtIso = sp.iso;
+        freight.updatedAtFormatted = sp.formatted;
+        freight.revision += 1;
+        appendHistoryEntry(sub, {
+          actorId: user.id,
+          actorName: user.name,
+          actorSector: "Expedi\xE7\xE3o",
+          eventType: "ORDEM_COLETA_PENDENTE",
+          summary: `Emiss\xE3o da Ordem de Coleta marcada como "Ignorar por enquanto" por ${user.name} em ${sp.formatted}.`,
+          reason: skipReason || void 0
+        });
+        persistFreightAndSubDoc(freight, sub);
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          "EXPEDICAO_IGNORAR_ORDEM_COLETA",
+          `Marcou Ordem de Coleta como pendente ("Ignorar por enquanto") no frete ${freight.protocol}.${skipReason ? ` Motivo: ${skipReason}` : ""}`,
+          req.ip
+        );
+        const payload = {
+          ok: true,
+          freight: sanitizeFreightForUser(freight, user),
+          historico: sub.historico
         };
         storeIdempotentResponse(idemKey, 200, payload);
         res.json(payload);
@@ -5561,10 +7250,18 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           missing.push("Verifica\xE7\xE3o: Condi\xE7\xF5es e documentos conferidos");
         if (!chk.videochamadaRealizada)
           missing.push("Verifica\xE7\xE3o: Videochamada realizada com o motorista");
-        if (!freight.ordemCarregamentoNumero)
-          missing.push("Ordem de coleta gerada");
-        if (!chk.ordemColetaEnviadaMotorista)
-          missing.push("Verifica\xE7\xE3o: Ordem de coleta enviada ao motorista");
+        const hasOrderCompleted = Boolean(
+          freight.ordemCarregamentoNumero && chk.ordemColetaEnviadaMotorista
+        );
+        const hasPendingOrderSkip = freight.ordemColetaPendente === true;
+        if (!hasOrderCompleted && !hasPendingOrderSkip) {
+          if (!freight.ordemCarregamentoNumero)
+            missing.push('Ordem de coleta gerada (ou clique em "Ignorar por enquanto")');
+          if (!chk.ordemColetaEnviadaMotorista)
+            missing.push(
+              'Verifica\xE7\xE3o: Ordem de coleta enviada ao motorista (ou clique em "Ignorar por enquanto")'
+            );
+        }
         let monOperator;
         if (!targetMonId) {
           missing.push("Operador de Monitoramento respons\xE1vel");
@@ -5752,8 +7449,17 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.status(404).json({ error: "Frete n\xE3o encontrado." });
         return;
       }
-      const isAssignedOrManager = freight.monitoramentoResponsavelId === user.id || canViewFreightTeam(user);
-      if (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id) {
+      const canReopen = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA" || hasPagePermission(user, "fretes_cancelar") || canOperateMonitoring(user) && freight.monitoramentoResponsavelId === user.id;
+      const requestedAction = String((req.body || {}).action || "");
+      if (requestedAction === "REABRIR_FRETE") {
+        if (!canReopen) {
+          res.status(403).json({
+            error: "Permiss\xE3o negada: apenas o Operador respons\xE1vel, Diretoria ou usu\xE1rios autorizados podem reabrir este frete.",
+            code: "FORBIDDEN_REOPEN_FREIGHT"
+          });
+          return;
+        }
+      } else if (user.accessLevel !== "ADMINISTRADOR" && (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id)) {
         res.status(403).json({
           error: "Permiss\xE3o negada: apenas o Operador de Monitoramento respons\xE1vel ou a Gest\xE3o pode atualizar o acompanhamento deste frete.",
           code: "FORBIDDEN_MONITORAMENTO_ACTION"
@@ -6019,7 +7725,149 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.json(payload);
         return;
       }
+      if (action === "REABRIR_FRETE") {
+        if (freight.situacaoMonitoramento !== "FINALIZADO" && freight.situacaoMonitoramento !== "ENTREGUE") {
+          res.status(400).json({
+            error: "Apenas fretes entregues ou finalizados podem ser reabertos.",
+            code: "INVALID_REOPEN_STATE"
+          });
+          return;
+        }
+        if (cleanObs.length < 5) {
+          res.status(400).json({
+            error: "Informe o motivo obrigat\xF3rio da reabertura (m\xEDnimo 5 caracteres).",
+            code: "MISSING_REOPEN_REASON"
+          });
+          return;
+        }
+        const reopenStage = freight.situacaoMonitoramento === "FINALIZADO" && targetStage === "ENTREGUE" ? "ENTREGUE" : "NO_LOCAL_ENTREGA";
+        const prevStatusLabel = freight.situacaoMonitoramento === "FINALIZADO" ? "Finalizado" : "Entregue";
+        const nextStatusLabel = reopenStage === "ENTREGUE" ? "Entregue" : "No local de entrega";
+        freight.situacaoMonitoramento = reopenStage;
+        freight.situacaoComercial = "EM_MONITORAMENTO";
+        freight.situacaoOperacional = "LIBERADO_MONITORAMENTO";
+        freight.updatedAtIso = sp.iso;
+        freight.updatedAtFormatted = sp.formatted;
+        freight.revision += 1;
+        appendHistoryEntry(sub, {
+          actorId: user.id,
+          actorName: user.name,
+          actorSector: "Monitoramento",
+          eventType: "REABERTURA_MONITORAMENTO",
+          summary: `Frete reaberto de "${prevStatusLabel}" para "${nextStatusLabel}" por ${user.name}.`,
+          horarioRealEvento: cleanRealTime,
+          reason: cleanObs
+        });
+        persistFreightAndSubDoc(freight, sub);
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          "REABERTURA_FRETE_MONITORAMENTO",
+          `Frete ${freight.protocol} reaberto (${prevStatusLabel} -> ${nextStatusLabel}). Motivo: ${cleanObs}`,
+          req.ip
+        );
+        const payload = {
+          ok: true,
+          freight: sanitizeFreightForUser(freight, user),
+          historico: sub.historico
+        };
+        storeIdempotentResponse(idemKey, 200, payload);
+        res.json(payload);
+        return;
+      }
       res.status(400).json({ error: "A\xE7\xE3o de monitoramento desconhecida." });
+    }
+  );
+  app.post(
+    "/api/meus-fretes/:freightId/reopen",
+    requireApprovedSession2,
+    (req, res) => {
+      const user = req.sessionUser;
+      const freightId = String(req.params.freightId || "");
+      const freight = freightsIndex.get(freightId);
+      if (!freight) {
+        res.status(404).json({ error: "Frete n\xE3o encontrado." });
+        return;
+      }
+      const canReopen = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA" || hasPagePermission(user, "fretes_cancelar") || canOperateMonitoring(user) && freight.monitoramentoResponsavelId === user.id;
+      if (!canReopen) {
+        res.status(403).json({
+          error: "Permiss\xE3o negada: apenas usu\xE1rios autorizados podem reabrir um frete finalizado ou entregue.",
+          code: "FORBIDDEN_REOPEN_FREIGHT"
+        });
+        return;
+      }
+      const { motivo, reason: rawReason, targetStage, baseRevision, horarioRealEvento } = req.body || {};
+      const idemKey = checkIdempotency(req, res, user.id);
+      if (idemKey === "__HANDLED__") return;
+      if (typeof baseRevision === "number" && baseRevision !== freight.revision) {
+        res.status(409).json({
+          error: "Conflito de revis\xE3o detectado. Recarregue os dados do frete antes de prosseguir.",
+          code: "REVISION_CONFLICT",
+          currentRevision: freight.revision,
+          freight: sanitizeFreightForUser(freight, user)
+        });
+        return;
+      }
+      if (freight.situacaoMonitoramento !== "FINALIZADO" && freight.situacaoMonitoramento !== "ENTREGUE") {
+        res.status(400).json({
+          error: "Apenas fretes entregues ou finalizados podem ser reabertos.",
+          code: "INVALID_REOPEN_STATE"
+        });
+        return;
+      }
+      const cleanObs = String(motivo || rawReason || "").trim().slice(0, 500);
+      if (cleanObs.length < 5) {
+        res.status(400).json({
+          error: "Informe o motivo obrigat\xF3rio da reabertura (m\xEDnimo 5 caracteres).",
+          code: "MISSING_REOPEN_REASON"
+        });
+        return;
+      }
+      const sp = formatSaoPauloDateTime();
+      const sub = freightSubDocs.get(freight.id) || {
+        freightId: freight.id,
+        anexos: [],
+        comentarios: [],
+        ocorrencias: [],
+        historico: []
+      };
+      const cleanRealTime = String(horarioRealEvento || sp.formatted).trim().slice(0, 60);
+      const reopenStage = freight.situacaoMonitoramento === "FINALIZADO" && targetStage === "ENTREGUE" ? "ENTREGUE" : "NO_LOCAL_ENTREGA";
+      const prevStatusLabel = freight.situacaoMonitoramento === "FINALIZADO" ? "Finalizado" : "Entregue";
+      const nextStatusLabel = reopenStage === "ENTREGUE" ? "Entregue" : "No local de entrega";
+      freight.situacaoMonitoramento = reopenStage;
+      freight.situacaoComercial = "EM_MONITORAMENTO";
+      freight.situacaoOperacional = "LIBERADO_MONITORAMENTO";
+      freight.updatedAtIso = sp.iso;
+      freight.updatedAtFormatted = sp.formatted;
+      freight.revision += 1;
+      appendHistoryEntry(sub, {
+        actorId: user.id,
+        actorName: user.name,
+        actorSector: "Monitoramento",
+        eventType: "REABERTURA_MONITORAMENTO",
+        summary: `Frete reaberto de "${prevStatusLabel}" para "${nextStatusLabel}" por ${user.name}.`,
+        horarioRealEvento: cleanRealTime,
+        reason: cleanObs
+      });
+      persistFreightAndSubDoc(freight, sub);
+      appendServerAuditLog(
+        user.id,
+        user.name,
+        user.accessLevel,
+        "REABERTURA_FRETE_MONITORAMENTO",
+        `Frete ${freight.protocol} reaberto (${prevStatusLabel} -> ${nextStatusLabel}). Motivo: ${cleanObs}`,
+        req.ip
+      );
+      const payload = {
+        ok: true,
+        freight: sanitizeFreightForUser(freight, user),
+        historico: sub.historico
+      };
+      storeIdempotentResponse(idemKey, 200, payload);
+      res.json(payload);
     }
   );
   app.post(
@@ -6052,7 +7900,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sp = formatSaoPauloDateTime();
       const sub = freightSubDocs.get(freight.id);
       const occ = {
-        id: `focc-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+        id: `focc-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         severity: safeSeverity,
         title: cleanTitle.slice(0, 140),
@@ -6194,7 +8042,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sub = freightSubDocs.get(freight.id);
       const sector = user.accessLevel !== "FUNCIONARIO" ? "GESTAO" : canAccessExpedicaoFreights(user) && freight.expedicaoResponsavelId === user.id || freight.monitoramentoResponsavelId === user.id ? "EXPEDICAO" : "COMERCIAL";
       const comment = {
-        id: `fcom-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+        id: `fcom-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         authorId: user.id,
         authorName: user.name,
@@ -6272,13 +8120,19 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       ];
       const safeCat = validCategories.includes(category) ? category : "OUTRO";
       ensureDirectories();
-      const storageName = `fdoc-${freight.id}-${crypto11.randomUUID()}.${validation.extension}`;
-      const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, storageName);
-      fs10.writeFileSync(diskPath, fileBuf);
+      const storageName = `fdoc-${freight.id}-${crypto10.randomUUID()}.${validation.extension}`;
+      const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, storageName);
+      fs9.writeFileSync(diskPath, fileBuf);
+      void persistSystemAssetToNeon({
+        id: storageName,
+        slot: "freightAttachment",
+        mimeType: validation.mimeType || "application/octet-stream",
+        dataBase64: fileBuf.toString("base64")
+      });
       const sp = formatSaoPauloDateTime();
       const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
       const attachment = {
-        id: `fatt-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+        id: `fatt-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         category: safeCat,
         label: String(label || safeCat).trim().slice(0, 80),
@@ -6380,7 +8234,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       "/api/meus-fretes/:freightId/attachments/:attId/download"
     ],
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = req.sessionUser;
       const freightId = String(req.params.freightId || "");
       const attId = String(req.params.attId || "");
@@ -6403,8 +8257,25 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.status(404).json({ error: "Anexo n\xE3o encontrado." });
         return;
       }
-      const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, path10.basename(att.storageName));
-      if (!fs10.existsSync(diskPath)) {
+      const safeFile = path9.basename(att.storageName);
+      const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, safeFile);
+      if (!fs9.existsSync(diskPath)) {
+        const neonAsset = await getSystemAssetFromNeon(safeFile);
+        if (neonAsset && neonAsset.buffer) {
+          try {
+            ensureDirectories();
+            fs9.writeFileSync(diskPath, neonAsset.buffer);
+          } catch {
+          }
+          res.setHeader("Content-Type", att.mimeType || neonAsset.mimeType);
+          res.setHeader(
+            "Content-Disposition",
+            `inline; filename="${encodeURIComponent(att.fileName)}"`
+          );
+          res.setHeader("Cache-Control", "private, no-store");
+          res.send(neonAsset.buffer);
+          return;
+        }
         res.status(404).json({ error: "Arquivo f\xEDsico n\xE3o encontrado no armazenamento do servidor." });
         return;
       }
@@ -6414,7 +8285,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         `inline; filename="${encodeURIComponent(att.fileName)}"`
       );
       res.setHeader("Cache-Control", "private, no-store");
-      fs10.createReadStream(diskPath).pipe(res);
+      fs9.createReadStream(diskPath).pipe(res);
     }
   );
   app.delete(
@@ -6445,8 +8316,8 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       }
       const att = sub.anexos[attIdx];
       try {
-        const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, path10.basename(att.storageName));
-        if (fs10.existsSync(diskPath)) fs10.unlinkSync(diskPath);
+        const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, path9.basename(att.storageName));
+        if (fs9.existsSync(diskPath)) fs9.unlinkSync(diskPath);
       } catch {
       }
       sub.anexos.splice(attIdx, 1);
@@ -6493,8 +8364,8 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const count = sub.anexos.length;
       for (const att of sub.anexos) {
         try {
-          const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, path10.basename(att.storageName));
-          if (fs10.existsSync(diskPath)) fs10.unlinkSync(diskPath);
+          const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, path9.basename(att.storageName));
+          if (fs9.existsSync(diskPath)) fs9.unlinkSync(diskPath);
         } catch {
         }
       }
@@ -6856,9 +8727,9 @@ function financialProjection(f, existing) {
 }
 
 // src/server/paymentReceiptsEngine.ts
-import crypto12 from "crypto";
-import fs11 from "fs";
-import path11 from "path";
+import crypto11 from "crypto";
+import fs10 from "fs";
+import path10 from "path";
 
 // src/lib/freightDatabase.ts
 var INITIAL_FREIGHTS = [
@@ -7216,13 +9087,13 @@ function formatFileSize(bytes) {
 
 // src/server/paymentReceiptsEngine.ts
 var ROOT_DIR2 = resolveDataRoot();
-var PAYMENT_STORE_DIR = path11.join(ROOT_DIR2, "data", "payment-store");
-var PAYMENT_RECEIPTS_DIR = path11.join(ROOT_DIR2, "data", "payment-receipts");
-var FREIGHTS_FILE = path11.join(PAYMENT_STORE_DIR, "freights.json");
-var INTENTS_FILE = path11.join(PAYMENT_STORE_DIR, "intents.json");
-var RECEIPTS_FILE = path11.join(PAYMENT_STORE_DIR, "receipts.json");
-var HISTORY_FILE = path11.join(PAYMENT_STORE_DIR, "history.json");
-var STAGED_SHARES_FILE = path11.join(PAYMENT_STORE_DIR, "staged-shares.json");
+var PAYMENT_STORE_DIR = path10.join(ROOT_DIR2, "data", "payment-store");
+var PAYMENT_RECEIPTS_DIR = path10.join(ROOT_DIR2, "data", "payment-receipts");
+var FREIGHTS_FILE = path10.join(PAYMENT_STORE_DIR, "freights.json");
+var INTENTS_FILE = path10.join(PAYMENT_STORE_DIR, "intents.json");
+var RECEIPTS_FILE = path10.join(PAYMENT_STORE_DIR, "receipts.json");
+var HISTORY_FILE = path10.join(PAYMENT_STORE_DIR, "history.json");
+var STAGED_SHARES_FILE = path10.join(PAYMENT_STORE_DIR, "staged-shares.json");
 var MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 var DEFAULT_INTENT_VALIDITY_MINUTES = 30;
 var paymentStoreState = {
@@ -7233,11 +9104,11 @@ var paymentStoreState = {
   stagedShares: []
 };
 function ensureDirectories2() {
-  if (!fs11.existsSync(PAYMENT_STORE_DIR)) {
-    fs11.mkdirSync(PAYMENT_STORE_DIR, { recursive: true });
+  if (!fs10.existsSync(PAYMENT_STORE_DIR)) {
+    fs10.mkdirSync(PAYMENT_STORE_DIR, { recursive: true });
   }
-  if (!fs11.existsSync(PAYMENT_RECEIPTS_DIR)) {
-    fs11.mkdirSync(PAYMENT_RECEIPTS_DIR, { recursive: true });
+  if (!fs10.existsSync(PAYMENT_RECEIPTS_DIR)) {
+    fs10.mkdirSync(PAYMENT_RECEIPTS_DIR, { recursive: true });
   }
 }
 function createSamplePdfBuffer(title, subtitle) {
@@ -7329,13 +9200,42 @@ function validatePaymentReceiptBinary(buf, originalFileName) {
     code: "INVALID_FILE_TYPE"
   };
 }
-function savePaymentStore() {
-  ensureDirectories2();
-  fs11.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), "utf8");
-  fs11.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), "utf8");
-  fs11.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), "utf8");
-  fs11.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), "utf8");
-  fs11.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), "utf8");
+function hydratePaymentReceiptsFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+    paymentStoreState.freights = payload.freights;
+  }
+  if (Array.isArray(payload.intents)) {
+    paymentStoreState.intents = payload.intents;
+  }
+  if (Array.isArray(payload.receipts)) {
+    paymentStoreState.receipts = payload.receipts;
+  }
+  if (Array.isArray(payload.history)) {
+    paymentStoreState.history = payload.history;
+  }
+  if (Array.isArray(payload.stagedShares)) {
+    paymentStoreState.stagedShares = payload.stagedShares;
+  }
+}
+function savePaymentStore(skipNeon = false) {
+  try {
+    ensureDirectories2();
+    fs10.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), "utf8");
+    fs10.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), "utf8");
+    fs10.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), "utf8");
+    fs10.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), "utf8");
+    fs10.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), "utf8");
+  } catch (err) {
+    console.warn("paymentReceiptsEngine local save notice:", err.message);
+  }
+  if (!skipNeon) {
+    void persistStateSnapshotToNeon("rodovar-payments-state", paymentStoreState);
+  }
+}
+async function savePaymentStoreAsync() {
+  savePaymentStore(false);
+  await flushPendingNeonWrites();
 }
 function enrichFreightWithReceipts(freight) {
   const freightReceipts = paymentStoreState.receipts.filter((r) => r.freightId === freight.id);
@@ -7385,9 +9285,9 @@ function enrichFreightWithReceipts(freight) {
 function loadOrSeedPaymentStore() {
   ensureDirectories2();
   let loadedFreights = null;
-  if (fs11.existsSync(FREIGHTS_FILE)) {
+  if (fs10.existsSync(FREIGHTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs11.readFileSync(FREIGHTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(FREIGHTS_FILE, "utf8"));
       if (Array.isArray(parsed) && parsed.length > 0) {
         loadedFreights = parsed;
       }
@@ -7395,33 +9295,33 @@ function loadOrSeedPaymentStore() {
       loadedFreights = null;
     }
   }
-  if (fs11.existsSync(INTENTS_FILE)) {
+  if (fs10.existsSync(INTENTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs11.readFileSync(INTENTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(INTENTS_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.intents = parsed;
     } catch {
       paymentStoreState.intents = [];
     }
   }
-  if (fs11.existsSync(RECEIPTS_FILE)) {
+  if (fs10.existsSync(RECEIPTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs11.readFileSync(RECEIPTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(RECEIPTS_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.receipts = parsed;
     } catch {
       paymentStoreState.receipts = [];
     }
   }
-  if (fs11.existsSync(HISTORY_FILE)) {
+  if (fs10.existsSync(HISTORY_FILE)) {
     try {
-      const parsed = JSON.parse(fs11.readFileSync(HISTORY_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(HISTORY_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.history = parsed;
     } catch {
       paymentStoreState.history = [];
     }
   }
-  if (fs11.existsSync(STAGED_SHARES_FILE)) {
+  if (fs10.existsSync(STAGED_SHARES_FILE)) {
     try {
-      const parsed = JSON.parse(fs11.readFileSync(STAGED_SHARES_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(STAGED_SHARES_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.stagedShares = parsed;
     } catch {
       paymentStoreState.stagedShares = [];
@@ -7437,15 +9337,15 @@ function loadOrSeedPaymentStore() {
       if (f.docs.comprovanteAdiantamento) {
         const doc = f.docs.comprovanteAdiantamento;
         const storageFileName = `seed-${f.id}-adiantamento.pdf`;
-        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
+        const absPath = path10.join(PAYMENT_RECEIPTS_DIR, storageFileName);
         const pdfBuf = createSamplePdfBuffer(
           `Comprovante de Adiantamento ${f.code}`,
           `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorAdiantamento.toFixed(2)}`
         );
-        if (!fs11.existsSync(absPath)) {
-          fs11.writeFileSync(absPath, pdfBuf);
+        if (!fs10.existsSync(absPath)) {
+          fs10.writeFileSync(absPath, pdfBuf);
         }
-        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
+        const sha256Hash = crypto11.createHash("sha256").update(pdfBuf).digest("hex");
         const receiptRecord = {
           id: doc.id,
           freightId: f.id,
@@ -7486,15 +9386,15 @@ function loadOrSeedPaymentStore() {
       if (f.docs.comprovanteSaldo) {
         const doc = f.docs.comprovanteSaldo;
         const storageFileName = `seed-${f.id}-saldo.pdf`;
-        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
+        const absPath = path10.join(PAYMENT_RECEIPTS_DIR, storageFileName);
         const pdfBuf = createSamplePdfBuffer(
           `Comprovante de Saldo ${f.code}`,
           `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorSaldo.toFixed(2)}`
         );
-        if (!fs11.existsSync(absPath)) {
-          fs11.writeFileSync(absPath, pdfBuf);
+        if (!fs10.existsSync(absPath)) {
+          fs10.writeFileSync(absPath, pdfBuf);
         }
-        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
+        const sha256Hash = crypto11.createHash("sha256").update(pdfBuf).digest("hex");
         const receiptRecord = {
           id: doc.id,
           freightId: f.id,
@@ -7533,7 +9433,7 @@ function loadOrSeedPaymentStore() {
         }
       }
     }
-    savePaymentStore();
+    savePaymentStore(true);
   } else {
     paymentStoreState.freights = loadedFreights.map((f) => {
       if (f.id === "frete-0841" && f.regraTipo === "INTEGRAL_100" && f.percentualSaldo === 30) {
@@ -7551,7 +9451,7 @@ function loadOrSeedPaymentStore() {
 function appendPaymentAuditHistory(params) {
   const sp = formatSaoPauloDateTime();
   const entry = {
-    id: `payhist-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
+    id: `payhist-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
     freightId: params.freightId,
     freightCode: params.freightCode,
     installmentType: params.installmentType,
@@ -7645,6 +9545,29 @@ function parseMultipartFormData(bodyBuffer, contentTypeHeader) {
   return { fields, files };
 }
 function readRawRequestBody(req, maxBytes) {
+  const anyReq = req;
+  if (Buffer.isBuffer(anyReq.rawBody)) {
+    if (anyReq.rawBody.length > maxBytes) {
+      return Promise.reject(new Error("PAYLOAD_TOO_LARGE"));
+    }
+    return Promise.resolve(anyReq.rawBody);
+  }
+  if (Buffer.isBuffer(anyReq.body)) {
+    if (anyReq.body.length > maxBytes) {
+      return Promise.reject(new Error("PAYLOAD_TOO_LARGE"));
+    }
+    return Promise.resolve(anyReq.body);
+  }
+  if (typeof anyReq.body === "string") {
+    const buf = Buffer.from(anyReq.body, "utf8");
+    if (buf.length > maxBytes) {
+      return Promise.reject(new Error("PAYLOAD_TOO_LARGE"));
+    }
+    return Promise.resolve(buf);
+  }
+  if (anyReq.readableEnded) {
+    return Promise.resolve(Buffer.alloc(0));
+  }
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
@@ -7662,17 +9585,17 @@ function readRawRequestBody(req, maxBytes) {
 }
 function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServerAuditLog) {
   loadOrSeedPaymentStore();
-  const syncUnified = (freight) => {
+  const syncUnified = (freight, skipNeon = false) => {
     const index = paymentStoreState.freights.findIndex((f) => f.id === freight.id);
     const projected = financialProjection(freight, index < 0 ? void 0 : paymentStoreState.freights[index]);
     if (!projected) return;
     if (index >= 0 && JSON.stringify(projected) === JSON.stringify(paymentStoreState.freights[index])) return;
     if (index < 0) paymentStoreState.freights.push(projected);
     else paymentStoreState.freights[index] = projected;
-    savePaymentStore();
+    savePaymentStore(skipNeon);
   };
-  unifiedFinanceFreights().forEach(syncUnified);
-  subscribeUnifiedFinance(syncUnified);
+  unifiedFinanceFreights().forEach((freight) => syncUnified(freight, true));
+  subscribeUnifiedFinance((freight) => syncUnified(freight, false));
   function requireFinanceiroPermission(req, res) {
     const user = req.sessionUser;
     if (!user || user.approvalStatus !== "APROVADO" || user.active === false) {
@@ -7695,7 +9618,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     try {
       const contentType = String(req.headers["content-type"] || "");
       let staged;
-      const shareId = `srvshare-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
+      const shareId = `srvshare-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       if (contentType.toLowerCase().includes("multipart/form-data")) {
         const rawBuf = await readRawRequestBody(req, MAX_RECEIPT_BYTES + 2 * 1024 * 1024);
@@ -7754,7 +9677,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         (s) => s.expiresAtMs > Date.now()
       );
       paymentStoreState.stagedShares.unshift(staged);
-      savePaymentStore();
+      await savePaymentStoreAsync();
       if (String(req.headers.accept || "").includes("application/json") || req.query.format === "json") {
         res.status(200).json({
           ok: true,
@@ -7782,6 +9705,8 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     }
   });
   app.get("/api/pagamentos/shared-staging/:shareId", (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
     const shareId = String(req.params.shareId || "");
     const found = paymentStoreState.stagedShares.find(
       (s) => s.id === shareId && s.expiresAtMs > Date.now()
@@ -7812,7 +9737,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       canConfirmPayment: canConfirmFreightPayment(user)
     });
   });
-  app.post("/api/pagamentos/fretes", requireApprovedSession2, (req, res) => {
+  app.post("/api/pagamentos/fretes", requireApprovedSession2, async (req, res) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
     const incoming = req.body?.freight;
@@ -7843,7 +9768,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     const fresh = { ...incoming, adiantamentoPago: false, saldoPago: false, adiantamentoVerificacaoStatus: "SEM_COMPROVANTE", saldoVerificacaoStatus: "SEM_COMPROVANTE" };
     for (const key of ["historicoPagamentos", "comprovantesList", "adiantamentoComprovanteId", "saldoComprovanteId", "adiantamentoConfirmadoPorId", "saldoConfirmadoPorId", "adiantamentoConfirmadoEm", "saldoConfirmadoEm", "codigoTransacaoAdiantamento", "codigoTransacaoSaldo"]) delete fresh[key];
     paymentStoreState.freights.unshift(fresh);
-    savePaymentStore();
+    await savePaymentStoreAsync();
     res.status(201).json({
       ok: true,
       freight: enrichFreightWithReceipts(
@@ -7851,7 +9776,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       )
     });
   });
-  app.put("/api/pagamentos/fretes/:freightId", requireApprovedSession2, (req, res) => {
+  app.put("/api/pagamentos/fretes/:freightId", requireApprovedSession2, async (req, res) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
     const freightId = String(req.params.freightId || "");
@@ -7875,13 +9800,13 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       docs: patch.docs ? { ...current.docs, ...patch.docs } : current.docs
     };
     paymentStoreState.freights[existingIdx] = updated;
-    savePaymentStore();
+    await savePaymentStoreAsync();
     res.json({
       ok: true,
       freight: enrichFreightWithReceipts(updated)
     });
   });
-  app.post("/api/pagamentos/intencoes", requireApprovedSession2, (req, res) => {
+  app.post("/api/pagamentos/intencoes", requireApprovedSession2, async (req, res) => {
     const user = requireFinanceiroPermission(req, res);
     if (!user) return;
     if (sweepExpiredIntents()) {
@@ -7925,7 +9850,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     const spNow = formatSaoPauloDateTime(nowDate);
     const spExp = formatSaoPauloDateTime(expiresDate);
     const intent = {
-      id: `pint-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`,
+      id: `pint-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`,
       freightId: freight.id,
       freightCode: freight.code,
       installmentId: `${freight.id}:${normalizedType}`,
@@ -7969,7 +9894,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       `Inten\xE7\xE3o de pagamento ${intent.id} criada para o frete ${freight.code} (${normalizedType}) no valor de R$ ${expectedAmountBRL.toFixed(2)}.`,
       req.ip
     );
-    savePaymentStore();
+    await savePaymentStoreAsync();
     res.status(201).json({
       ok: true,
       intent,
@@ -7998,7 +9923,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
   app.post(
     "/api/pagamentos/intencoes/:intentId/cancel",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
       const intentId = String(req.params.intentId || "");
@@ -8027,7 +9952,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         intentId: intent.id,
         amountBRL: intent.expectedAmountBRL
       });
-      savePaymentStore();
+      await savePaymentStoreAsync();
       res.json({ ok: true, intent });
     }
   );
@@ -8142,7 +10067,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
           return;
         }
       } else {
-        idempotencyKey = `idem-${user.id}-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
+        idempotencyKey = `idem-${user.id}-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
       }
       if (!fileBuffer || fileBuffer.length === 0) {
         res.status(400).json({
@@ -8160,15 +10085,21 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         });
         return;
       }
-      const sha256Hash = crypto12.createHash("sha256").update(fileBuffer).digest("hex");
+      const sha256Hash = crypto11.createHash("sha256").update(fileBuffer).digest("hex");
       const duplicateReceipt = paymentStoreState.receipts.find((r) => r.sha256Hash === sha256Hash);
       const previousInstallmentReceipt = paymentStoreState.receipts.find(
         (r) => r.freightId === freight.id && r.installmentType === installmentType
       );
-      const receiptId = `rec-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
-      const safeStorageName = `comprovante-${freight.id}-${installmentType.toLowerCase()}-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}.${validation.extension}`;
-      const absStoragePath = path11.join(PAYMENT_RECEIPTS_DIR, safeStorageName);
-      fs11.writeFileSync(absStoragePath, fileBuffer);
+      const receiptId = `rec-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
+      const safeStorageName = `comprovante-${freight.id}-${installmentType.toLowerCase()}-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}.${validation.extension}`;
+      const absStoragePath = path10.join(PAYMENT_RECEIPTS_DIR, safeStorageName);
+      fs10.writeFileSync(absStoragePath, fileBuffer);
+      void persistSystemAssetToNeon({
+        id: safeStorageName,
+        slot: "paymentReceipt",
+        mimeType: validation.mimeType || "application/octet-stream",
+        dataBase64: fileBuffer.toString("base64")
+      });
       const spNow = formatSaoPauloDateTime();
       const expectedAmountBRL = installmentType === "ADIANTAMENTO" ? freight.valorAdiantamento : freight.valorSaldo;
       const expectedAmountCentavos = Math.round(expectedAmountBRL * 100);
@@ -8187,7 +10118,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         uploadedByUserId: user.id,
         uploadedByUserName: user.name,
         uploadedByUserEmail: user.email,
-        originalFileName: path11.basename(originalFileName).replace(/[^\w.\-() ]+/g, "_"),
+        originalFileName: path10.basename(originalFileName).replace(/[^\w.\-() ]+/g, "_"),
         storageFileName: safeStorageName,
         storageRelativePath: `data/payment-receipts/${safeStorageName}`,
         mimeType: validation.mimeType,
@@ -8252,7 +10183,8 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         `Comprovante ${receiptRecord.id} (${receiptRecord.originalFileName}, ${receiptRecord.sizeLabel}) salvo no servidor para o frete ${freight.code} (${installmentType}). Status: AGUARDANDO_CONFERENCIA.`,
         req.ip
       );
-      savePaymentStore();
+      void persistPaymentReceiptToNeon(receiptRecord);
+      await savePaymentStoreAsync();
       res.status(201).json({
         ok: true,
         receipt: receiptRecord,
@@ -8276,10 +10208,10 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
   app.post(
     "/api/pagamentos/comprovantes/:receiptId/confirmar",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
-      if (!canConfirmFreightPayment(user)) {
+      if (!canConfirmFreightPayment(user) && user.accessLevel !== "ADMINISTRADOR") {
         res.status(403).json({
           error: 'Acesso negado. Apenas usu\xE1rios com permiss\xE3o de "Confirmar Liquida\xE7\xE3o de Pagamentos" (Coordenador Financeiro, Diretoria ou Administrador) podem confirmar a liquida\xE7\xE3o banc\xE1ria.',
           code: "FORBIDDEN_CONFIRM_PAYMENT"
@@ -8378,7 +10310,8 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         `Pagamento de ${receipt.installmentType} do frete ${freight.code} confirmado por ${user.name} (Comprovante ${receipt.id}).`,
         req.ip
       );
-      savePaymentStore();
+      void persistPaymentReceiptToNeon(receipt);
+      await savePaymentStoreAsync();
       res.json({
         ok: true,
         receipt,
@@ -8390,7 +10323,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
   app.get(
     "/api/pagamentos/comprovantes/:receiptId/download",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
       const receiptId = String(req.params.receiptId || "");
@@ -8402,8 +10335,25 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         });
         return;
       }
-      const absPath = path11.join(PAYMENT_RECEIPTS_DIR, path11.basename(receipt.storageFileName));
-      if (!fs11.existsSync(absPath)) {
+      const safeFile = path10.basename(receipt.storageFileName);
+      const absPath = path10.join(PAYMENT_RECEIPTS_DIR, safeFile);
+      if (!fs10.existsSync(absPath)) {
+        const neonAsset = await getSystemAssetFromNeon(safeFile);
+        if (neonAsset && neonAsset.buffer) {
+          try {
+            ensureDirectories2();
+            fs10.writeFileSync(absPath, neonAsset.buffer);
+          } catch {
+          }
+          res.setHeader("Content-Type", receipt.mimeType || neonAsset.mimeType);
+          res.setHeader("Cache-Control", "private, no-store, max-age=0");
+          res.setHeader(
+            "Content-Disposition",
+            `inline; filename="${encodeURIComponent(receipt.originalFileName)}"`
+          );
+          res.send(neonAsset.buffer);
+          return;
+        }
         res.status(404).json({
           error: "Arquivo bin\xE1rio do comprovante n\xE3o encontrado no armazenamento privado.",
           code: "BINARY_NOT_FOUND"
@@ -8416,7 +10366,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         "Content-Disposition",
         `inline; filename="${encodeURIComponent(receipt.originalFileName)}"`
       );
-      fs11.createReadStream(absPath).pipe(res);
+      fs10.createReadStream(absPath).pipe(res);
     }
   );
   app.get(
@@ -8443,11 +10393,11 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
 var rawPort = process.env.PORT && process.env.NGINX_PORT && process.env.PORT === process.env.NGINX_PORT ? process.env.DEFAULT_APP_PORT || "3000" : process.env.PORT || "3000";
 var PORT = Number(rawPort) || 3e3;
 var ROOT_DIR3 = resolveDataRoot();
-var DATA_DIR = path12.join(ROOT_DIR3, "data");
-var DB_FILE_PATH = path12.join(DATA_DIR, "rodovar-server-db.json");
-var PUBLIC_DIR = path12.join(ROOT_DIR3, "public");
-var UPLOADS_DIR = path12.join(PUBLIC_DIR, "uploads");
-var DEFAULT_AVATAR_FS_PATH = path12.join(PUBLIC_DIR, "assets", "default-avatar.png");
+var DATA_DIR = path11.join(ROOT_DIR3, "data");
+var DB_FILE_PATH = path11.join(DATA_DIR, "rodovar-server-db.json");
+var PUBLIC_DIR = path11.join(ROOT_DIR3, "public");
+var UPLOADS_DIR = path11.join(PUBLIC_DIR, "uploads");
+var DEFAULT_AVATAR_FS_PATH = path11.join(PUBLIC_DIR, "assets", "default-avatar.png");
 var DEFAULT_AVATAR_URL = "/assets/default-avatar.png";
 var MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 var LOCKOUT_THRESHOLD = 5;
@@ -8498,12 +10448,12 @@ function makePngChunk(type, data) {
   return Buffer.concat([lenBuf, typeBuf, data, crcBuf]);
 }
 function ensureDefaultAvatarPngExists() {
-  const assetsDir = path12.dirname(DEFAULT_AVATAR_FS_PATH);
-  if (!fs12.existsSync(assetsDir)) {
-    fs12.mkdirSync(assetsDir, { recursive: true });
+  const assetsDir = path11.dirname(DEFAULT_AVATAR_FS_PATH);
+  if (!fs11.existsSync(assetsDir)) {
+    fs11.mkdirSync(assetsDir, { recursive: true });
   }
-  if (fs12.existsSync(DEFAULT_AVATAR_FS_PATH)) {
-    const stat = fs12.statSync(DEFAULT_AVATAR_FS_PATH);
+  if (fs11.existsSync(DEFAULT_AVATAR_FS_PATH)) {
+    const stat = fs11.statSync(DEFAULT_AVATAR_FS_PATH);
     if (stat.size > 1024) return;
   }
   const width = 1024;
@@ -8570,7 +10520,7 @@ function ensureDefaultAvatarPngExists() {
     makePngChunk("IDAT", idatData),
     makePngChunk("IEND", Buffer.alloc(0))
   ]);
-  fs12.writeFileSync(DEFAULT_AVATAR_FS_PATH, pngBuffer);
+  fs11.writeFileSync(DEFAULT_AVATAR_FS_PATH, pngBuffer);
 }
 var cachedOfficialLogo = null;
 function paethPredictor(a, b, c) {
@@ -8584,10 +10534,10 @@ function paethPredictor(a, b, c) {
 }
 function loadOfficialRodovarLogo() {
   if (cachedOfficialLogo) return cachedOfficialLogo;
-  const logoPath = path12.join(PUBLIC_DIR, "assets", "aistudio", "RODOVAR-LOGO_310056c8.png");
-  if (!fs12.existsSync(logoPath)) return null;
+  const logoPath = path11.join(PUBLIC_DIR, "assets", "aistudio", "RODOVAR-LOGO_310056c8.png");
+  if (!fs11.existsSync(logoPath)) return null;
   try {
-    const buf = fs12.readFileSync(logoPath);
+    const buf = fs11.readFileSync(logoPath);
     let offset = 8;
     let width = 0;
     let height = 0;
@@ -8783,43 +10733,43 @@ function generateRodovarPwaIconPng(size, maskable) {
   ]);
 }
 function ensurePwaIconsExist() {
-  if (!fs12.existsSync(PUBLIC_DIR)) {
-    fs12.mkdirSync(PUBLIC_DIR, { recursive: true });
+  if (!fs11.existsSync(PUBLIC_DIR)) {
+    fs11.mkdirSync(PUBLIC_DIR, { recursive: true });
   }
-  const iconsDir = path12.join(PUBLIC_DIR, "icons");
-  if (!fs12.existsSync(iconsDir)) {
-    fs12.mkdirSync(iconsDir, { recursive: true });
+  const iconsDir = path11.join(PUBLIC_DIR, "icons");
+  if (!fs11.existsSync(iconsDir)) {
+    fs11.mkdirSync(iconsDir, { recursive: true });
   }
   const icons = [
     { relPath: "pwa-192x192.png", size: 192, maskable: false },
     { relPath: "pwa-512x512.png", size: 512, maskable: false },
     { relPath: "pwa-maskable-512x512.png", size: 512, maskable: true },
     { relPath: "apple-touch-icon.png", size: 180, maskable: false },
-    { relPath: path12.join("icons", "icon-192x192.png"), size: 192, maskable: false },
-    { relPath: path12.join("icons", "icon-512x512.png"), size: 512, maskable: false },
-    { relPath: path12.join("icons", "icon-maskable-512x512.png"), size: 512, maskable: true }
+    { relPath: path11.join("icons", "icon-192x192.png"), size: 192, maskable: false },
+    { relPath: path11.join("icons", "icon-512x512.png"), size: 512, maskable: false },
+    { relPath: path11.join("icons", "icon-maskable-512x512.png"), size: 512, maskable: true }
   ];
   for (const icon of icons) {
-    const filePath = path12.join(PUBLIC_DIR, icon.relPath);
-    fs12.writeFileSync(filePath, generateRodovarPwaIconPng(icon.size, icon.maskable));
+    const filePath = path11.join(PUBLIC_DIR, icon.relPath);
+    fs11.writeFileSync(filePath, generateRodovarPwaIconPng(icon.size, icon.maskable));
   }
 }
 function hashPassword(password, existingSaltHex) {
-  const salt = existingSaltHex || crypto13.randomBytes(16).toString("hex");
-  const derived = crypto13.scryptSync(password, Buffer.from(salt, "hex"), 64);
+  const salt = existingSaltHex || crypto12.randomBytes(16).toString("hex");
+  const derived = crypto12.scryptSync(password, Buffer.from(salt, "hex"), 64);
   return {
     hash: derived.toString("hex"),
     salt
   };
 }
-var DUMMY_SALT_HEX = crypto13.randomBytes(16).toString("hex");
-var DUMMY_HASH_HEX = crypto13.scryptSync("dummy-timing-safe-password-rodovar", Buffer.from(DUMMY_SALT_HEX, "hex"), 64).toString("hex");
+var DUMMY_SALT_HEX = crypto12.randomBytes(16).toString("hex");
+var DUMMY_HASH_HEX = crypto12.scryptSync("dummy-timing-safe-password-rodovar", Buffer.from(DUMMY_SALT_HEX, "hex"), 64).toString("hex");
 function verifyPasswordTimingSafe(password, expectedHashHex, saltHex) {
   try {
-    const derived = crypto13.scryptSync(password, Buffer.from(saltHex, "hex"), 64);
+    const derived = crypto12.scryptSync(password, Buffer.from(saltHex, "hex"), 64);
     const expectedBuf = Buffer.from(expectedHashHex, "hex");
     if (derived.length !== expectedBuf.length) return false;
-    return crypto13.timingSafeEqual(derived, expectedBuf);
+    return crypto12.timingSafeEqual(derived, expectedBuf);
   } catch {
     return false;
   }
@@ -9117,11 +11067,11 @@ function getDefaultSystemConfig() {
       height: 700
     },
     topHeader: {
-      imageUrl: "/assets/banner-rodovar-conecta-highway.png",
+      imageUrl: "/assets/header-sunset.jpg",
       focusX: 50,
       focusY: 50,
-      width: 2172,
-      height: 724
+      width: 1920,
+      height: 240
     },
     welcomeBanner: {
       carouselEnabled: false,
@@ -9150,15 +11100,15 @@ function normalizeIdentifier(raw) {
   return String(raw || "").trim().toLowerCase();
 }
 function loadOrInitDatabase() {
-  if (!fs12.existsSync(DATA_DIR)) {
-    fs12.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs11.existsSync(DATA_DIR)) {
+    fs11.mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!fs12.existsSync(UPLOADS_DIR)) {
-    fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
+  if (!fs11.existsSync(UPLOADS_DIR)) {
+    fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
-  if (fs12.existsSync(DB_FILE_PATH)) {
+  if (fs11.existsSync(DB_FILE_PATH)) {
     try {
-      const raw = fs12.readFileSync(DB_FILE_PATH, "utf8");
+      const raw = fs11.readFileSync(DB_FILE_PATH, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.users) && parsed.users.length > 0) {
         if (!parsed.systemConfig) {
@@ -9189,15 +11139,52 @@ function loadOrInitDatabase() {
       console.error("Error reading server DB, re-initializing safely:", err);
     }
   }
+  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
+    console.warn(
+      "Local DB seed absent in serverless/Neon environment; booting empty skeleton until Neon sync."
+    );
+    return {
+      users: [],
+      loginLocks: {},
+      sessions: {},
+      passwordResetTokens: [],
+      accessDecisions: [],
+      auditLogs: [],
+      systemConfig: getDefaultSystemConfig(),
+      accessPolicy: {
+        protectedAdminUid: "emp-admin-master",
+        authorizedUids: [],
+        version: 1
+      }
+    };
+  }
   throw new Error("Banco ausente ou inv\xE1lido. Restaure o banco existente; cria\xE7\xE3o autom\xE1tica de contas desabilitada.");
 }
-function saveDatabase(db) {
-  if (!fs12.existsSync(DATA_DIR)) {
-    fs12.mkdirSync(DATA_DIR, { recursive: true });
+function saveLocalDbFile(db) {
+  try {
+    if (!fs11.existsSync(DATA_DIR)) {
+      fs11.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
+    fs11.writeFileSync(tmpFile, JSON.stringify(db, null, 2), "utf8");
+    fs11.renameSync(tmpFile, DB_FILE_PATH);
+  } catch (err) {
+    console.warn("saveLocalDbFile notice:", err.message);
   }
-  const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
-  fs12.writeFileSync(tmpFile, JSON.stringify(db, null, 2), "utf8");
-  fs12.renameSync(tmpFile, DB_FILE_PATH);
+}
+function saveDatabase(db) {
+  saveLocalDbFile(db);
+  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
+    return;
+  }
+  void persistStateSnapshotToNeon("rodovar-core-state", {
+    users: db.users,
+    accessPolicy: db.accessPolicy,
+    archivedUsers: db.archivedUsers,
+    accessDecisions: db.accessDecisions,
+    systemConfig: db.systemConfig,
+    updatedAtIso: (/* @__PURE__ */ new Date()).toISOString()
+  });
   void persistStateSnapshotToNeon("rodovar-server-db", {
     systemConfig: db.systemConfig,
     accessPolicy: db.accessPolicy,
@@ -9205,7 +11192,313 @@ function saveDatabase(db) {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   });
 }
+async function saveDatabaseAsync(db) {
+  saveLocalDbFile(db);
+  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
+    return;
+  }
+  await Promise.allSettled([
+    persistStateSnapshotToNeon("rodovar-core-state", {
+      users: db.users,
+      accessPolicy: db.accessPolicy,
+      archivedUsers: db.archivedUsers,
+      accessDecisions: db.accessDecisions,
+      systemConfig: db.systemConfig,
+      updatedAtIso: (/* @__PURE__ */ new Date()).toISOString()
+    }),
+    persistStateSnapshotToNeon("rodovar-server-db", {
+      systemConfig: db.systemConfig,
+      accessPolicy: db.accessPolicy,
+      userCount: db.users?.length,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    })
+  ]);
+}
+async function saveMuralStateAsync(db) {
+  saveLocalDbFile(db);
+  const rawDb = db;
+  await persistStateSnapshotToNeon("rodovar-mural-state", rawDb.mural).catch(() => {
+  });
+}
+function saveDriversState(db) {
+  saveLocalDbFile(db);
+  const rawDb = db;
+  void persistStateSnapshotToNeon("rodovar-drivers-state", {
+    drivers: rawDb.drivers,
+    driverAudit: rawDb.driverAudit,
+    updatedAtIso: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
+async function saveCustomerCoversStateAsync(db) {
+  saveLocalDbFile(db);
+  const rawDb = db;
+  await persistStateSnapshotToNeon("rodovar-covers-state", {
+    customerCovers: rawDb.customerCovers,
+    updatedAtIso: (/* @__PURE__ */ new Date()).toISOString()
+  }).catch(() => {
+  });
+}
 var dbState = loadOrInitDatabase();
+var localNeonTimestamps = {};
+var lastNeonSyncCheckMs = 0;
+var lastFreightNeonSyncCheckMs = 0;
+var activeNeonSyncPromise = null;
+var activeFreightNeonSyncPromise = null;
+var initialNeonBootDone = false;
+var initialNeonBootPromise = null;
+var cachedEconomicMode = null;
+async function ensureNeonBootstrapped() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || initialNeonBootDone && dbState.users.length > 0) return;
+  if (initialNeonBootPromise) return initialNeonBootPromise;
+  initialNeonBootPromise = (async () => {
+    try {
+      await ensureNeonReady();
+      const syncOk = await syncAllModulesFromNeonIfNeeded(true);
+      if (syncOk && dbState.users.length > 0) {
+        initialNeonBootDone = true;
+      }
+    } catch (err) {
+      console.warn("Neon bootstrap notice:", err.message);
+    } finally {
+      initialNeonBootPromise = null;
+    }
+  })();
+  return initialNeonBootPromise;
+}
+async function syncAllModulesFromNeonIfNeeded(force = false) {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
+  const now = Date.now();
+  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  const minCooldownMs = force ? 0 : isVercelEnv ? cachedEconomicMode?.value ? 2500 : 1e3 : cachedEconomicMode?.value ? 1e4 : 5e3;
+  if (!force && now - lastNeonSyncCheckMs < minCooldownMs) return true;
+  if (activeNeonSyncPromise) return activeNeonSyncPromise;
+  activeNeonSyncPromise = (async () => {
+    try {
+      lastNeonSyncCheckMs = Date.now();
+      const remoteTs = await fetchNeonStateTimestamps();
+      const shouldPull = (key) => Boolean(remoteTs[key] && (force || localNeonTimestamps[key] !== remoteTs[key]));
+      const tasks = [];
+      if (force || shouldPull("rodovar-core-state")) {
+        tasks.push(
+          (async () => {
+            const [
+              neonUsers,
+              neonPolicy,
+              neonLocks,
+              neonTokens,
+              neonDecisions,
+              neonAuditLogs,
+              neonRevocations,
+              coreSnap
+            ] = await Promise.all([
+              loadAllUsersFromNeon(),
+              loadAccessPolicyFromNeon(),
+              loadLoginLocksFromNeon(),
+              loadPasswordResetTokensFromNeon(),
+              loadAccessDecisionsFromNeon(100),
+              loadAuditLogsFromNeon(150),
+              loadSessionRevocationsFromNeon(),
+              loadStateSnapshotFromNeon("rodovar-core-state")
+            ]);
+            if (Array.isArray(neonUsers) && neonUsers.length > 0) {
+              dbState.users = neonUsers;
+            }
+            if (neonPolicy) {
+              dbState.accessPolicy = neonPolicy;
+            }
+            if (neonLocks && Object.keys(neonLocks).length > 0) {
+              dbState.loginLocks = { ...dbState.loginLocks, ...neonLocks };
+            }
+            if (Array.isArray(neonTokens) && neonTokens.length > 0) {
+              dbState.passwordResetTokens = neonTokens;
+            }
+            if (Array.isArray(neonDecisions) && neonDecisions.length > 0) {
+              dbState.accessDecisions = neonDecisions;
+            }
+            if (Array.isArray(neonAuditLogs) && neonAuditLogs.length > 0) {
+              dbState.auditLogs = neonAuditLogs;
+            }
+            if (neonRevocations) {
+              for (const sid of neonRevocations.revokedSessions) {
+                revokedSessionIds.add(sid);
+              }
+              for (const [uid, ts] of Object.entries(neonRevocations.userRevocations)) {
+                revokedUserAfterMap.set(uid, ts);
+              }
+            }
+            const core = coreSnap?.payload;
+            if (core && typeof core === "object") {
+              if ((!Array.isArray(neonUsers) || neonUsers.length === 0) && Array.isArray(core.users) && core.users.length > 0) {
+                dbState.users = core.users;
+              }
+              if (!neonPolicy && core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
+              if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
+              if ((!Array.isArray(neonDecisions) || neonDecisions.length === 0) && Array.isArray(core.accessDecisions)) {
+                dbState.accessDecisions = core.accessDecisions;
+              }
+              if (!remoteTs["rodovar-mural-state"] && core.mural) {
+                dbState.mural = core.mural;
+              }
+              if (!remoteTs["rodovar-drivers-state"] && Array.isArray(core.drivers)) {
+                dbState.drivers = core.drivers;
+              }
+              if (!remoteTs["rodovar-drivers-state"] && Array.isArray(core.driverAudit)) {
+                dbState.driverAudit = core.driverAudit;
+              }
+              if (!remoteTs["rodovar-covers-state"] && core.customerCovers && typeof core.customerCovers === "object") {
+                dbState.customerCovers = core.customerCovers;
+              }
+              if (core.systemConfig && typeof core.systemConfig.revision === "number" && core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)) {
+                if (core.systemConfig.topHeader?.imageUrl === "/assets/banner-rodovar-conecta-highway.png") {
+                  core.systemConfig.topHeader.imageUrl = "/assets/header-sunset.jpg";
+                }
+                dbState.systemConfig = core.systemConfig;
+              }
+            }
+            if (remoteTs["rodovar-core-state"]) {
+              localNeonTimestamps["rodovar-core-state"] = remoteTs["rodovar-core-state"];
+            }
+          })()
+        );
+      }
+      if (shouldPull("rodovar-mural-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-mural-state").then((snap) => {
+            if (snap?.payload) dbState.mural = snap.payload;
+            localNeonTimestamps["rodovar-mural-state"] = remoteTs["rodovar-mural-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-drivers-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-drivers-state").then((snap) => {
+            if (snap?.payload && typeof snap.payload === "object") {
+              if (Array.isArray(snap.payload.drivers)) dbState.drivers = snap.payload.drivers;
+              if (Array.isArray(snap.payload.driverAudit)) dbState.driverAudit = snap.payload.driverAudit;
+            }
+            localNeonTimestamps["rodovar-drivers-state"] = remoteTs["rodovar-drivers-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-covers-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-covers-state").then((snap) => {
+            if (snap?.payload?.customerCovers && typeof snap.payload.customerCovers === "object") {
+              dbState.customerCovers = snap.payload.customerCovers;
+            }
+            localNeonTimestamps["rodovar-covers-state"] = remoteTs["rodovar-covers-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-mural-polls")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-mural-polls").then((snap) => {
+            if (snap?.payload) hydrateMuralPollsFromPayload(snap.payload);
+            localNeonTimestamps["rodovar-mural-polls"] = remoteTs["rodovar-mural-polls"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-external-rh")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-external-rh").then((snap) => {
+            if (snap?.payload) hydrateExternalRhFromPayload(snap.payload);
+            localNeonTimestamps["rodovar-external-rh"] = remoteTs["rodovar-external-rh"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-system-config")) {
+        tasks.push(
+          loadSystemConfigFromNeon().then((neonCfg) => {
+            if (neonCfg && typeof neonCfg.revision === "number" && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+              if (neonCfg.topHeader?.imageUrl === "/assets/banner-rodovar-conecta-highway.png") {
+                neonCfg.topHeader.imageUrl = "/assets/header-sunset.jpg";
+              }
+              dbState.systemConfig = neonCfg;
+            }
+            localNeonTimestamps["rodovar-system-config"] = remoteTs["rodovar-system-config"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-freights-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-freights-state").then((freightsSnap) => {
+            if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+            localNeonTimestamps["rodovar-freights-state"] = remoteTs["rodovar-freights-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-payments-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-payments-state").then((paymentsSnap) => {
+            if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
+            localNeonTimestamps["rodovar-payments-state"] = remoteTs["rodovar-payments-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-requests-state")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-requests-state").then((requestsSnap) => {
+            if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
+            localNeonTimestamps["rodovar-requests-state"] = remoteTs["rodovar-requests-state"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-agenda")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-agenda").then((agendaSnap) => {
+            if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
+            localNeonTimestamps["rodovar-agenda"] = remoteTs["rodovar-agenda"];
+          })
+        );
+      }
+      if (shouldPull("rodovar-social")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-social").then((socialSnap) => {
+            if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+            localNeonTimestamps["rodovar-social"] = remoteTs["rodovar-social"];
+          })
+        );
+      }
+      if (tasks.length > 0) {
+        await Promise.all(tasks);
+      }
+      return true;
+    } catch (err) {
+      console.warn("Neon syncAll notice:", err.message);
+      return false;
+    } finally {
+      activeNeonSyncPromise = null;
+    }
+  })();
+  return activeNeonSyncPromise;
+}
+async function syncFreightsOnlyFromNeonIfNeeded(force = false) {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
+  const now = Date.now();
+  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  const minCooldownMs = force ? 0 : isVercelEnv ? cachedEconomicMode?.value ? 2500 : 1e3 : cachedEconomicMode?.value ? 15e3 : 8e3;
+  if (!force && now - lastFreightNeonSyncCheckMs < minCooldownMs) return true;
+  if (activeFreightNeonSyncPromise) return activeFreightNeonSyncPromise;
+  activeFreightNeonSyncPromise = (async () => {
+    try {
+      lastFreightNeonSyncCheckMs = Date.now();
+      const remoteTs = await fetchNeonStateTimestamps();
+      const freightTs = remoteTs["rodovar-freights-state"];
+      if (freightTs && (force || localNeonTimestamps["rodovar-freights-state"] !== freightTs)) {
+        const freightsSnap = await loadStateSnapshotFromNeon("rodovar-freights-state");
+        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+        localNeonTimestamps["rodovar-freights-state"] = freightTs;
+      }
+      return true;
+    } catch (err) {
+      console.warn("Neon syncFreights notice:", err.message);
+      return false;
+    } finally {
+      activeFreightNeonSyncPromise = null;
+    }
+  })();
+  return activeFreightNeonSyncPromise;
+}
 function resolveUserAvatarUrl(user, config) {
   const rev = config.revision || 1;
   if (user.hasCustomAvatar && user.avatar && user.avatar.trim() !== "") {
@@ -9244,11 +11537,13 @@ function sanitizeUserForClient(user, config) {
 }
 function appendAuditLog(actorId, actorName, actorRole, action, details, ip) {
   const now = /* @__PURE__ */ new Date();
-  const logId = `aud-${Date.now()}-${crypto13.randomBytes(3).toString("hex")}`;
+  const logId = `aud-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`;
+  const timestampIso = now.toISOString();
+  const timestampFormatted = now.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   dbState.auditLogs.unshift({
     id: logId,
-    timestampIso: now.toISOString(),
-    timestampFormatted: now.toLocaleString("pt-BR"),
+    timestampIso,
+    timestampFormatted,
     actorId,
     actorName,
     actorRole,
@@ -9263,9 +11558,12 @@ function appendAuditLog(actorId, actorName, actorRole, action, details, ip) {
     id: logId,
     actorId,
     actorName,
+    actorRole,
     action,
     details,
-    ip
+    ip,
+    timestampIso,
+    timestampFormatted
   });
 }
 function parseCookies(cookieHeader) {
@@ -9335,18 +11633,32 @@ function countActiveAdmins() {
     (u) => u.accessLevel === "ADMINISTRADOR" && u.approvalStatus === "APROVADO" && u.active === true
   ).length;
 }
-var STATELESS_SESSION_SECRET = process.env.SESSION_SECRET || "rodovar-conecta-stateless-session-key-2027-v1";
+var rawSessionSecret = (process.env.SESSION_SECRET || "").trim();
+var STATELESS_SESSION_SECRET = rawSessionSecret;
+if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
+  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
+    const seedMaterial = (process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.VERCEL_PROJECT_ID || "rodovar-conecta-serverless-default-session-seed").trim();
+    STATELESS_SESSION_SECRET = crypto12.createHash("sha256").update(`rodovar-session-secret:${seedMaterial}`).digest("hex");
+    console.warn(
+      "SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo determin\xEDstico derivado do ambiente."
+    );
+  } else {
+    throw new Error(
+      "Configura\xE7\xE3o ausente ou insegura: A vari\xE1vel de ambiente SESSION_SECRET \xE9 obrigat\xF3ria e deve possuir no m\xEDnimo 32 caracteres."
+    );
+  }
+}
 var revokedSessionIds = /* @__PURE__ */ new Set();
 var revokedUserAfterMap = /* @__PURE__ */ new Map();
 function createSignedStatelessSession(userId, createdAt, expiresAt, ip, userAgent) {
-  const nonce = crypto13.randomBytes(8).toString("hex");
+  const nonce = crypto12.randomBytes(8).toString("hex");
   const payloadB64 = Buffer.from(
     JSON.stringify({ u: userId, c: createdAt, e: expiresAt, n: nonce }),
     "utf8"
   ).toString("base64url");
-  const sig = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
+  const sig = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
   const sessionId = `s1.${payloadB64}.${sig}`;
-  const csrfToken = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sessionId}:csrf`).digest("hex").slice(0, 48);
+  const csrfToken = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sessionId}:csrf`).digest("hex").slice(0, 48);
   const record = {
     sessionId,
     csrfToken,
@@ -9374,7 +11686,7 @@ function resolveSessionRecord(sid) {
   const parts = sid.split(".");
   if (parts.length !== 3) return void 0;
   const [, payloadB64, sig] = parts;
-  const expectedSig = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
+  const expectedSig = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
   if (sig !== expectedSig) return void 0;
   try {
     const parsed = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
@@ -9382,7 +11694,7 @@ function resolveSessionRecord(sid) {
     const createdAt = Number(parsed.c || 0);
     const revokedAt = revokedUserAfterMap.get(parsed.u);
     if (revokedAt && createdAt <= revokedAt) return void 0;
-    const csrfToken = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sid}:csrf`).digest("hex").slice(0, 48);
+    const csrfToken = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sid}:csrf`).digest("hex").slice(0, 48);
     const reconstructed = {
       sessionId: sid,
       csrfToken,
@@ -9399,11 +11711,14 @@ function resolveSessionRecord(sid) {
   }
 }
 function revokeAllSessionsForUser(userId) {
-  revokedUserAfterMap.set(userId, Date.now());
+  const revokedAt = Date.now();
+  revokedUserAfterMap.set(userId, revokedAt);
+  void persistUserSessionsRevocationToNeon(userId, revokedAt);
   let count = 0;
   for (const [sid, sess] of Object.entries(dbState.sessions)) {
     if (sess.userId === userId) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, userId);
       delete dbState.sessions[sid];
       count++;
     }
@@ -9493,8 +11808,64 @@ function createExpressApp() {
     ensurePwaIconsExist();
   }
   const app = express();
-  app.use("/api", (req, res, next) => {
-    if (req.path.startsWith("/auth") || req.path.startsWith("/profile") || req.method === "GET" && (req.path === "/system-config" || req.path === "/system-config/version" || req.path === "/neon/health" || req.path === "/health") || req.path === "/rh-external/webhook" || req.path === "/pagamentos/share-target") {
+  app.set("trust proxy", 1);
+  const installNeonWriteFlush = (req, res, next) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method) || !isNeonConfigured || isIsolatedTestEnv()) {
+      return next();
+    }
+    const origEnd = res.end.bind(res);
+    let flushing = false;
+    let finished = false;
+    res.end = (...args) => {
+      if (finished) return res;
+      if (!flushing && hasPendingNeonWrites()) {
+        flushing = true;
+        void flushPendingNeonWrites().catch((err) => console.warn("Neon flush on response end notice:", err.message)).finally(() => {
+          finished = true;
+          origEnd(...args);
+        });
+        return res;
+      }
+      finished = true;
+      return origEnd(...args);
+    };
+    next();
+  };
+  app.use("/receber-comprovante", installNeonWriteFlush, async (req, _res, next) => {
+    if (req.method === "POST" && isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonBootstrapped();
+      await syncAllModulesFromNeonIfNeeded(true);
+    }
+    next();
+  });
+  app.use("/api", installNeonWriteFlush, async (req, res, next) => {
+    const isLightPath = req.path === "/health" || req.path === "/neon/health" || req.path.startsWith("/system-config/assets/") || req.path === "/system-config/version";
+    const isFreightPath = req.path.startsWith("/meus-fretes");
+    const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+    const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+    const forceSync = isVercelEnv && (isMutation || req.path.startsWith("/auth") || req.path.startsWith("/pagamentos/shared-staging/"));
+    if (isFreightPath) {
+      res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Vary", "Authorization, Cookie");
+    }
+    if (!isLightPath) {
+      await ensureNeonBootstrapped();
+      if (isFreightPath) {
+        await syncFreightsOnlyFromNeonIfNeeded(forceSync);
+      } else {
+        await syncAllModulesFromNeonIfNeeded(forceSync);
+      }
+      if (isNeonConfigured && !isIsolatedTestEnv() && dbState.users.length === 0) {
+        res.status(503).json({
+          ok: false,
+          error: "Banco de dados indispon\xEDvel no momento. Verifique DATABASE_URL e a conex\xE3o com Neon PostgreSQL.",
+          code: "DATABASE_UNAVAILABLE"
+        });
+        return;
+      }
+    }
+    if (req.path.startsWith("/auth") || req.path.startsWith("/profile") || req.method === "GET" && (req.path === "/system-config" || req.path === "/system-config/version" || req.path === "/economic-mode" || req.path === "/neon/health" || req.path === "/health") || req.path === "/rh-external/webhook" || req.path === "/pagamentos/share-target" || req.path.startsWith("/pagamentos/shared-staging/")) {
       return next();
     }
     requireApprovedSession(req, res, () => {
@@ -9503,13 +11874,15 @@ function createExpressApp() {
         res.status(403).json({ error: "Troque sua senha antes de continuar.", code: "PASSWORD_CHANGE_REQUIRED" });
         return;
       }
-      if (req.path.startsWith("/pagamentos") && !["GET", "HEAD"].includes(req.method) && user.accessProfile !== "FINANCEIRO") {
+      if (req.path.startsWith("/pagamentos") && !["GET", "HEAD"].includes(req.method) && user.accessProfile !== "FINANCEIRO" && user.accessLevel !== "ADMINISTRADOR") {
         res.status(403).json({ error: "A\xE7\xE3o exclusiva do Financeiro." });
         return;
       }
       if (req.path.startsWith("/meus-fretes") && !["GET", "HEAD"].includes(req.method) && !req.path.includes("/notifications")) {
         const p = req.path, profile = user.accessProfile;
-        const permitted = user.accessLevel === "ADMINISTRADOR" || profile === "COMERCIAL" && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition|comments|attachments)$/.test(p)) || profile === "EXPEDICAO" && /\/(claim|operational-data|operational|expedicao-action|comments|attachments)$/.test(p) || canOperateMonitoring(user) && /\/(monitoramento-action|occurrences|resolve|comments|attachments|verify)$/.test(p);
+        const isManagerOrAdmin = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA";
+        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate|reopen)$/.test(p);
+        const permitted = isManagerOrAdmin || isSharedAction && (profile === "COMERCIAL" || profile === "EXPEDICAO" || canOperateMonitoring(user) || hasPagePermission(user, "fretes_transferir") || hasPagePermission(user, "fretes_cancelar")) || profile === "COMERCIAL" && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p)) || profile === "EXPEDICAO" && /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p) || canOperateMonitoring(user) && /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p);
         if (!permitted) {
           res.status(403).json({ error: "Etapa exclusiva de outro perfil." });
           return;
@@ -9522,27 +11895,29 @@ function createExpressApp() {
   app.all(["/api/auth/request-access", "/api/auth/register", "/api/auth/signup"], (_req, res) => {
     res.status(403).json({ error: "Cadastro p\xFAblico desabilitado. Procure o administrador.", code: "PUBLIC_REGISTRATION_DISABLED" });
   });
-  app.use("/uploads/documents", requireAdminSession);
+  app.use("/uploads/documents", requireApprovedSession);
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     next();
   });
-  app.use(express.json({ limit: "20mb", verify: (req, _res, bytes) => {
-    if (req.url === "/api/rh-external/webhook") req.rawBody = Buffer.from(bytes);
-  } }));
-  initializeNeonSchema().then(async () => {
-    try {
-      const neonConfig2 = await loadSystemConfigFromNeon();
-      if (neonConfig2 && typeof neonConfig2.revision === "number" && neonConfig2.revision >= dbState.systemConfig.revision) {
-        dbState.systemConfig = neonConfig2;
-        console.log(`[Neon] Hydrated System Config revision #${neonConfig2.revision}`);
+  app.use(
+    express.json({
+      limit: "20mb",
+      verify: (req, _res, bytes) => {
+        const cleanPath = String(req.originalUrl || req.url || "").split("?")[0];
+        if (cleanPath === "/api/rh-external/webhook") {
+          req.rawBody = Buffer.from(bytes);
+        }
       }
-    } catch {
-    }
-  }).catch(() => {
+    })
+  );
+  app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+  void ensureNeonBootstrapped();
+  app.get(["/api/neon/health", "/api/health"], (_req, res) => {
+    res.json({ ok: true });
   });
-  app.get(["/api/neon/health", "/api/health"], async (_req, res) => {
+  app.get("/api/admin/health", requireAdminSession, async (_req, res) => {
     const stats = await getNeonHealthStats();
     res.json({
       ok: true,
@@ -9597,6 +11972,7 @@ function createExpressApp() {
           lastFailureAt: 0
         };
         saveDatabase(dbState);
+        void persistLoginLockToNeon(dbState.loginLocks[lockKey]);
       }
     }
     res.json({
@@ -9606,7 +11982,7 @@ function createExpressApp() {
       remainingSeconds: 0
     });
   });
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", async (req, res) => {
     const ip = req.ip || "unknown";
     if (!checkIpRateLimit(ip, "login_burst", 60)) {
       res.status(429).json({
@@ -9657,6 +12033,7 @@ function createExpressApp() {
           lastFailureAt: 0
         };
         dbState.loginLocks[lockKey] = lock;
+        void persistLoginLockToNeon(lock);
       }
     }
     if (!lock) {
@@ -9691,6 +12068,7 @@ function createExpressApp() {
           ip
         );
         saveDatabase(dbState);
+        void persistLoginLockToNeon(lock);
         res.status(429).json({
           error: "N\xE3o foi poss\xEDvel entrar. Confira os dados ou tente novamente ap\xF3s o prazo indicado.",
           code: "ACCOUNT_LOCKED_120S",
@@ -9711,6 +12089,7 @@ function createExpressApp() {
         ip
       );
       saveDatabase(dbState);
+      void persistLoginLockToNeon(lock);
       res.status(401).json({
         error: "N\xE3o foi poss\xEDvel entrar. Confira os dados ou tente novamente ap\xF3s o prazo indicado.",
         code: "INVALID_CREDENTIALS",
@@ -9722,9 +12101,12 @@ function createExpressApp() {
       });
       return;
     }
-    lock.consecutiveFailures = 0;
-    lock.blockedUntil = null;
-    lock.lastFailureAt = 0;
+    if (lock.consecutiveFailures > 0 || lock.blockedUntil !== null) {
+      lock.consecutiveFailures = 0;
+      lock.blockedUntil = null;
+      lock.lastFailureAt = 0;
+      void persistLoginLockToNeon(lock);
+    }
     if (user.approvalStatus === "PENDENTE") {
       appendAuditLog(
         user.id,
@@ -9793,7 +12175,8 @@ function createExpressApp() {
       `Login autenticado com sucesso no servidor (${user.login} \u2022 ${user.accessLevel}).`,
       ip
     );
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     const isSecure = req.secure || req.headers["x-forwarded-proto"] === "https";
     setSessionCookie(res, sessionId, ttl, isSecure);
     res.json({
@@ -9868,7 +12251,7 @@ function createExpressApp() {
     const { hash, salt } = hashPassword(rawPass);
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const newPendingUser = {
-      id: `emp-req-${Date.now()}-${crypto13.randomBytes(3).toString("hex")}`,
+      id: `emp-req-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
       name: cleanName.slice(0, 120),
       email: cleanEmail.slice(0, 160),
       login: rawUsername.slice(0, 160),
@@ -9903,6 +12286,7 @@ function createExpressApp() {
       ip
     );
     saveDatabase(dbState);
+    void persistUserToNeon(newPendingUser);
     res.status(201).json({
       ok: true,
       status: "PENDENTE",
@@ -9923,6 +12307,7 @@ function createExpressApp() {
     }
     if (Date.now() >= sess.expiresAt) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -9935,6 +12320,7 @@ function createExpressApp() {
     const user = dbState.users.find((u) => u.id === sess.userId);
     if (!user || user.approvalStatus !== "APROVADO" || !user.active) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -9953,13 +12339,14 @@ function createExpressApp() {
       systemConfig: dbState.systemConfig
     });
   });
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", async (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
     const headerSid = req.headers["x-rodovar-session"];
     const sid = cookies.rodovar_sid || headerSid;
     const sess = resolveSessionRecord(sid);
     if (sid) {
       revokedSessionIds.add(sid);
+      void persistSessionRevocationToNeon(sid, sess?.userId);
     }
     if (sid && sess) {
       const user = dbState.users.find((u) => u.id === sess.userId);
@@ -9974,12 +12361,13 @@ function createExpressApp() {
         );
       }
       delete dbState.sessions[sid];
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
     }
+    await flushPendingNeonWrites();
     clearSessionCookie(res);
     res.json({ ok: true });
   });
-  app.post("/api/auth/request-password-reset", requireAdminSession, (req, res) => {
+  app.post("/api/auth/request-password-reset", requireAdminSession, async (req, res) => {
     const ip = req.ip || "unknown";
     if (!checkIpRateLimit(ip, "pw_reset_req", 6)) {
       res.status(429).json({
@@ -9990,20 +12378,23 @@ function createExpressApp() {
     const { identifier } = req.body || {};
     const user = findUserByIdentifier(String(identifier || ""));
     if (user && user.approvalStatus === "APROVADO" && user.active) {
-      const rawToken = `RDV-RST-${crypto13.randomBytes(12).toString("hex").toUpperCase()}`;
-      const tokenHash = crypto13.createHash("sha256").update(rawToken).digest("hex");
+      const rawToken = `RDV-RST-${crypto12.randomBytes(12).toString("hex").toUpperCase()}`;
+      const tokenHash = crypto12.createHash("sha256").update(rawToken).digest("hex");
       const now = Date.now();
       for (const t of dbState.passwordResetTokens) {
         if (t.userId === user.id) t.used = true;
       }
-      dbState.passwordResetTokens.push({
+      void markUserPasswordResetTokensUsedInNeon(user.id);
+      const newTokenRecord = {
         tokenHash,
         userId: user.id,
         createdAt: now,
         expiresAt: now + 15 * 60 * 1e3,
         // 15 minutes expiration
         used: false
-      });
+      };
+      dbState.passwordResetTokens.push(newTokenRecord);
+      void persistPasswordResetTokenToNeon(newTokenRecord);
       appendAuditLog(
         user.id,
         user.name,
@@ -10012,7 +12403,8 @@ function createExpressApp() {
         `Token \xFAnico de recupera\xE7\xE3o de senha emitido com expira\xE7\xE3o de 15 minutos.`,
         ip
       );
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
       res.json({
         ok: true,
         message: "Token \xFAnico de recupera\xE7\xE3o gerado com validade de 15 minutos.",
@@ -10026,7 +12418,7 @@ function createExpressApp() {
       code: "RESET_NOT_ELIGIBLE"
     });
   });
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", async (req, res) => {
     const { token, newPassword } = req.body || {};
     const rawToken = String(token || "").trim().toUpperCase();
     if (!rawToken) {
@@ -10038,7 +12430,7 @@ function createExpressApp() {
       res.status(400).json({ error: pwCheck.reason });
       return;
     }
-    const tokenHash = crypto13.createHash("sha256").update(rawToken).digest("hex");
+    const tokenHash = crypto12.createHash("sha256").update(rawToken).digest("hex");
     const now = Date.now();
     const record = dbState.passwordResetTokens.find(
       (t) => t.tokenHash === tokenHash && !t.used && now < t.expiresAt
@@ -10054,6 +12446,7 @@ function createExpressApp() {
     const onboarding = record.onboarding && dbState.accessPolicy?.authorizedUids.includes(user?.id);
     if (!user || !onboarding && (user.approvalStatus !== "APROVADO" || !user.active)) {
       record.used = true;
+      void persistPasswordResetTokenToNeon(record);
       saveDatabase(dbState);
       res.status(403).json({
         error: "Esta conta n\xE3o est\xE1 autorizada ou encontra-se suspensa/recusada.",
@@ -10062,6 +12455,7 @@ function createExpressApp() {
       return;
     }
     record.used = true;
+    void persistPasswordResetTokenToNeon(record);
     const { hash, salt } = hashPassword(String(newPassword));
     user.passwordHash = hash;
     user.passwordSalt = salt;
@@ -10079,7 +12473,9 @@ function createExpressApp() {
       `Senha redefinida com sucesso via token \xFAnico para ${user.login}.`,
       req.ip
     );
-    saveDatabase(dbState);
+    void persistUserToNeon(user);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       message: "Senha redefinida com sucesso! Voc\xEA j\xE1 pode entrar com sua nova senha."
@@ -10111,10 +12507,10 @@ function createExpressApp() {
   app.post(
     "/api/admin/access-requests/:userId/decision",
     requireAdminSession,
-    (req, res) => {
+    async (req, res) => {
       const admin = req.sessionUser;
       const targetUserId = String(req.params.userId || "");
-      const { action, accessLevel, permissoesPaginas, reason, department, roleTitle } = req.body || {};
+      const { action, accessLevel, permissoesPaginas, reason, department, roleTitle, accessProfile } = req.body || {};
       const targetUser = dbState.users.find((u) => u.id === targetUserId);
       if (!targetUser) {
         res.status(404).json({ error: "Conta de usu\xE1rio n\xE3o encontrada." });
@@ -10158,10 +12554,22 @@ function createExpressApp() {
         targetUser.accessLevel = nextRole;
         if (department) targetUser.department = department;
         if (roleTitle) targetUser.roleTitle = String(roleTitle).trim();
-        targetUser.permissoesPaginas = Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0 ? permissoesPaginas : getDefaultPermissionsForDepartment(targetUser.department, nextRole);
+        const resolvedProfile = resolveAccessProfileFromSector(
+          targetUser.department,
+          nextRole,
+          accessProfile,
+          targetUser.roleTitle
+        );
+        if (resolvedProfile) targetUser.accessProfile = resolvedProfile;
+        targetUser.permissoesPaginas = Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0 ? permissoesPaginas : getDefaultPermissionsForDepartment(targetUser.department, nextRole, targetUser.accessProfile);
         targetUser.approvedBy = `${admin.name} (${admin.login})`;
         targetUser.approvedAt = nowIso;
         targetUser.statusReason = cleanReason || "Acesso permitido pelo administrador.";
+        const policy = dbState.accessPolicy;
+        if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(targetUser.id) && targetUser.id !== policy.protectedAdminUid) {
+          policy.authorizedUids.push(targetUser.id);
+          void persistAccessPolicyToNeon(policy);
+        }
       } else if (action === "RECUSAR") {
         newStatus = "RECUSADO";
         targetUser.approvalStatus = "RECUSADO";
@@ -10182,15 +12590,28 @@ function createExpressApp() {
         targetUser.accessLevel = nextRole;
         if (department) targetUser.department = department;
         if (roleTitle) targetUser.roleTitle = String(roleTitle).trim();
+        const resolvedProfile = resolveAccessProfileFromSector(
+          targetUser.department,
+          nextRole,
+          accessProfile,
+          targetUser.roleTitle
+        );
+        if (resolvedProfile) targetUser.accessProfile = resolvedProfile;
         if (Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0) {
           targetUser.permissoesPaginas = permissoesPaginas;
+        } else {
+          targetUser.permissoesPaginas = getDefaultPermissionsForDepartment(
+            targetUser.department,
+            nextRole,
+            targetUser.accessProfile
+          );
         }
         targetUser.approvedBy = `${admin.name} (${admin.login})`;
         targetUser.approvedAt = nowIso;
         if (cleanReason) targetUser.statusReason = cleanReason;
       }
       const decisionRecord = {
-        id: `dec-${Date.now()}-${crypto13.randomBytes(3).toString("hex")}`,
+        id: `dec-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
         targetUserId: targetUser.id,
         targetName: targetUser.name,
         targetLogin: targetUser.login,
@@ -10205,6 +12626,7 @@ function createExpressApp() {
         timestampFormatted: nowFormatted
       };
       dbState.accessDecisions.unshift(decisionRecord);
+      void persistAccessDecisionToNeon(decisionRecord);
       appendAuditLog(
         admin.id,
         admin.name,
@@ -10213,8 +12635,9 @@ function createExpressApp() {
         `Administrador ${admin.login} executou ${action} na conta ${targetUser.name} (${targetUser.login}) -> Situa\xE7\xE3o: ${newStatus}, Perfil: ${targetUser.accessLevel}.${cleanReason ? ` Motivo: ${cleanReason}` : ""}`,
         req.ip
       );
-      saveDatabase(dbState);
       void persistUserToNeon(targetUser);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
       const pendingCount = dbState.users.filter((u) => u.approvalStatus === "PENDENTE").length;
       res.json({
         ok: true,
@@ -10224,7 +12647,7 @@ function createExpressApp() {
       });
     }
   );
-  app.post("/api/admin/users", requireAdminSession, (req, res) => {
+  app.post("/api/admin/users", requireAdminSession, async (req, res) => {
     const admin = req.sessionUser;
     const {
       name,
@@ -10257,17 +12680,25 @@ function createExpressApp() {
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const role = ["FUNCIONARIO", "ADMINISTRADOR", "DIRETORIA"].includes(accessLevel) ? accessLevel : "FUNCIONARIO";
     const dept = department || "Operacional";
+    const cleanRoleTitle = String(roleTitle || "Colaborador Corporativo").trim();
+    const resolvedProfile = resolveAccessProfileFromSector(
+      dept,
+      role,
+      req.body?.accessProfile,
+      cleanRoleTitle
+    );
     const newUser = {
-      id: `emp-${Date.now()}-${crypto13.randomBytes(2).toString("hex")}`,
+      id: `emp-${Date.now()}-${crypto12.randomBytes(2).toString("hex")}`,
       name: cleanName,
       email: email ? normalizeIdentifier(email) : normLogin.includes("@") ? normLogin : `${normLogin}@rodovar.com.br`,
       login: normLogin,
       passwordHash: hash,
       passwordSalt: salt,
       mustChangePassword: Boolean(mustChangePassword),
-      roleTitle: String(roleTitle || "Colaborador Corporativo").trim(),
+      roleTitle: cleanRoleTitle,
       department: dept,
       accessLevel: role,
+      ...resolvedProfile ? { accessProfile: resolvedProfile } : {},
       avatar: "",
       hasCustomAvatar: false,
       approvalStatus: "APROVADO",
@@ -10279,8 +12710,13 @@ function createExpressApp() {
       location: "BA - Salvador",
       joinedAt: (/* @__PURE__ */ new Date()).toLocaleDateString("pt-BR"),
       active: true,
-      permissoesPaginas: Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0 ? permissoesPaginas : getDefaultPermissionsForDepartment(dept, role)
+      permissoesPaginas: Array.isArray(permissoesPaginas) && permissoesPaginas.length > 0 ? permissoesPaginas : getDefaultPermissionsForDepartment(dept, role, resolvedProfile)
     };
+    const policy = dbState.accessPolicy;
+    if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(newUser.id)) {
+      policy.authorizedUids.push(newUser.id);
+      void persistAccessPolicyToNeon(policy);
+    }
     dbState.users.unshift(newUser);
     appendAuditLog(
       admin.id,
@@ -10290,14 +12726,15 @@ function createExpressApp() {
       `Criou conta aprovada para ${newUser.name} (${newUser.login} \u2022 ${newUser.accessLevel}).`,
       req.ip
     );
-    saveDatabase(dbState);
     void persistUserToNeon(newUser);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.status(201).json({
       ok: true,
       user: sanitizeUserForClient(newUser, dbState.systemConfig)
     });
   });
-  app.put("/api/admin/users/:userId", requireAdminSession, (req, res) => {
+  app.put("/api/admin/users/:userId", requireAdminSession, async (req, res) => {
     const admin = req.sessionUser;
     const targetId = String(req.params.userId || "");
     const target = dbState.users.find((u) => u.id === targetId);
@@ -10313,6 +12750,7 @@ function createExpressApp() {
       department,
       roleTitle,
       accessLevel,
+      accessProfile,
       phoneExt,
       permissoesPaginas,
       mustChangePassword
@@ -10333,6 +12771,15 @@ function createExpressApp() {
     if (roleTitle) target.roleTitle = String(roleTitle).trim();
     if (accessLevel && ["FUNCIONARIO", "ADMINISTRADOR", "DIRETORIA"].includes(accessLevel)) {
       target.accessLevel = accessLevel;
+    }
+    const resolvedProfile = resolveAccessProfileFromSector(
+      target.department,
+      target.accessLevel,
+      accessProfile,
+      target.roleTitle
+    );
+    if (resolvedProfile) {
+      target.accessProfile = resolvedProfile;
     }
     if (phoneExt !== void 0) {
       target.phoneExt = String(phoneExt).trim();
@@ -10363,14 +12810,15 @@ function createExpressApp() {
       req.ip
     );
     revokeAllSessionsForUser(target.id);
-    saveDatabase(dbState);
     void persistUserToNeon(target);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       user: sanitizeUserForClient(target, dbState.systemConfig)
     });
   });
-  app.post("/api/profile/avatar", requireApprovedSession, (req, res) => {
+  app.post("/api/profile/avatar", requireApprovedSession, async (req, res) => {
     const actor = req.sessionUser;
     const { dataUrl, targetUserId } = req.body || {};
     const effectiveUserId = targetUserId ? String(targetUserId) : actor.id;
@@ -10413,15 +12861,27 @@ function createExpressApp() {
       });
       return;
     }
-    const fileName = `avatar-${crypto13.randomUUID()}.${validation.extension}`;
-    const filePath = path12.join(UPLOADS_DIR, fileName);
-    fs12.writeFileSync(filePath, validation.sanitizedBuffer);
+    const fileName = `avatar-${crypto12.randomUUID()}.${validation.extension}`;
+    const filePath = path11.join(UPLOADS_DIR, fileName);
+    try {
+      fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
+      fs11.writeFileSync(filePath, validation.sanitizedBuffer);
+    } catch {
+    }
+    void persistSystemAssetToNeon({
+      id: fileName,
+      slot: "userAvatar",
+      mimeType: validation.mimeType || "image/jpeg",
+      dataBase64: validation.sanitizedBuffer.toString("base64"),
+      width: validation.width,
+      height: validation.height
+    });
     if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith("/uploads/avatar-")) {
       const oldClean = targetUser.avatar.split("?")[0];
-      const oldFsPath = path12.join(PUBLIC_DIR, oldClean);
-      if (fs12.existsSync(oldFsPath)) {
+      const oldFsPath = path11.join(PUBLIC_DIR, oldClean);
+      if (fs11.existsSync(oldFsPath)) {
         try {
-          fs12.unlinkSync(oldFsPath);
+          fs11.unlinkSync(oldFsPath);
         } catch {
         }
       }
@@ -10436,7 +12896,9 @@ function createExpressApp() {
       `Foto de perfil atualizada e sanitizada (${validation.mimeType}, ${validation.width}x${validation.height}px) para ${targetUser.login}.`,
       req.ip
     );
-    saveDatabase(dbState);
+    void persistUserToNeon(targetUser);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       avatarUrl: targetUser.avatar,
@@ -10446,7 +12908,7 @@ function createExpressApp() {
   app.post(
     "/api/profile/restore-default-avatar",
     requireApprovedSession,
-    (req, res) => {
+    async (req, res) => {
       const actor = req.sessionUser;
       const { targetUserId } = req.body || {};
       const effectiveUserId = targetUserId ? String(targetUserId) : actor.id;
@@ -10464,10 +12926,10 @@ function createExpressApp() {
       }
       if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith("/uploads/avatar-")) {
         const oldClean = targetUser.avatar.split("?")[0];
-        const oldFsPath = path12.join(PUBLIC_DIR, oldClean);
-        if (fs12.existsSync(oldFsPath)) {
+        const oldFsPath = path11.join(PUBLIC_DIR, oldClean);
+        if (fs11.existsSync(oldFsPath)) {
           try {
-            fs12.unlinkSync(oldFsPath);
+            fs11.unlinkSync(oldFsPath);
           } catch {
           }
         }
@@ -10482,14 +12944,16 @@ function createExpressApp() {
         `Avatar padr\xE3o neutro restaurado para a conta ${targetUser.login}.`,
         req.ip
       );
-      saveDatabase(dbState);
+      void persistUserToNeon(targetUser);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
       res.json({
         ok: true,
         user: sanitizeUserForClient(targetUser, dbState.systemConfig)
       });
     }
   );
-  app.put("/api/profile", requireApprovedSession, (req, res) => {
+  app.put("/api/profile", requireApprovedSession, async (req, res) => {
     const actor = req.sessionUser;
     const { name, phoneExt, login, password } = req.body || {};
     if (name && String(name).trim().length >= 3) {
@@ -10526,7 +12990,11 @@ function createExpressApp() {
       actor.passwordSalt = salt;
       actor.mustChangePassword = false;
       for (const [sid, session] of Object.entries(dbState.sessions)) {
-        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) delete dbState.sessions[sid];
+        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, actor.id);
+          delete dbState.sessions[sid];
+        }
       }
     }
     appendAuditLog(
@@ -10537,7 +13005,9 @@ function createExpressApp() {
       `Titular ${actor.name} atualizou seus dados pessoais em Meu Perfil.`,
       req.ip
     );
-    saveDatabase(dbState);
+    void persistUserToNeon(actor);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       user: sanitizeUserForClient(actor, dbState.systemConfig)
@@ -10547,18 +13017,33 @@ function createExpressApp() {
     try {
       const neonConfig2 = await loadSystemConfigFromNeon();
       if (neonConfig2 && typeof neonConfig2.revision === "number") {
+        if (neonConfig2.topHeader?.imageUrl === "/assets/banner-rodovar-conecta-highway.png") {
+          neonConfig2.topHeader.imageUrl = "/assets/header-sunset.jpg";
+        }
         if (neonConfig2.revision >= dbState.systemConfig.revision) {
           dbState.systemConfig = neonConfig2;
         }
       }
     } catch {
     }
+    if (dbState.systemConfig?.topHeader?.imageUrl === "/assets/banner-rodovar-conecta-highway.png") {
+      dbState.systemConfig.topHeader.imageUrl = "/assets/header-sunset.jpg";
+    }
     res.json({
       systemConfig: dbState.systemConfig,
       defaults: getDefaultSystemConfig()
     });
   });
-  app.get("/api/system-config/version", (_req, res) => {
+  app.get("/api/system-config/version", async (_req, res) => {
+    if (isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonReady().catch(() => {
+      });
+      const neonCfg = await loadSystemConfigFromNeon().catch(() => null);
+      if (neonCfg && typeof neonCfg.revision === "number" && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+        dbState.systemConfig = neonCfg;
+      }
+    }
+    res.setHeader("Cache-Control", "no-store");
     res.json({
       revision: dbState.systemConfig.revision,
       updatedAtIso: dbState.systemConfig.updatedAtIso,
@@ -10566,7 +13051,12 @@ function createExpressApp() {
     });
   });
   app.get("/api/economic-mode", async (_req, res) => {
-    const enabled = await loadEconomicModeFromNeon();
+    const now = Date.now();
+    if (!cachedEconomicMode || now - cachedEconomicMode.fetchedAtMs > 3e4) {
+      const enabled2 = await loadEconomicModeFromNeon();
+      cachedEconomicMode = { value: enabled2, fetchedAtMs: now };
+    }
+    const enabled = cachedEconomicMode.value;
     res.json({
       ok: true,
       economicMode: enabled,
@@ -10581,6 +13071,7 @@ function createExpressApp() {
   app.post("/api/economic-mode", requireAdminSession, async (req, res) => {
     const { enabled } = req.body || {};
     const targetState = Boolean(enabled);
+    cachedEconomicMode = { value: targetState, fetchedAtMs: Date.now() };
     await persistEconomicModeToNeon(targetState);
     appendAuditLog(
       req.sessionUser.id,
@@ -10590,47 +13081,56 @@ function createExpressApp() {
       `Modo Econ\xF4mico ${targetState ? "ATIVADO" : "DESATIVADO"} pelo Administrador.`,
       req.ip
     );
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       economicMode: targetState
     });
   });
-  app.get(["/api/system-config/assets/:assetId", "/uploads/:fileName"], async (req, res, next) => {
-    const rawId = req.params.assetId || req.params.fileName;
-    if (!rawId) return next();
-    const fileName = path12.basename(rawId);
-    const diskPath = path12.join(UPLOADS_DIR, fileName);
-    if (fs12.existsSync(diskPath)) {
-      res.setHeader("Cache-Control", "public, max-age=86400, must-revalidate");
-      return res.sendFile(diskPath);
-    }
-    const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, "").replace(/\.[^.]+$/, "");
-    const asset = await getSystemAssetFromNeon(assetId) || await getSystemAssetFromNeon(fileName);
-    if (asset && asset.buffer) {
-      try {
-        fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
-        fs12.writeFileSync(diskPath, asset.buffer);
-      } catch {
+  app.get(
+    ["/api/system-config/assets/:assetId", "/uploads/:fileName", "/uploads/:subDir/:fileName"],
+    async (req, res, next) => {
+      const rawId = req.params.assetId || req.params.fileName;
+      if (!rawId) return next();
+      const subDir = req.params.subDir ? path11.basename(req.params.subDir) : "";
+      const fileName = path11.basename(rawId);
+      const diskPath = subDir ? path11.join(UPLOADS_DIR, subDir, fileName) : path11.join(UPLOADS_DIR, fileName);
+      if (fs11.existsSync(diskPath)) {
+        res.setHeader("Cache-Control", "public, max-age=86400, must-revalidate");
+        return res.sendFile(diskPath);
       }
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      return res.type(asset.mimeType || "image/jpeg").send(asset.buffer);
+      if (isNeonConfigured && !isIsolatedTestEnv()) {
+        await ensureNeonReady().catch(() => {
+        });
+      }
+      const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, "").replace(/\.[^.]+$/, "");
+      const asset = await getSystemAssetFromNeon(assetId) || await getSystemAssetFromNeon(fileName);
+      if (asset && asset.buffer) {
+        try {
+          fs11.mkdirSync(path11.dirname(diskPath), { recursive: true });
+          fs11.writeFileSync(diskPath, asset.buffer);
+        } catch {
+        }
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        return res.type(asset.mimeType || "image/jpeg").send(asset.buffer);
+      }
+      if (fileName.includes("topHeader")) {
+        const fallback = path11.join(PUBLIC_DIR, "assets/header-sunset.jpg");
+        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes("welcomeBanner")) {
+        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-frota-pesada-institucional.jpg");
+        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes("sidebarPoster")) {
+        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-truck-yellow.png");
+        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+      } else if (fileName.includes("defaultAvatar") || fileName.includes("avatar")) {
+        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-avatar-default.png");
+        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+      }
+      next();
     }
-    if (fileName.includes("topHeader")) {
-      const fallback = path12.join(PUBLIC_DIR, "assets/banner-rodovar-conecta-highway.png");
-      if (fs12.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes("welcomeBanner")) {
-      const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-frota-pesada-institucional.jpg");
-      if (fs12.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes("sidebarPoster")) {
-      const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-truck-yellow.png");
-      if (fs12.existsSync(fallback)) return res.sendFile(fallback);
-    } else if (fileName.includes("defaultAvatar") || fileName.includes("avatar")) {
-      const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-avatar-default.png");
-      if (fs12.existsSync(fallback)) return res.sendFile(fallback);
-    }
-    next();
-  });
+  );
   app.post(
     "/api/system-config/upload",
     requireAdminSession,
@@ -10676,12 +13176,12 @@ function createExpressApp() {
       const width = validation.width || rec.w;
       const height = validation.height || rec.h;
       const lowResolutionWarning = width < rec.w * 0.75 || height < rec.h * 0.75;
-      const assetId = crypto13.randomUUID();
+      const assetId = crypto12.randomUUID();
       const fileName = `sysconfig-${slot}-${assetId}.${validation.extension}`;
-      const filePath = path12.join(UPLOADS_DIR, fileName);
+      const filePath = path11.join(UPLOADS_DIR, fileName);
       try {
-        fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
-        fs12.writeFileSync(filePath, validation.sanitizedBuffer);
+        fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
+        fs11.writeFileSync(filePath, validation.sanitizedBuffer);
       } catch {
       }
       const dataBase64 = validation.sanitizedBuffer.toString("base64");
@@ -10835,10 +13335,10 @@ function createExpressApp() {
         `Configura\xE7\xE3o visual do sistema publicada (Revis\xE3o #${nextRevision}) por ${admin.login}. Banners no carrossel: ${sanitizedBannerItems.length}.`,
         req.ip
       );
-      saveDatabase(dbState);
-      await persistSystemConfigToNeon(nextConfig).catch(
-        (err) => console.warn("Neon persistSystemConfigToNeon warn:", err)
-      );
+      await Promise.all([
+        saveDatabaseAsync(dbState),
+        persistSystemConfigToNeon(nextConfig)
+      ]).catch((err) => console.warn("Neon persistSystemConfigToNeon warn:", err));
       res.json({
         ok: true,
         message: "Configura\xE7\xF5es salvas. Atualizando o sistema\u2026",
@@ -10848,28 +13348,40 @@ function createExpressApp() {
   );
   registerAccountDeletionRoutes(app, requireAdminSession, dbState, saveDatabase);
   registerAgenda(app, requireApprovedSession, () => dbState.users);
-  registerMural(app, requireApprovedSession, dbState, () => saveDatabase(dbState), INITIAL_ANNOUNCEMENTS);
-  registerChats(app, requireApprovedSession, dbState);
+  registerMural(app, requireApprovedSession, dbState, () => saveMuralStateAsync(dbState), INITIAL_ANNOUNCEMENTS);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
-  app.post("/api/admin/first-access/:uid", requireAdminSession, (req, res) => {
+  app.post("/api/admin/first-access/:uid", requireAdminSession, async (req, res) => {
     const user = dbState.users.find((u) => u.id === req.params.uid);
     const policy = dbState.accessPolicy;
     if (!user || !policy?.authorizedUids.includes(user.id)) {
       res.status(403).json({ error: "Identidade ainda n\xE3o vinculada \xE0 lista autorizada." });
       return;
     }
-    const token = "RDV-RST-" + crypto13.randomBytes(24).toString("hex").toUpperCase();
-    for (const t of dbState.passwordResetTokens) if (t.userId === user.id) t.used = true;
-    dbState.passwordResetTokens.push({ tokenHash: crypto13.createHash("sha256").update(token).digest("hex"), userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + 864e5, used: false, onboarding: true });
+    const token = "RDV-RST-" + crypto12.randomBytes(24).toString("hex").toUpperCase();
+    for (const t of dbState.passwordResetTokens) {
+      if (t.userId === user.id) t.used = true;
+    }
+    void markUserPasswordResetTokensUsedInNeon(user.id);
+    const newTokenRecord = {
+      tokenHash: crypto12.createHash("sha256").update(token).digest("hex"),
+      userId: user.id,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 864e5,
+      used: false,
+      onboarding: true
+    };
+    dbState.passwordResetTokens.push(newTokenRecord);
+    void persistPasswordResetTokenToNeon(newTokenRecord);
     revokeAllSessionsForUser(user.id);
-    saveDatabase(dbState);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
     res.setHeader("Cache-Control", "no-store");
     res.json({ token, login: user.login, expiresInHours: 24 });
   });
-  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveDatabase(dbState));
-  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDatabase(dbState));
+  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveCustomerCoversStateAsync(dbState));
+  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDriversState(dbState));
   registerUnifiedFreightRoutes(
     app,
     requireApprovedSession,
@@ -10881,15 +13393,18 @@ function createExpressApp() {
     requireApprovedSession,
     appendAuditLog
   );
-  const DOCS_UPLOADS_DIR = path12.join(UPLOADS_DIR, "documents");
-  if (!fs12.existsSync(DOCS_UPLOADS_DIR)) {
-    fs12.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+  const DOCS_UPLOADS_DIR = path11.join(UPLOADS_DIR, "documents");
+  try {
+    if (!fs11.existsSync(DOCS_UPLOADS_DIR)) {
+      fs11.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+    }
+  } catch {
   }
   const ALLOWED_DOC_EXTS = /* @__PURE__ */ new Set(["pdf", "doc", "docx", "xls", "xlsx"]);
   app.post(
     "/api/documentos/upload-anexos",
     requireApprovedSession,
-    (req, res) => {
+    async (req, res) => {
       const user = req.sessionUser;
       const { files } = req.body || {};
       if (!Array.isArray(files) || files.length === 0) {
@@ -10932,10 +13447,20 @@ function createExpressApp() {
           });
           return;
         }
-        const fileId = `doc-att-${Date.now()}-${crypto13.randomBytes(4).toString("hex")}`;
+        const fileId = `doc-att-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
         const fileName = `${fileId}.${ext}`;
-        const filePath = path12.join(DOCS_UPLOADS_DIR, fileName);
-        fs12.writeFileSync(filePath, buffer);
+        const filePath = path11.join(DOCS_UPLOADS_DIR, fileName);
+        try {
+          fs11.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+          fs11.writeFileSync(filePath, buffer);
+        } catch {
+        }
+        void persistSystemAssetToNeon({
+          id: fileName,
+          slot: "documentAttachment",
+          mimeType: ext === "pdf" ? "application/pdf" : "application/octet-stream",
+          dataBase64: buffer.toString("base64")
+        });
         const sizeKb = Math.max(1, Math.round(buffer.length / 1024));
         const sizeStr = sizeKb > 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
         attachments.push({
@@ -10954,7 +13479,8 @@ function createExpressApp() {
         `Anexou ${attachments.length} arquivo(s) oficial(is) com valida\xE7\xE3o de formato e tamanho no servidor.`,
         req.ip
       );
-      saveDatabase(dbState);
+      await saveDatabaseAsync(dbState);
+      await flushPendingNeonWrites();
       res.json({
         ok: true,
         attachments
@@ -10982,8 +13508,8 @@ function createExpressApp() {
       }
     })
   );
-  const bundledPublicDir = path12.join(process.cwd(), "public");
-  if (bundledPublicDir !== PUBLIC_DIR && fs12.existsSync(bundledPublicDir)) {
+  const bundledPublicDir = path11.join(process.cwd(), "public");
+  if (bundledPublicDir !== PUBLIC_DIR && fs11.existsSync(bundledPublicDir)) {
     app.use(express.static(bundledPublicDir));
   }
   app.all("/api/*", (_req, res) => {
@@ -10992,17 +13518,25 @@ function createExpressApp() {
       code: "API_NOT_FOUND"
     });
   });
+  app.use("/api", (err, _req, res, _next) => {
+    console.error("[API Unhandled Error]", err);
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({
+      ok: false,
+      error: err?.message || "Erro interno no servidor."
+    });
+  });
   cachedExpressApp = app;
   return app;
 }
 async function startServer() {
   const app = createExpressApp();
-  const candidateDist = fs12.existsSync(path12.join(ROOT_DIR3, "dist")) ? path12.join(ROOT_DIR3, "dist") : path12.join(process.cwd(), "dist");
-  const isProd = process.env.NODE_ENV === "production" && fs12.existsSync(candidateDist);
+  const candidateDist = fs11.existsSync(path11.join(ROOT_DIR3, "dist")) ? path11.join(ROOT_DIR3, "dist") : path11.join(process.cwd(), "dist");
+  const isProd = process.env.NODE_ENV === "production" && fs11.existsSync(candidateDist);
   if (isProd) {
     app.use(express.static(candidateDist));
     app.get("*", (_req, res) => {
-      res.sendFile(path12.join(candidateDist, "index.html"));
+      res.sendFile(path11.join(candidateDist, "index.html"));
     });
   } else {
     const { createServer: createViteServer } = await import("vite");
@@ -11030,6 +13564,9 @@ function handler(req, res) {
   try {
     if (!appInstance) {
       appInstance = createExpressApp();
+    }
+    if (req && req.body !== void 0 && req.readableEnded && !req._body) {
+      req._body = true;
     }
     return appInstance(req, res);
   } catch (err) {

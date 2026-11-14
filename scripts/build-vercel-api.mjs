@@ -26,7 +26,8 @@ function collectJsonFiles(dir, relPrefix = '') {
   return entries;
 }
 
-const seedMap = collectJsonFiles(dataDir);
+const shouldEmbedDataSeed = process.env.RODOVAR_EMBED_DATA_SEED === '1';
+const seedMap = shouldEmbedDataSeed ? collectJsonFiles(dataDir) : {};
 const compressedBase64 = zlib
   .gzipSync(Buffer.from(JSON.stringify(seedMap), 'utf8'))
   .toString('base64');

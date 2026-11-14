@@ -1,7 +1,7 @@
 import React from 'react';
-import { CarrierBrand, OperationalUnit } from '../types';
+import { ActiveCarrierBrand, CarrierBrand, OperationalUnit } from '../types';
 
-export const CARRIER_BRANDS: CarrierBrand[] = ['RODOVAR', 'VL TRANSPORTES', 'AXD'];
+export const CARRIER_BRANDS: ActiveCarrierBrand[] = ['RODOVAR', 'VL TRANSPORTES'];
 
 export const OPERATIONAL_UNITS: { value: OperationalUnit; tag: 'SSA-BA' | 'GRU-SP'; label: string }[] = [
   { value: 'BA - Salvador', tag: 'SSA-BA', label: 'BA - Salvador (SSA-BA)' },
@@ -41,41 +41,10 @@ export const CarrierBrandLogo: React.FC<{
   if (brand === 'AXD') {
     return (
       <div
-        className={`inline-flex items-center justify-center bg-white px-2.5 py-1 rounded-lg border border-gray-200/80 shadow-2xs select-none ${heightClass} ${className}`}
-        title="AXD Logística & Transportes"
+        className={`inline-flex items-center justify-center bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-300 text-slate-600 text-[10px] font-bold uppercase tracking-wider select-none ${heightClass} ${className}`}
+        title="Registro Histórico — AXD (somente leitura)"
       >
-        <svg
-          viewBox="0 0 270 100"
-          className="h-full w-auto"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          {/* Letter A */}
-          <polygon points="42,10 64,10 96,90 72,90 65,70 35,70 43,52 59,52 52,32 32,90 10,90" fill="#1E293B" />
-          {/* Orange bottom-left leg of A */}
-          <polygon points="23,55 44,55 31,90 10,90" fill="#F97316" />
-
-          {/* Diamond Dot between A and X */}
-          <polygon points="105,53 116,64 105,75 94,64" fill="#1E293B" />
-
-          {/* Letter X main diagonal (top-left to bottom-right) */}
-          <polygon points="88,10 114,10 176,90 150,90" fill="#1E293B" />
-          {/* Orange top-right arm of X */}
-          <polygon points="156,10 180,10 148,44 135,31" fill="#F97316" />
-          {/* Orange bottom-right tip of X */}
-          <polygon points="154,72 167,72 180,90 154,90" fill="#F97316" />
-
-          {/* Letter D */}
-          <path
-            d="M188,10 H226 C250,10 264,28 264,50 C264,72 250,90 226,90 H188 V10 Z M210,28 V72 H224 C237,72 244,63 244,50 C244,37 237,28 224,28 H210 Z"
-            fill="#334155"
-          />
-          {/* Orange bottom curve of D */}
-          <path
-            d="M210,72 H225 C236,72 242,65 244,56 H263 C260,76 246,90 225,90 H196 L210,72 Z"
-            fill="#F97316"
-          />
-        </svg>
+        AXD (Histórico)
       </div>
     );
   }
@@ -186,23 +155,35 @@ export async function getCarrierLogoPngDataUrl(brand: CarrierBrand = 'RODOVAR'):
 export interface ParsedTrafficScript {
   empresaMarca: CarrierBrand;
   dataCarregamento: string;
+  dataColetaIso: string;
   unidadeOperacional: OperationalUnit;
   comercialResponsavel: string;
   expedicaoResponsavel: string;
   cliente: string;
+  clienteCnpj: string;
   telefoneCliente: string;
   motoristaNome: string;
+  motoristaCpf: string;
   motoristaTelefone: string;
   emergenciaNome: string;
   emergenciaTelefone: string;
   origem: string;
+  enderecoColeta: string;
   destino: string;
+  enderecoEntrega: string;
+  tipoCarga: string;
+  pesoKg: number;
+  volumes: number;
+  veiculoNecessario: string;
+  placaVeiculo: string;
   valorFreteEmpresa: number;
   valorFreteMotorista: number;
   favorecido: string;
   tipoChavePix: 'CPF/CNPJ' | 'Celular' | 'E-mail' | 'Chave Aleatória';
   chavePix: string;
   banco: string;
+  observacoes: string;
+  condicoesPagamento: string;
 }
 
 export const SAMPLE_TRAFFIC_SCRIPT = `EMPRESA: RODOVAR
@@ -225,9 +206,58 @@ TIPO PIX: CPF/CNPJ
 CHAVE PIX: 14.528.901/0001-88
 BANCO: 260 - Nu Pagamentos`;
 
+function normalizeScriptKey(rawKey: string): string {
+  return String(rawKey || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function parseBrOrIsoDateToIso(val: string): string {
+  const clean = String(val || '').trim();
+  if (!clean) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
+  const br = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(clean);
+  if (br) {
+    const day = br[1].padStart(2, '0');
+    const month = br[2].padStart(2, '0');
+    const year = br[3].length === 2 ? `20${br[3]}` : br[3];
+    return `${year}-${month}-${day}`;
+  }
+  return '';
+}
+
+function inferPixKeyType(pixKey: string): 'CPF/CNPJ' | 'Celular' | 'E-mail' | 'Chave Aleatória' {
+  const clean = String(pixKey || '').trim();
+  if (clean.includes('@')) return 'E-mail';
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length === 14) return 'CPF/CNPJ';
+  if (digits.length === 10 || (digits.length === 11 && /^[1-9]{2}9/.test(digits))) {
+    return 'Celular';
+  }
+  if (digits.length === 11) return 'CPF/CNPJ';
+  if (clean.length >= 24) return 'Chave Aleatória';
+  return 'CPF/CNPJ';
+}
+
+function detectPaymentConditionFromObs(text: string): string {
+  const upper = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  if (!upper) return '';
+  if (upper.includes('INTEGRAL') || upper.includes('100%')) return 'Integral (100%)';
+  if (upper.includes('70') && upper.includes('30')) return '70% Adiantaento / 30% Saldo na Entrega';
+  if (upper.includes('80') && upper.includes('20')) return '80% Adiantamento / 20% Saldo';
+  return '';
+}
+
 export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTrafficScript> {
   const result: Partial<ParsedTrafficScript> = {};
-  const lines = rawText
+  const lines = String(rawText || '')
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -242,21 +272,25 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
   };
 
   for (const line of lines) {
-    const [rawKey, ...rest] = line.split(':');
-    if (!rawKey || rest.length === 0) continue;
-    const key = rawKey.toUpperCase().trim();
-    const val = rest.join(':').trim();
-    if (!val) continue;
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 0) continue;
+    const rawKey = line.slice(0, colonIdx);
+    const key = normalizeScriptKey(rawKey);
+    const val = line.slice(colonIdx + 1).replace(/\s+/g, ' ').trim();
+    if (!key) continue;
 
     if (key.includes('EMPRESA') || key.includes('MARCA')) {
+      if (!val) continue;
       const upper = val.toUpperCase();
       if (upper.includes('VL')) result.empresaMarca = 'VL TRANSPORTES';
-      else if (upper.includes('AXD')) result.empresaMarca = 'AXD';
       else result.empresaMarca = 'RODOVAR';
     } else if (key.includes('DATA')) {
       result.dataCarregamento = val;
+      result.dataColetaIso = parseBrOrIsoDateToIso(val);
     } else if (key.includes('UNIDADE') || key.includes('FILIAL')) {
-      if (val.toUpperCase().includes('SP') || val.toUpperCase().includes('GUARULHOS')) {
+      if (!val) continue;
+      const upper = val.toUpperCase();
+      if (upper.includes('SP') || upper.includes('GUARULHOS') || upper.includes('GRU')) {
         result.unidadeOperacional = 'SP - Guarulhos';
       } else {
         result.unidadeOperacional = 'BA - Salvador';
@@ -267,27 +301,62 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
       result.expedicaoResponsavel = val;
     } else if (key.includes('TELEFONE CLIENTE') || key.includes('TEL CLIENTE')) {
       result.telefoneCliente = val;
+    } else if (key.includes('CNPJ')) {
+      result.clienteCnpj = val;
     } else if (key.includes('CLIENTE')) {
-      result.cliente = val.toUpperCase();
-    } else if (key.includes('TELEFONE MOTORISTA') || key.includes('TEL MOTORISTA') || key.includes('CEL MOTORISTA')) {
+      result.cliente = val ? val.toUpperCase() : '';
+    } else if (
+      key.includes('TELEFONE MOTORISTA') ||
+      key.includes('TEL MOTORISTA') ||
+      key.includes('CEL MOTORISTA')
+    ) {
       result.motoristaTelefone = val;
+    } else if (key === 'CPF' || key.includes('CPF MOTORISTA')) {
+      result.motoristaCpf = val;
     } else if (key.includes('MOTORISTA') && !key.includes('FRETE')) {
       result.motoristaNome = val;
     } else if (key.includes('TELEFONE EMERG') || key.includes('TEL EMERG')) {
       result.emergenciaTelefone = val;
     } else if (key.includes('EMERG')) {
       result.emergenciaNome = val;
+    } else if (key.includes('ENDERECO COLETA') || key.includes('LOCAL COLETA')) {
+      result.enderecoColeta = val;
+    } else if (key.includes('ENDERECO ENTREGA') || key.includes('LOCAL ENTREGA')) {
+      result.enderecoEntrega = val;
     } else if (key.includes('ORIGEM') || key.includes('COLETA')) {
-      result.origem = val.toUpperCase();
+      result.origem = val ? val.toUpperCase() : '';
     } else if (key.includes('DESTINO') || key.includes('ENTREGA')) {
-      result.destino = val.toUpperCase();
-    } else if (key.includes('FRETE EMPRESA') || key.includes('VALOR EMPRESA')) {
-      result.valorFreteEmpresa = parseMoney(val);
-    } else if (key.includes('FRETE MOTORISTA') || key.includes('VALOR MOTORISTA') || key.includes('VALOR FRETE')) {
-      result.valorFreteMotorista = parseMoney(val);
+      result.destino = val ? val.toUpperCase() : '';
+    } else if (key.includes('PRODUTO') || key.includes('MATERIAL') || key === 'CARGA') {
+      result.tipoCarga = val;
+    } else if (key.includes('PESO')) {
+      const n = parseFloat(val.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.'));
+      if (Number.isFinite(n) && n > 0) result.pesoKg = n;
+    } else if (key.includes('VOLUME')) {
+      const n = parseInt(val.replace(/\D/g, ''), 10);
+      if (Number.isFinite(n) && n > 0) result.volumes = n;
+    } else if (key.includes('VEICULO')) {
+      result.veiculoNecessario = val;
+    } else if (key === 'PLACA' || key.includes('PLACA VEICULO')) {
+      result.placaVeiculo = val.toUpperCase();
+    } else if (
+      key.includes('FRETE EMP') ||
+      key.includes('FRETE EMPRESA') ||
+      key.includes('VALOR EMPRESA') ||
+      key.includes('FRETE CLIENTE')
+    ) {
+      result.valorFreteEmpresa = val ? parseMoney(val) : 0;
+    } else if (
+      key.includes('FRETE MOT') ||
+      key.includes('FRETE MOTORISTA') ||
+      key.includes('VALOR MOTORISTA') ||
+      key.includes('VALOR FRETE')
+    ) {
+      result.valorFreteMotorista = val ? parseMoney(val) : 0;
     } else if (key.includes('FAVORECIDO') || key.includes('RECEBEDOR')) {
       result.favorecido = val;
     } else if (key.includes('TIPO PIX') || key.includes('TIPO DE CHAVE')) {
+      if (!val) continue;
       const upper = val.toUpperCase();
       if (upper.includes('CELULAR') || upper.includes('TELEFONE')) result.tipoChavePix = 'Celular';
       else if (upper.includes('MAIL')) result.tipoChavePix = 'E-mail';
@@ -295,8 +364,17 @@ export function parseOperationalTrafficScript(rawText: string): Partial<ParsedTr
       else result.tipoChavePix = 'CPF/CNPJ';
     } else if (key.includes('PIX')) {
       result.chavePix = val;
+      if (val && !result.tipoChavePix) {
+        result.tipoChavePix = inferPixKeyType(val);
+      }
     } else if (key.includes('BANCO') || key.includes('INSTITUI')) {
       result.banco = val;
+    } else if (key === 'OBS' || key.startsWith('OBS ') || key.includes('OBSERVA')) {
+      result.observacoes = val;
+      const paymentMode = detectPaymentConditionFromObs(val);
+      if (paymentMode) {
+        result.condicoesPagamento = paymentMode;
+      }
     }
   }
 

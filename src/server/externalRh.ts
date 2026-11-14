@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { Express } from 'express';
 import { hasPagePermission } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
+import { isIsolatedTestEnv, persistStateSnapshotToNeon, persistSystemAssetToNeon, getSystemAssetFromNeon } from '../../neon.ts';
 
 export interface RhBillingProvider {
   name: string;
@@ -19,23 +20,64 @@ function validDocument(value:string) {
   return digit(value.slice(0,12),[5,4,3,2,9,8,7,6,5,4,3,2])===Number(value[12])&&digit(value.slice(0,13),[6,5,4,3,2,9,8,7,6,5,4,3,2])===Number(value[13]);
 }
 
+let activeRhDecrypt: ((bytes: Buffer) => Buffer) | null = null;
+let activeRhStateRef: any = null;
+
+export function hydrateExternalRhFromPayload(payload: any): void {
+  if (!activeRhStateRef || !activeRhDecrypt || !payload || typeof payload.encBase64 !== 'string') return;
+  try {
+    const parsed = JSON.parse(activeRhDecrypt(Buffer.from(payload.encBase64, 'base64')).toString('utf8'));
+    if (parsed && typeof parsed === 'object') {
+      activeRhStateRef.clients = Array.isArray(parsed.clients) ? parsed.clients : [];
+      activeRhStateRef.services = Array.isArray(parsed.services) ? parsed.services : [];
+      activeRhStateRef.requests = Array.isArray(parsed.requests) ? parsed.requests : [];
+      activeRhStateRef.keys = parsed.keys && typeof parsed.keys === 'object' ? parsed.keys : {};
+      activeRhStateRef.events = parsed.events && typeof parsed.events === 'object' ? parsed.events : {};
+    }
+  } catch (err) {
+    console.warn('hydrateExternalRhFromPayload notice:', (err as Error).message);
+  }
+}
+
 export function registerExternalRh(app:Express, guard:any, provider?:RhBillingProvider) {
   const dir=path.join(resolveDataRoot(),'data','rh-external');
   fs.mkdirSync(dir,{recursive:true});
   const keyFile=path.join(dir,'encryption.key');
-  if(!fs.existsSync(keyFile)) fs.writeFileSync(keyFile,crypto.randomBytes(32),{mode:0o600,flag:'wx'});
-  const key=fs.readFileSync(keyFile), file=path.join(dir,'records.enc');
+  const useLocalKeyFile = isIsolatedTestEnv() || (!process.env.VERCEL && !process.env.VERCEL_ENV);
+  let key: Buffer;
+  if (useLocalKeyFile) {
+    if(!fs.existsSync(keyFile)) fs.writeFileSync(keyFile,crypto.randomBytes(32),{mode:0o600,flag:'wx'});
+    key=fs.readFileSync(keyFile);
+  } else {
+    key=crypto.createHash('sha256').update(`rodovar-rh-ext:${process.env.SESSION_SECRET||process.env.DATABASE_URL||'rodovar-default-rh-key'}`).digest();
+  }
+  const file=path.join(dir,'records.enc');
   const encrypt=(bytes:Buffer)=>{const iv=crypto.randomBytes(12), cipher=crypto.createCipheriv('aes-256-gcm',key,iv);const encrypted=Buffer.concat([cipher.update(bytes),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),encrypted]);};
   const decrypt=(bytes:Buffer)=>{const decipher=crypto.createDecipheriv('aes-256-gcm',key,bytes.subarray(0,12));decipher.setAuthTag(bytes.subarray(12,28));return Buffer.concat([decipher.update(bytes.subarray(28)),decipher.final()]);};
   const state:any=fs.existsSync(file)?JSON.parse(decrypt(fs.readFileSync(file)).toString()):{clients:[],services:[],requests:[],keys:{},events:{}};
-  const save=()=>{fs.writeFileSync(file+'.tmp',encrypt(Buffer.from(JSON.stringify(state))),{mode:0o600});fs.renameSync(file+'.tmp',file);};
+  if (!isIsolatedTestEnv()) {
+    activeRhDecrypt = decrypt;
+    activeRhStateRef = state;
+  }
+  const save=()=>{
+    const encryptedBytes = encrypt(Buffer.from(JSON.stringify(state)));
+    fs.writeFileSync(file+'.tmp',encryptedBytes,{mode:0o600});fs.renameSync(file+'.tmp',file);
+    if (!isIsolatedTestEnv()) {
+      void persistStateSnapshotToNeon('rodovar-external-rh', { encBase64: encryptedBytes.toString('base64'), updatedAt: new Date().toISOString() });
+    }
+  };
   const audit=(r:any,u:any,action:string)=>r.history.push({id:crypto.randomUUID(),at:new Date().toISOString(),actorId:u.id,actorName:u.name,action});
   const fail=(res:any,status:number,error:string)=>res.status(status).json({error});
   const rh=(req:any,res:any,next:any)=>canAccessExternalRh(req.sessionUser)?(res.setHeader('Cache-Control','no-store'),next()):fail(res,403,'Acesso exclusivo à permissão RH.');
   const find=(id:string)=>state.requests.find((r:any)=>r.id===id);
   const locks=new Set<string>();
   const storeDoc=(r:any,name:string,mimeType:string,bytes:Buffer,kind:string,u:any)=>{
-    const id=crypto.randomUUID();fs.writeFileSync(path.join(dir,id+'.enc'),encrypt(bytes),{mode:0o600});
+    const id=crypto.randomUUID();
+    const encBytes=encrypt(bytes);
+    fs.writeFileSync(path.join(dir,id+'.enc'),encBytes,{mode:0o600});
+    if (!isIsolatedTestEnv()) {
+      void persistSystemAssetToNeon({ id: `rh-ext-${id}`, slot: 'rh-external-doc', mimeType, dataBase64: encBytes.toString('base64') });
+    }
     const doc={id,name:name.replace(/[\r\n<>"/\\]/g,'_').slice(0,150),mimeType,size:bytes.length,kind,at:new Date().toISOString()};r.documents.push(doc);audit(r,u,'Documento anexado: '+kind);return doc;
   };
   app.get('/api/rh-external',guard,rh,(_req,res)=>res.json({requests:state.requests,services:state.services,provider:{configured:!!provider,name:provider?.name || null}}));
@@ -111,8 +153,18 @@ export function registerExternalRh(app:Express, guard:any, provider?:RhBillingPr
     const hash=crypto.createHash('sha256').update(bytes).digest('hex');if(r.documents.some((d:any)=>d.hash===hash))return res.json({request:r});
     const doc=storeDoc(r,name,match[1],bytes,kind,req.sessionUser);Object.assign(doc,{hash});save();res.status(201).json({request:r});
   });
-  app.get('/api/rh-external/:id/documents/:documentId',guard,rh,(req:any,res)=>{
+  app.get('/api/rh-external/:id/documents/:documentId',guard,rh,async(req:any,res)=>{
     const r=find(req.params.id),doc=r?.documents.find((d:any)=>d.id===req.params.documentId);if(!doc)return fail(res,404,'Documento não encontrado.');
-    audit(r,req.sessionUser,'Download de documento: '+doc.kind);save();res.setHeader('X-Content-Type-Options','nosniff');res.type(doc.mimeType).attachment(doc.name).send(decrypt(fs.readFileSync(path.join(dir,doc.id+'.enc'))));
+    const localPath=path.join(dir,doc.id+'.enc');
+    let rawEnc: Buffer | null = fs.existsSync(localPath) ? fs.readFileSync(localPath) : null;
+    if (!rawEnc && !isIsolatedTestEnv()) {
+      const neonAsset = await getSystemAssetFromNeon(`rh-ext-${doc.id}`);
+      if (neonAsset?.buffer) {
+        rawEnc = neonAsset.buffer;
+        try { fs.writeFileSync(localPath, rawEnc, { mode: 0o600 }); } catch {}
+      }
+    }
+    if (!rawEnc) return fail(res, 404, 'Arquivo do documento não encontrado.');
+    audit(r,req.sessionUser,'Download de documento: '+doc.kind);save();res.setHeader('X-Content-Type-Options','nosniff');res.type(doc.mimeType).attachment(doc.name).send(decrypt(rawEnc));
   });
 }

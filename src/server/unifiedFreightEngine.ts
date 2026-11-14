@@ -32,6 +32,8 @@ import {
   hasPagePermission,
 } from '../lib/permissions.ts';
 import {
+  isNeonConfigured,
+  isIsolatedTestEnv,
   persistNotificationToNeon,
   loadNotificationsFromNeon,
   markNotificationReadInNeon,
@@ -40,11 +42,38 @@ import {
   persistStateSnapshotToNeon,
   persistSystemAssetToNeon,
   getSystemAssetFromNeon,
+  queryMonitoringFreightsFromNeon,
 } from '../../neon.ts';
 import { resolveDataRoot } from './dataRoot.ts';
 
 export const RODOVAR_CNPJ = '49.908.710/0001-03';
 export const RODOVAR_RAZAO_SOCIAL = 'RODOVAR LOGÍSTICA E TRANSPORTES RODOVIÁRIOS LTDA';
+
+export const COMPANY_OFFICIAL_PROFILES: Record<
+  'RODOVAR' | 'VL TRANSPORTES',
+  {
+    razaoSocial: string;
+    cnpj: string;
+    ie: string;
+    endereco: string;
+    telefone: string;
+  }
+> = {
+  RODOVAR: {
+    razaoSocial: 'RODOVAR TRANSPORTES E LOGISTICA',
+    cnpj: '49908710000103',
+    ie: '205429099',
+    endereco: 'TRAVESSA ACALANTO / JARDIM DAS MARGARIDAS - SALVADOR - BA',
+    telefone: '(71) 9 9920-2476',
+  },
+  'VL TRANSPORTES': {
+    razaoSocial: 'VL TRANSPORTES LTDA',
+    cnpj: '54506363000122',
+    ie: '',
+    endereco: 'R JUBIABA, 292 - LUIS EDUARDO MAGALHAES - SIMOES FILHO / BA',
+    telefone: '(71) 9 9920-2476',
+  },
+};
 
 const ROOT_DIR = resolveDataRoot();
 const FREIGHTS_STORE_DIR = path.join(ROOT_DIR, 'data', 'freights-store');
@@ -110,6 +139,20 @@ const idempotencyCache = new Map<string, { timestamp: number; status: number; bo
 const activeFreightLocks = new Set<string>();
 let serverNotifications: ServerNotificationRecord[] = [];
 let nextProtocolNumber = 843;
+let nextOrderSeqByBrand: Record<'RODOVAR' | 'VL TRANSPORTES', number> = {
+  RODOVAR: 1,
+  'VL TRANSPORTES': 1,
+};
+let freightsDataVersion = 1;
+let seededFromDefaultsOnly = false;
+
+export function getFreightsDataVersion(): number {
+  return freightsDataVersion;
+}
+
+function bumpFreightsDataVersion(): void {
+  freightsDataVersion += 1;
+}
 
 function ensureDirectories() {
   if (!fs.existsSync(FREIGHTS_STORE_DIR)) {
@@ -233,6 +276,7 @@ export const unifiedFinanceFreights=()=>[...freightsIndex.values()].filter(f=>f.
 function saveFreightsSnapshotToNeon(): void {
   void persistStateSnapshotToNeon('rodovar-freights-state', {
     nextProtocolNumber,
+    nextOrderSeqByBrand,
     freights: Array.from(freightsIndex.values()),
     subDocs: Array.from(freightSubDocs.values()),
     notifications: serverNotifications.slice(0, 300),
@@ -244,6 +288,17 @@ export function hydrateUnifiedFreightsFromPayload(payload: any): void {
   if (!payload || typeof payload !== 'object') return;
   if (typeof payload.nextProtocolNumber === 'number' && payload.nextProtocolNumber > nextProtocolNumber) {
     nextProtocolNumber = payload.nextProtocolNumber;
+  }
+  if (payload.nextOrderSeqByBrand && typeof payload.nextOrderSeqByBrand === 'object') {
+    const rdv = Number(payload.nextOrderSeqByBrand.RODOVAR);
+    const vl = Number(payload.nextOrderSeqByBrand['VL TRANSPORTES']);
+    if (!Number.isNaN(rdv) && rdv > nextOrderSeqByBrand.RODOVAR) nextOrderSeqByBrand.RODOVAR = rdv;
+    if (!Number.isNaN(vl) && vl > nextOrderSeqByBrand['VL TRANSPORTES']) nextOrderSeqByBrand['VL TRANSPORTES'] = vl;
+  }
+  if (seededFromDefaultsOnly && Array.isArray(payload.freights) && payload.freights.length > 0) {
+    freightsIndex.clear();
+    freightSubDocs.clear();
+    seededFromDefaultsOnly = false;
   }
   if (Array.isArray(payload.subDocs)) {
     for (const sub of payload.subDocs) {
@@ -259,6 +314,12 @@ export function hydrateUnifiedFreightsFromPayload(payload: any): void {
       if (!existing || (Number(f.revision || 0) >= Number(existing.revision || 0))) {
         freightsIndex.set(f.id, f);
       }
+      if (typeof f.ordemColetaSequencia === 'number' && f.empresaMarca !== 'AXD') {
+        const b = f.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : 'RODOVAR';
+        if (f.ordemColetaSequencia >= nextOrderSeqByBrand[b]) {
+          nextOrderSeqByBrand[b] = f.ordemColetaSequencia + 1;
+        }
+      }
     }
   }
   if (Array.isArray(payload.notifications) && payload.notifications.length > 0) {
@@ -270,11 +331,13 @@ export function hydrateUnifiedFreightsFromPayload(payload: any): void {
       }
     }
   }
+  bumpFreightsDataVersion();
 }
 
 export function persistFreightAndSubDoc(
   freight: UnifiedFreightRecord,
-  sub?: FreightSubDocument
+  sub?: FreightSubDocument,
+  options?: { skipNeon?: boolean }
 ): void {
   const existingSub = sub ||
     freightSubDocs.get(freight.id) || {
@@ -287,21 +350,59 @@ export function persistFreightAndSubDoc(
   syncSubDocCounters(freight, existingSub);
   freightsIndex.set(freight.id, freight);
   freightSubDocs.set(freight.id, existingSub);
+  if (!options?.skipNeon) {
+    seededFromDefaultsOnly = false;
+  }
+  bumpFreightsDataVersion();
   writeJsonAtomically(getFreightDocPath(freight.id), freight);
   writeJsonAtomically(getFreightSubDocPath(freight.id), existingSub);
   for (const listener of financeListeners) listener(freight);
-  void persistFreightToNeon(freight);
-  saveFreightsSnapshotToNeon();
+  if (!options?.skipNeon) {
+    void persistFreightToNeon(freight);
+    saveFreightsSnapshotToNeon();
+  }
 }
 
 function saveNotifications(): void {
+  bumpFreightsDataVersion();
   writeJsonAtomically(NOTIFICATIONS_FILE, serverNotifications);
   saveFreightsSnapshotToNeon();
 }
 
-function saveSequence(): void {
-  writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber });
-  saveFreightsSnapshotToNeon();
+function saveSequence(skipNeon = false): void {
+  writeJsonAtomically(SEQUENCE_FILE, { nextProtocolNumber, nextOrderSeqByBrand });
+  if (!skipNeon) {
+    saveFreightsSnapshotToNeon();
+  }
+}
+
+export function allocateNextOrderNumber(
+  brand: 'RODOVAR' | 'VL TRANSPORTES',
+  year?: number
+): { orderNumber: string; sequence: number; year: number } {
+  const spYear = year || Number(formatSaoPauloDateTime().dateOnlyIso.slice(0, 4)) || new Date().getFullYear();
+  let nextSeq = Math.max(1, nextOrderSeqByBrand[brand] || 1);
+  const prefix = brand === 'VL TRANSPORTES' ? 'OC-VL-' : 'OC-RDV-';
+  for (const rec of freightsIndex.values()) {
+    const recBrand = rec.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : rec.empresaMarca === 'RODOVAR' ? 'RODOVAR' : null;
+    if (recBrand !== brand) continue;
+    if (typeof rec.ordemColetaSequencia === 'number' && rec.ordemColetaSequencia >= nextSeq) {
+      nextSeq = rec.ordemColetaSequencia + 1;
+    }
+    if (rec.ordemCarregamentoNumero && rec.ordemCarregamentoNumero.startsWith(prefix)) {
+      const m = rec.ordemCarregamentoNumero.match(/^OC-(?:RDV|VL)-(\d+)/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (!Number.isNaN(parsed) && parsed >= nextSeq) {
+          nextSeq = parsed + 1;
+        }
+      }
+    }
+  }
+  nextOrderSeqByBrand[brand] = nextSeq + 1;
+  saveSequence();
+  const orderNumber = `${prefix}${String(nextSeq).padStart(6, '0')}/${spYear}`;
+  return { orderNumber, sequence: nextSeq, year: spYear };
 }
 
 export function formatProtocolNumber(seq: number): string {
@@ -525,6 +626,12 @@ export function loadOrSeedUnifiedFreights(): void {
       if (seq && typeof seq.nextProtocolNumber === 'number') {
         nextProtocolNumber = Math.max(843, seq.nextProtocolNumber);
       }
+      if (seq && seq.nextOrderSeqByBrand && typeof seq.nextOrderSeqByBrand === 'object') {
+        const rdv = Number(seq.nextOrderSeqByBrand.RODOVAR);
+        const vl = Number(seq.nextOrderSeqByBrand['VL TRANSPORTES']);
+        if (!Number.isNaN(rdv) && rdv > nextOrderSeqByBrand.RODOVAR) nextOrderSeqByBrand.RODOVAR = rdv;
+        if (!Number.isNaN(vl) && vl > nextOrderSeqByBrand['VL TRANSPORTES']) nextOrderSeqByBrand['VL TRANSPORTES'] = vl;
+      }
     } catch {
       // ignore
     }
@@ -567,12 +674,18 @@ export function loadOrSeedUnifiedFreights(): void {
           if (!isNaN(parsedNum) && parsedNum >= nextProtocolNumber) {
             nextProtocolNumber = parsedNum + 1;
           }
+          if (typeof rec.ordemColetaSequencia === 'number' && rec.empresaMarca !== 'AXD') {
+            const b = rec.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : 'RODOVAR';
+            if (rec.ordemColetaSequencia >= nextOrderSeqByBrand[b]) {
+              nextOrderSeqByBrand[b] = rec.ordemColetaSequencia + 1;
+            }
+          }
         }
       } catch (err) {
         console.error('Error loading freight doc:', file, err);
       }
     }
-    saveSequence();
+    saveSequence(true);
     return;
   }
 
@@ -976,10 +1089,11 @@ export function loadOrSeedUnifiedFreights(): void {
     },
   ];
 
+  seededFromDefaultsOnly = true;
   for (const item of initialRecords) {
-    persistFreightAndSubDoc(item.freight, item.sub);
+    persistFreightAndSubDoc(item.freight, item.sub, { skipNeon: true });
   }
-  saveSequence();
+  saveSequence(true);
 }
 
 // Validate PDF / PNG / JPEG / WebP attachment magic bytes (blocking SVG, HTML, executables)
@@ -1423,23 +1537,37 @@ export function registerUnifiedFreightRoutes(
   );
 
   // --------------------------------------------------------------------------
-  // 3. LIST / KANBAN QUERY WITH ORIGIN-SCOPED FILTERING & CURSOR PAGINATION
+  // 3. LIST / KANBAN QUERY WITH ORIGIN-SCOPED FILTERING, SERVER PAGINATION & ETAG
   //    Supports area = 'COMERCIAL' | 'EXPEDICAO' | 'MONITORAMENTO'
   // --------------------------------------------------------------------------
-  app.get('/api/meus-fretes', requireApprovedSession, (req: any, res: Response) => {
+  app.get('/api/meus-fretes', requireApprovedSession, async (req: any, res: Response) => {
+    res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Vary', 'Authorization, Cookie');
+
     const user = req.sessionUser as Employee;
     const area = String(req.query.area || 'COMERCIAL').toUpperCase();
     const scope = String(req.query.scope || 'MEUS').toUpperCase(); // 'MEUS' | 'DISPONIVEIS' | 'EQUIPE'
+    const viewModeRaw = String(req.query.viewMode || 'ALL').toUpperCase();
+    const viewMode: 'ATIVOS' | 'FINALIZADOS' | 'ALL' =
+      viewModeRaw === 'ATIVOS' || viewModeRaw === 'FINALIZADOS' ? viewModeRaw : 'ALL';
     const responsavelFilterId = String(req.query.responsavelId || '').trim();
     const search = String(req.query.search || '').trim().toLowerCase();
-    const periodo = String(req.query.periodo || 'TODOS').toUpperCase(); // 'TODOS' | 'HOJE' | 'SEMANA' | 'ATRASADOS'
+    const periodo = String(req.query.periodo || 'TODOS').toUpperCase(); // 'TODOS' | 'HOJE' | 'SEMANA' | 'MES' | 'ATRASADOS'
     const situacao = String(req.query.situacao || 'TODAS').toUpperCase();
     const includeCanceled = req.query.includeCanceled === 'true' || situacao === 'CANCELADO';
     const cursor = String(req.query.cursor || '').trim();
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 25));
+    const hasExplicitPage = req.query.page !== undefined && req.query.page !== '';
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const defaultLimit = viewMode === 'ATIVOS' || viewMode === 'FINALIZADOS' ? 12 : 25;
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || defaultLimit));
     const columnLimit = Math.min(25, Math.max(2, Number(req.query.columnLimit) || 10));
+    const omitKanban = req.query.omitKanban === 'true';
+    const compact = req.query.compact === 'true';
+    const checkOnly = req.query.checkOnly === 'true';
+    const sinceVersion = req.query.sinceVersion !== undefined ? Number(req.query.sinceVersion) : null;
 
-    // Enforce module permission at origin
+    // Enforce module permission at origin BEFORE querying DB or reading records
     if (area === 'COMERCIAL') {
       if (!canAccessComercialFreights(user)) {
         res.status(403).json({
@@ -1485,8 +1613,165 @@ export function registerUnifiedFreightRoutes(
       }
     }
 
+    // ETag & lightweight version sync check to avoid redundant DB queries / payload transfers
+    const querySignature = [
+      freightsDataVersion,
+      user.id,
+      area,
+      scope,
+      viewMode,
+      responsavelFilterId,
+      search,
+      periodo,
+      situacao,
+      includeCanceled ? '1' : '0',
+      cursor,
+      page,
+      limit,
+      columnLimit,
+      omitKanban ? '1' : '0',
+      compact ? '1' : '0',
+    ].join('|');
+    const etag = `W/"fretes-v${freightsDataVersion}-${crypto
+      .createHash('sha1')
+      .update(querySignature)
+      .digest('hex')
+      .slice(0, 12)}"`;
+    res.setHeader('ETag', etag);
+
+    if (req.headers['if-none-match'] === etag) {
+      res.status(304).end();
+      return;
+    }
+
+    if (checkOnly) {
+      if (sinceVersion !== null && sinceVersion === freightsDataVersion) {
+        res.json({ ok: true, unchanged: true, dataVersion: freightsDataVersion });
+        return;
+      }
+      res.json({ ok: true, unchanged: false, dataVersion: freightsDataVersion });
+      return;
+    }
+
+    const nowDate = new Date();
+    const todaySp = formatSaoPauloDateTime(nowDate).dateOnlyIso;
+    const weekStartDate = new Date(nowDate.getTime() - 7 * 86400000);
+    const weekEndDate = new Date(nowDate.getTime() + 7 * 86400000);
+    const weekStartIso = formatSaoPauloDateTime(weekStartDate).dateOnlyIso;
+    const weekEndIso = formatSaoPauloDateTime(weekEndDate).dateOnlyIso;
+    const monthPrefix = todaySp.slice(0, 7);
+
+    const emptyComercialCounters = {
+      EM_NEGOCIACAO: 0,
+      CONTRATADO: 0,
+      AGUARDANDO_EXPEDICAO: 0,
+      NA_EXPEDICAO: 0,
+      EM_MONITORAMENTO: 0,
+      EM_TRANSPORTE: 0,
+      FINALIZADO: 0,
+      CANCELADO: 0,
+    };
+    const emptyExpedicaoCounters = {
+      RECEBIDO: 0,
+      EM_PREPARACAO: 0,
+      LIBERADO_MONITORAMENTO: 0,
+      AGUARDANDO_FECHAMENTO: 0,
+      FECHADO: 0,
+      AGUARDANDO_COLETA: 0,
+      EM_TRANSPORTE: 0,
+      CONCLUIDO: 0,
+      COLETAS_HOJE: 0,
+      PENDENCIAS: 0,
+      DISPONIVEIS_FILA: 0,
+    };
+
+    const projectCompactFinalizedRow = (f: any) => ({
+      id: f.id,
+      protocol: f.protocol,
+      empresaMarca: f.empresaMarca,
+      cliente: f.cliente,
+      motoristaNome: f.motoristaNome || '',
+      origemCidadeUf: f.origemCidadeUf,
+      destinoCidadeUf: f.destinoCidadeUf,
+      dataColetaIso: f.dataColetaIso,
+      dataEntregaPrevistaIso: f.dataEntregaPrevistaIso,
+      entregaComprovadaEm: f.entregaComprovadaEm,
+      situacaoComercial: f.situacaoComercial,
+      situacaoOperacional: f.situacaoOperacional,
+      situacaoMonitoramento: f.situacaoMonitoramento,
+      comprovanteEntregaConferido: Boolean(f.comprovanteEntregaConferido),
+      monitoramentoResponsavelId: f.monitoramentoResponsavelId,
+      monitoramentoResponsavelNome: f.monitoramentoResponsavelNome,
+      updatedAtIso: f.updatedAtIso,
+      updatedAtFormatted: f.updatedAtFormatted,
+      revision: f.revision,
+    });
+
+    // Primary indexed Neon SQL path for MONITORAMENTO active & finalized paginated views
+    if (
+      area === 'MONITORAMENTO' &&
+      (viewMode === 'ATIVOS' || viewMode === 'FINALIZADOS') &&
+      !cursor &&
+      isNeonConfigured &&
+      !isIsolatedTestEnv()
+    ) {
+      const neonResult = await queryMonitoringFreightsFromNeon({
+        scope: scope === 'EQUIPE' ? 'EQUIPE' : 'MEUS',
+        userId: user.id,
+        isTesteLogin: user.login === 'teste',
+        responsavelFilterId,
+        viewMode,
+        search,
+        periodo,
+        situacao,
+        includeCanceled,
+        todaySp,
+        weekStartIso,
+        weekEndIso,
+        monthPrefix,
+        page,
+        limit,
+        compact: compact && viewMode === 'FINALIZADOS',
+      });
+
+      if (neonResult) {
+        const sanitizedNeonItems = neonResult.items.map((item) =>
+          compact && viewMode === 'FINALIZADOS'
+            ? projectCompactFinalizedRow(item)
+            : sanitizeFreightForUser(item as UnifiedFreightRecord, user, false)
+        );
+        const totalMatched = neonResult.totalMatched;
+        const totalPages = Math.max(1, Math.ceil(totalMatched / limit));
+        const hasMore = page * limit < totalMatched;
+        const nextCursor =
+          hasMore && sanitizedNeonItems.length > 0
+            ? sanitizedNeonItems[sanitizedNeonItems.length - 1].id
+            : null;
+
+        res.json({
+          ok: true,
+          area,
+          scope,
+          viewMode,
+          page,
+          limit,
+          totalPages,
+          totalMatched,
+          items: sanitizedNeonItems,
+          nextCursor,
+          hasMore,
+          dataVersion: freightsDataVersion,
+          comercialCounters: emptyComercialCounters,
+          expedicaoCounters: emptyExpedicaoCounters,
+          monitoramentoCounters: neonResult.counters,
+          kanbanColumns: {},
+          serverTimeFormatted: formatSaoPauloDateTime().formatted,
+        });
+        return;
+      }
+    }
+
     const allRecords = Array.from(freightsIndex.values());
-    const todaySp = formatSaoPauloDateTime().dateOnlyIso;
 
     // Step 1: Origin-level ownership filtering (NEVER leak unauthorized records)
     let scopedRecords = allRecords.filter((f) => {
@@ -1526,6 +1811,7 @@ export function registerUnifiedFreightRoutes(
         const isReleasedToMon =
           f.situacaoMonitoramento &&
           f.situacaoMonitoramento !== 'NAO_LIBERADO' &&
+          f.situacaoMonitoramento !== 'DEVOLVIDO_EXPEDICAO' &&
           f.situacaoMonitoramento !== 'CANCELADO';
         if (!isReleasedToMon && !includeCanceled) return false;
 
@@ -1564,6 +1850,66 @@ export function registerUnifiedFreightRoutes(
       );
     }
 
+    // Monitoring scope counters computed BEFORE search/period/viewMode so "Ver Finalizados (N)" & KPI cards reflect full authorized scope
+    const monActiveStages: MonitoringFreightStatus[] = [
+      'NOVO_PARA_CARREGAR',
+      'EM_DESLOCAMENTO_COLETA',
+      'NO_LOCAL_COLETA',
+      'CARREGADO_EM_TRANSPORTE',
+      'NO_LOCAL_ENTREGA',
+    ];
+    const monCompletedStages: MonitoringFreightStatus[] = ['ENTREGUE', 'FINALIZADO'];
+
+    const monScopeNovo = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR'
+    ).length;
+    const monScopeDesloc = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA'
+    ).length;
+    const monScopeNoLocalColeta = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'NO_LOCAL_COLETA'
+    ).length;
+    const monScopeTransporte = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE'
+    ).length;
+    const monScopeNoLocalEntrega = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'NO_LOCAL_ENTREGA'
+    ).length;
+    const monScopeEntregue = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'ENTREGUE'
+    ).length;
+    const monScopeFinalizado = scopedRecords.filter(
+      (f) => f.situacaoMonitoramento === 'FINALIZADO'
+    ).length;
+
+    const monitoramentoCounters = {
+      NOVO_PARA_CARREGAR: monScopeNovo,
+      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
+      NO_LOCAL_COLETA: monScopeNoLocalColeta,
+      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
+      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
+      ENTREGUE: monScopeEntregue,
+      FINALIZADO: monScopeFinalizado,
+      COLETAS_HOJE: scopedRecords.filter(
+        (f) =>
+          f.dataColetaIso === todaySp &&
+          monActiveStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
+      ).length,
+      PENDENCIAS: scopedRecords.filter(
+        (f) =>
+          f.ocorrenciasAbertasCount > 0 ||
+          f.requerReconfirmacaoOperacional ||
+          (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido)
+      ).length,
+      TOTAL_ATIVOS:
+        monScopeNovo +
+        monScopeDesloc +
+        monScopeNoLocalColeta +
+        monScopeTransporte +
+        monScopeNoLocalEntrega,
+      completedCount: monScopeEntregue + monScopeFinalizado,
+    };
+
     // Step 3: Search & Period filters
     if (search) {
       scopedRecords = scopedRecords.filter((f) => {
@@ -1589,8 +1935,21 @@ export function registerUnifiedFreightRoutes(
 
     if (periodo === 'HOJE') {
       scopedRecords = scopedRecords.filter(
-        (f) => f.dataColetaIso === todaySp || f.dataEntregaPrevistaIso === todaySp
+        (f) =>
+          f.dataColetaIso === todaySp ||
+          f.dataEntregaPrevistaIso === todaySp ||
+          (f.updatedAtIso || '').slice(0, 10) === todaySp
       );
+    } else if (periodo === 'SEMANA') {
+      scopedRecords = scopedRecords.filter((f) => {
+        const refDate = f.dataColetaIso || (f.updatedAtIso || '').slice(0, 10);
+        return refDate >= weekStartIso && refDate <= weekEndIso;
+      });
+    } else if (periodo === 'MES') {
+      scopedRecords = scopedRecords.filter((f) => {
+        const refDate = f.dataColetaIso || (f.updatedAtIso || '').slice(0, 10);
+        return refDate.slice(0, 7) === monthPrefix;
+      });
     } else if (periodo === 'ATRASADOS') {
       scopedRecords = scopedRecords.filter(
         (f) =>
@@ -1694,111 +2053,107 @@ export function registerUnifiedFreightRoutes(
       DISPONIVEIS_FILA: availableToClaimCount,
     };
 
-    const monitoramentoCounters = {
-      NOVO_PARA_CARREGAR: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR'
-      ).length,
-      EM_DESLOCAMENTO_COLETA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA'
-      ).length,
-      NO_LOCAL_COLETA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === 'NO_LOCAL_COLETA'
-      ).length,
-      CARREGADO_EM_TRANSPORTE: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE'
-      ).length,
-      NO_LOCAL_ENTREGA: scopedRecords.filter(
-        (f) => f.situacaoMonitoramento === 'NO_LOCAL_ENTREGA'
-      ).length,
-      ENTREGUE: scopedRecords.filter((f) => f.situacaoMonitoramento === 'ENTREGUE').length,
-      FINALIZADO: scopedRecords.filter((f) => f.situacaoMonitoramento === 'FINALIZADO').length,
-      PENDENCIAS: scopedRecords.filter(
-        (f) =>
-          f.ocorrenciasAbertasCount > 0 ||
-          f.requerReconfirmacaoOperacional ||
-          (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido)
-      ).length,
-    };
-
-    // Apply specific status filter if selected
+    // Apply viewMode separation for MONITORAMENTO
     let filteredList = scopedRecords;
-    if (situacao && situacao !== 'TODAS') {
-      if (area === 'COMERCIAL') {
-        filteredList = scopedRecords.filter((f) => matchesComercialStage(f, situacao));
-      } else if (area === 'EXPEDICAO') {
-        filteredList = scopedRecords.filter((f) => matchesExpedicaoStage(f, situacao));
-      } else {
-        filteredList = scopedRecords.filter((f) => f.situacaoMonitoramento === situacao);
+    if (area === 'MONITORAMENTO') {
+      if (viewMode === 'ATIVOS') {
+        filteredList = filteredList.filter((f) =>
+          monActiveStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
+        );
+      } else if (viewMode === 'FINALIZADOS') {
+        filteredList = filteredList.filter((f) =>
+          monCompletedStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
+        );
       }
     }
 
-    // Cursor pagination for flat list
+    // Apply specific status filter if selected
+    if (situacao && situacao !== 'TODAS') {
+      if (area === 'COMERCIAL') {
+        filteredList = filteredList.filter((f) => matchesComercialStage(f, situacao));
+      } else if (area === 'EXPEDICAO') {
+        filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
+      } else {
+        filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
+      }
+    }
+
+    // Cursor or Page pagination for flat list
     let startIdx = 0;
     if (cursor) {
       const foundIdx = filteredList.findIndex((f) => f.id === cursor);
       if (foundIdx >= 0) startIdx = foundIdx + 1;
+    } else if (hasExplicitPage) {
+      startIdx = (page - 1) * limit;
     }
     const pageSlice = filteredList.slice(startIdx, startIdx + limit);
+    const totalPages = Math.max(1, Math.ceil(filteredList.length / limit));
     const hasMore = startIdx + limit < filteredList.length;
     const nextCursor = hasMore && pageSlice.length > 0 ? pageSlice[pageSlice.length - 1].id : null;
 
     const isSharedQueue = area === 'EXPEDICAO' && scope === 'DISPONIVEIS';
-    const sanitizedItems = pageSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue));
+    const sanitizedItems = pageSlice.map((f) =>
+      compact && area === 'MONITORAMENTO' && viewMode === 'FINALIZADOS'
+        ? projectCompactFinalizedRow(sanitizeFreightForUser(f, user, isSharedQueue))
+        : sanitizeFreightForUser(f, user, isSharedQueue)
+    );
 
-    // Build per-column Kanban slices with `columnLimit` and `hasMore` per column
+    // Build per-column Kanban slices only when requested (omitKanban skips heavy column slicing)
     const kanbanColumns: Record<
       string,
       { items: UnifiedFreightRecord[]; total: number; hasMore: boolean; nextCursor: string | null }
     > = {};
 
-    if (area === 'COMERCIAL') {
-      const colKeys = [
-        'EM_NEGOCIACAO',
-        'AGUARDANDO_EXPEDICAO',
-        'EM_MONITORAMENTO',
-        'FINALIZADO',
-      ];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => matchesComercialStage(f, col));
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
-        };
-      }
-    } else if (area === 'EXPEDICAO') {
-      const colKeys = ['RECEBIDO', 'EM_PREPARACAO', 'LIBERADO_MONITORAMENTO'];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => matchesExpedicaoStage(f, col));
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
-        };
-      }
-    } else {
-      const colKeys: MonitoringFreightStatus[] = [
-        'NOVO_PARA_CARREGAR',
-        'EM_DESLOCAMENTO_COLETA',
-        'NO_LOCAL_COLETA',
-        'CARREGADO_EM_TRANSPORTE',
-        'NO_LOCAL_ENTREGA',
-        'ENTREGUE',
-        'FINALIZADO',
-      ];
-      for (const col of colKeys) {
-        const colAll = filteredList.filter((f) => f.situacaoMonitoramento === col);
-        const colSlice = colAll.slice(0, columnLimit);
-        kanbanColumns[col] = {
-          items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
-          total: colAll.length,
-          hasMore: colAll.length > columnLimit,
-          nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
-        };
+    if (!omitKanban) {
+      if (area === 'COMERCIAL') {
+        const colKeys = [
+          'EM_NEGOCIACAO',
+          'AGUARDANDO_EXPEDICAO',
+          'EM_MONITORAMENTO',
+          'FINALIZADO',
+        ];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => matchesComercialStage(f, col));
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
+          };
+        }
+      } else if (area === 'EXPEDICAO') {
+        const colKeys = ['RECEBIDO', 'EM_PREPARACAO', 'LIBERADO_MONITORAMENTO'];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => matchesExpedicaoStage(f, col));
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, isSharedQueue)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
+          };
+        }
+      } else {
+        const colKeys: MonitoringFreightStatus[] = [
+          'NOVO_PARA_CARREGAR',
+          'EM_DESLOCAMENTO_COLETA',
+          'NO_LOCAL_COLETA',
+          'CARREGADO_EM_TRANSPORTE',
+          'NO_LOCAL_ENTREGA',
+          'ENTREGUE',
+          'FINALIZADO',
+        ];
+        for (const col of colKeys) {
+          const colAll = filteredList.filter((f) => f.situacaoMonitoramento === col);
+          const colSlice = colAll.slice(0, columnLimit);
+          kanbanColumns[col] = {
+            items: colSlice.map((f) => sanitizeFreightForUser(f, user, false)),
+            total: colAll.length,
+            hasMore: colAll.length > columnLimit,
+            nextCursor: colAll.length > columnLimit ? colSlice[colSlice.length - 1].id : null,
+          };
+        }
       }
     }
 
@@ -1806,10 +2161,15 @@ export function registerUnifiedFreightRoutes(
       ok: true,
       area,
       scope,
+      viewMode,
+      page,
+      limit,
+      totalPages,
       totalMatched: filteredList.length,
       items: sanitizedItems,
       nextCursor,
       hasMore,
+      dataVersion: freightsDataVersion,
       comercialCounters,
       expedicaoCounters,
       monitoramentoCounters,
@@ -1822,6 +2182,10 @@ export function registerUnifiedFreightRoutes(
   // 4. GET SINGLE FREIGHT FULL DETAILS (WITH HISTORY, COMMENTS, ATTACHMENTS)
   // --------------------------------------------------------------------------
   app.get('/api/meus-fretes/:freightId', requireApprovedSession, (req: any, res: Response) => {
+    res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Vary', 'Authorization, Cookie');
+
     const user = req.sessionUser as Employee;
     const freightId = String(req.params.freightId || '');
     const freight = freightsIndex.get(freightId);
@@ -1859,7 +2223,7 @@ export function registerUnifiedFreightRoutes(
       historico: sub.historico,
     };
 
-    res.json({ ok: true, ...payload });
+    res.json({ ok: true, dataVersion: freightsDataVersion, ...payload });
   });
 
   // --------------------------------------------------------------------------
@@ -1945,14 +2309,23 @@ export function registerUnifiedFreightRoutes(
       }
     }
 
+    const rawBrand = String(body.empresaMarca || 'RODOVAR').trim();
+    if (rawBrand === 'AXD') {
+      res.status(400).json({
+        error: 'A empresa AXD foi descontinuada para novas operações. Selecione RODOVAR ou VL TRANSPORTES.',
+        code: 'DISCONTINUED_COMPANY_BRAND',
+      });
+      return;
+    }
+
     const protocol = allocateNextProtocol();
     const id = `frete-${protocol.replace('#', '')}-${Date.now().toString(36)}`;
 
     const newFreight: UnifiedFreightRecord = {
       id,
       protocol,
-      empresaMarca: (['RODOVAR', 'VL TRANSPORTES', 'AXD'].includes(body.empresaMarca)
-        ? body.empresaMarca
+      empresaMarca: (['RODOVAR', 'VL TRANSPORTES'].includes(rawBrand)
+        ? rawBrand
         : 'RODOVAR') as CarrierBrand,
       unidadeOperacional: (['BA - Salvador', 'SP - Guarulhos'].includes(body.unidadeOperacional)
         ? body.unidadeOperacional
@@ -2244,8 +2617,17 @@ export function registerUnifiedFreightRoutes(
       if (body.clienteContato !== undefined) {
         freight.clienteContato = String(body.clienteContato).trim().slice(0, 80) || undefined;
       }
-      if (body.empresaMarca && ['RODOVAR', 'VL TRANSPORTES', 'AXD'].includes(body.empresaMarca)) {
-        freight.empresaMarca = body.empresaMarca;
+      if (body.empresaMarca !== undefined) {
+        if (String(body.empresaMarca).trim() === 'AXD') {
+          res.status(400).json({
+            error: 'A empresa AXD foi descontinuada para novas operações. Selecione RODOVAR ou VL TRANSPORTES.',
+            code: 'DISCONTINUED_COMPANY_BRAND',
+          });
+          return;
+        }
+        if (['RODOVAR', 'VL TRANSPORTES'].includes(String(body.empresaMarca).trim())) {
+          freight.empresaMarca = String(body.empresaMarca).trim() as CarrierBrand;
+        }
       }
       if (
         body.unidadeOperacional &&
@@ -2801,6 +3183,62 @@ export function registerUnifiedFreightRoutes(
       if (body.observacoes !== undefined) {
         freight.observacoes = String(body.observacoes).trim().slice(0, 1000) || undefined;
       }
+      // Extended Ordem de Coleta fields (optional operational complements)
+      if (body.motoristaRg !== undefined) {
+        freight.motoristaRg = String(body.motoristaRg).trim().slice(0, 30) || undefined;
+      }
+      if (body.motoristaCnh !== undefined) {
+        freight.motoristaCnh = String(body.motoristaCnh).trim().slice(0, 30) || undefined;
+      }
+      if (body.placaBitrem !== undefined) {
+        freight.placaBitrem = String(body.placaBitrem).trim().toUpperCase().slice(0, 12) || undefined;
+      }
+      if (body.numeroPedido !== undefined) {
+        freight.numeroPedido = String(body.numeroPedido).trim().slice(0, 60) || undefined;
+      }
+      if (body.numeroOrcamento !== undefined) {
+        freight.numeroOrcamento = String(body.numeroOrcamento).trim().slice(0, 60) || undefined;
+      }
+      if (body.pontoReferencia !== undefined) {
+        freight.pontoReferencia = String(body.pontoReferencia).trim().slice(0, 240) || undefined;
+      }
+      if (body.especieCarga !== undefined) {
+        freight.especieCarga = String(body.especieCarga).trim().slice(0, 80) || undefined;
+      }
+      if (body.embalagemCarga !== undefined) {
+        freight.embalagemCarga = String(body.embalagemCarga).trim().slice(0, 80) || undefined;
+      }
+      if (body.valorMercadoriaCentavos !== undefined) {
+        const valMerc = Math.round(Number(body.valorMercadoriaCentavos) || 0);
+        freight.valorMercadoriaCentavos = valMerc > 0 ? valMerc : undefined;
+      }
+      if (body.quantidadeEntregas !== undefined) {
+        const qtd = Math.round(Number(body.quantidadeEntregas) || 0);
+        freight.quantidadeEntregas = qtd > 0 ? qtd : undefined;
+      }
+      const optionalTextFields = [
+        'remetenteNome',
+        'remetenteCnpjCpf',
+        'remetenteIe',
+        'remetenteTelefone',
+        'remetenteEndereco',
+        'remetenteBairro',
+        'remetenteMunicipio',
+        'remetenteCep',
+        'destinatarioNome',
+        'destinatarioCnpjCpf',
+        'destinatarioIe',
+        'destinatarioTelefone',
+        'destinatarioEndereco',
+        'destinatarioBairro',
+        'destinatarioMunicipio',
+        'destinatarioCep',
+      ] as const;
+      for (const field of optionalTextFields) {
+        if (body[field] !== undefined) {
+          (freight as any)[field] = String(body[field]).trim().slice(0, 200) || undefined;
+        }
+      }
       if (body.monitoramentoResponsavelId !== undefined) {
         const monId = String(body.monitoramentoResponsavelId || '').trim();
         if (monId) {
@@ -3015,12 +3453,37 @@ export function registerUnifiedFreightRoutes(
 
       // ACTION 1: EMITIR_ORDEM_CARREGAMENTO / EMITIR_ORDEM (Ordem de Coleta PDF oficial)
       if (action === 'EMITIR_ORDEM_CARREGAMENTO' || action === 'EMITIR_ORDEM') {
+        if (freight.empresaMarca === 'AXD') {
+          res.status(400).json({
+            error:
+              'A empresa AXD foi descontinuada e não permite emissão de nova Ordem de Coleta. Atualize a empresa do frete para RODOVAR ou VL TRANSPORTES caso seja uma nova contratação.',
+            code: 'DISCONTINUED_COMPANY_BRAND',
+          });
+          return;
+        }
+
+        const activeBrand: 'RODOVAR' | 'VL TRANSPORTES' =
+          freight.empresaMarca === 'VL TRANSPORTES' ? 'VL TRANSPORTES' : 'RODOVAR';
+        const companyProfile = COMPANY_OFFICIAL_PROFILES[activeBrand];
+
         const missingForOrder: string[] = [];
-        if (!freight.enderecoColeta || freight.enderecoColeta.trim().length < 3)
-          missingForOrder.push('Endereço de coleta');
-        // Endereço detalhado de entrega é opcional na Expedição (Requirement 2)
+        if (!freight.cliente || freight.cliente.trim().length < 2)
+          missingForOrder.push('Cliente');
+        if (!freight.origemCidadeUf || !freight.enderecoColeta || freight.enderecoColeta.trim().length < 3)
+          missingForOrder.push('Cidade e endereço de coleta');
+        if (!freight.destinoCidadeUf)
+          missingForOrder.push('Cidade/UF de entrega');
+        if (!freight.tipoCarga || freight.tipoCarga.trim().length < 2)
+          missingForOrder.push('Produto / descrição da carga');
+        if (!freight.pesoKg || freight.pesoKg <= 0)
+          missingForOrder.push('Peso da carga maior que zero');
+        if (!freight.veiculoNecessario || freight.veiculoNecessario.trim().length < 2)
+          missingForOrder.push('Tipo de veículo');
         if (!freight.motoristaNome || freight.motoristaNome.trim().length < 3)
           missingForOrder.push('Nome do motorista');
+        const cpfDigits = String(freight.motoristaCpf || '').replace(/\D/g, '');
+        if (cpfDigits.length !== 11)
+          missingForOrder.push('CPF válido do motorista (11 dígitos)');
         if (!freight.placaVeiculo || freight.placaVeiculo.trim().length < 6)
           missingForOrder.push('Placa do veículo');
 
@@ -3033,11 +3496,19 @@ export function registerUnifiedFreightRoutes(
           return;
         }
 
-        const orderNum =
-          freight.ordemCarregamentoNumero ||
-          `OC-RDV-${freight.protocol.replace('#', '')}-2027`;
+        const spYear = Number(sp.dateOnlyIso.slice(0, 4)) || new Date().getFullYear();
+        let orderNum = freight.ordemCarregamentoNumero;
+        if (!orderNum || !freight.ordemColetaSequencia) {
+          const allocated = allocateNextOrderNumber(activeBrand, spYear);
+          orderNum = allocated.orderNumber;
+          freight.ordemColetaSequencia = allocated.sequence;
+          freight.ordemColetaAno = allocated.year;
+        } else if (!freight.ordemColetaAno) {
+          freight.ordemColetaAno = spYear;
+        }
         freight.ordemCarregamentoNumero = orderNum;
         freight.ordemCarregamentoEmitidaEm = sp.formatted;
+        freight.ordemColetaPendente = false;
         if (freight.situacaoOperacional === 'RECEBIDO') {
           freight.situacaoOperacional = 'EM_PREPARACAO';
         }
@@ -3050,32 +3521,71 @@ export function registerUnifiedFreightRoutes(
           actorName: user.name,
           actorSector: 'Expedição',
           eventType: 'EMISSAO_ORDEM_COLETA',
-          summary: `Ordem de Coleta ${orderNum} gerada no padrão oficial RODOVAR (CNPJ ${RODOVAR_CNPJ}) por ${user.name}.`,
+          summary: `Ordem de Coleta ${orderNum} gerada no padrão oficial ${activeBrand} (CNPJ ${companyProfile.cnpj}) por ${user.name}.`,
         });
 
         persistFreightAndSubDoc(freight, sub);
-        // Requirement 2: "Não incluir valor de venda ao cliente, margem ou observações internas."
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          'EMISSAO_ORDEM_COLETA',
+          `Emitiu Ordem de Coleta ${orderNum} (${activeBrand}) para o frete ${freight.protocol}.`,
+          req.ip
+        );
+
+        // Never expose commercial sale value, internal margin, or internal-only notes in loadingOrder
         const payload = {
           ok: true,
           freight: sanitizeFreightForUser(freight, user),
           historico: sub.historico,
           loadingOrder: {
             orderNumber: orderNum,
+            sequence: freight.ordemColetaSequencia,
+            year: freight.ordemColetaAno,
             issuedAt: sp.formatted,
             issuedBy: user.name,
-            razaoSocial: RODOVAR_RAZAO_SOCIAL,
-            cnpj: RODOVAR_CNPJ,
+            razaoSocial: companyProfile.razaoSocial,
+            cnpj: companyProfile.cnpj,
+            ie: companyProfile.ie,
+            enderecoEmpresa: companyProfile.endereco,
+            telefoneEmpresa: companyProfile.telefone,
             protocol: freight.protocol,
-            empresaMarca: freight.empresaMarca,
+            empresaMarca: activeBrand,
             unidadeOperacional: freight.unidadeOperacional,
             cliente: freight.cliente,
+            clienteCnpj: freight.clienteCnpj,
             clienteContato: freight.clienteContato,
+            comercialResponsavelNome: freight.comercialResponsavelNome,
+            numeroPedido: freight.numeroPedido,
+            numeroOrcamento: freight.numeroOrcamento,
             origemCidadeUf: freight.origemCidadeUf,
             enderecoColeta: freight.enderecoColeta,
             destinoCidadeUf: freight.destinoCidadeUf,
             enderecoEntrega: freight.enderecoEntrega,
+            pontoReferencia: freight.pontoReferencia,
+            remetenteNome: freight.remetenteNome,
+            remetenteCnpjCpf: freight.remetenteCnpjCpf,
+            remetenteIe: freight.remetenteIe,
+            remetenteTelefone: freight.remetenteTelefone,
+            remetenteEndereco: freight.remetenteEndereco,
+            remetenteBairro: freight.remetenteBairro,
+            remetenteMunicipio: freight.remetenteMunicipio,
+            remetenteCep: freight.remetenteCep,
+            destinatarioNome: freight.destinatarioNome,
+            destinatarioCnpjCpf: freight.destinatarioCnpjCpf,
+            destinatarioIe: freight.destinatarioIe,
+            destinatarioTelefone: freight.destinatarioTelefone,
+            destinatarioEndereco: freight.destinatarioEndereco,
+            destinatarioBairro: freight.destinatarioBairro,
+            destinatarioMunicipio: freight.destinatarioMunicipio,
+            destinatarioCep: freight.destinatarioCep,
             instrucoesColetaEntrega: freight.instrucoesColetaEntrega,
             tipoCarga: freight.tipoCarga,
+            especieCarga: freight.especieCarga,
+            embalagemCarga: freight.embalagemCarga,
+            valorMercadoriaCentavos: freight.valorMercadoriaCentavos,
+            quantidadeEntregas: freight.quantidadeEntregas,
             pesoKg: freight.pesoKg,
             volumes: freight.volumes,
             veiculoNecessario: freight.veiculoNecessario,
@@ -3085,14 +3595,72 @@ export function registerUnifiedFreightRoutes(
             janelaEntrega: `${freight.janelaEntregaInicio}${freight.janelaEntregaFim ? ` às ${freight.janelaEntregaFim}` : ''}`,
             motoristaNome: freight.motoristaNome,
             motoristaCpf: freight.motoristaCpf,
+            motoristaRg: freight.motoristaRg,
+            motoristaCnh: freight.motoristaCnh,
             motoristaTelefone: freight.motoristaTelefone,
             transportadorNome: freight.transportadorNome,
             transportadorDocumento: freight.transportadorDocumento,
             placaVeiculo: freight.placaVeiculo,
             placaCarreta: freight.placaCarreta,
+            placaBitrem: freight.placaBitrem,
             condicoesOperacionais: freight.condicoesOperacionais,
             expedicaoResponsavelNome: freight.expedicaoResponsavelNome || user.name,
           },
+        };
+        storeIdempotentResponse(idemKey, 200, payload);
+        res.json(payload);
+        return;
+      }
+
+      // ACTION 1B: IGNORAR_ORDEM_COLETA ("Ignorar por enquanto" na Expedição)
+      if (action === 'IGNORAR_ORDEM_COLETA') {
+        if (
+          freight.situacaoOperacional === 'CONCLUIDO' ||
+          freight.situacaoOperacional === 'CANCELADO' ||
+          freight.situacaoMonitoramento === 'FINALIZADO'
+        ) {
+          res.status(409).json({
+            error: 'Não é possível adiar a Ordem de Coleta em um frete concluído ou cancelado.',
+            code: 'TERMINAL_STATE_LOCKED',
+          });
+          return;
+        }
+        const skipReason = String(reason || '').trim().slice(0, 300);
+        freight.ordemColetaPendente = true;
+        freight.ordemColetaIgnoradaEm = sp.formatted;
+        freight.ordemColetaIgnoradaPorId = user.id;
+        freight.ordemColetaIgnoradaPorNome = user.name;
+        freight.ordemColetaIgnoradaMotivo = skipReason || undefined;
+        if (freight.situacaoOperacional === 'RECEBIDO') {
+          freight.situacaoOperacional = 'EM_PREPARACAO';
+        }
+        freight.updatedAtIso = sp.iso;
+        freight.updatedAtFormatted = sp.formatted;
+        freight.revision += 1;
+
+        appendHistoryEntry(sub, {
+          actorId: user.id,
+          actorName: user.name,
+          actorSector: 'Expedição',
+          eventType: 'ORDEM_COLETA_PENDENTE',
+          summary: `Emissão da Ordem de Coleta marcada como "Ignorar por enquanto" por ${user.name} em ${sp.formatted}.`,
+          reason: skipReason || undefined,
+        });
+
+        persistFreightAndSubDoc(freight, sub);
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          'EXPEDICAO_IGNORAR_ORDEM_COLETA',
+          `Marcou Ordem de Coleta como pendente ("Ignorar por enquanto") no frete ${freight.protocol}.${skipReason ? ` Motivo: ${skipReason}` : ''}`,
+          req.ip
+        );
+
+        const payload = {
+          ok: true,
+          freight: sanitizeFreightForUser(freight, user),
+          historico: sub.historico,
         };
         storeIdempotentResponse(idemKey, 200, payload);
         res.json(payload);
@@ -3225,10 +3793,18 @@ export function registerUnifiedFreightRoutes(
           missing.push('Verificação: Condições e documentos conferidos');
         if (!chk.videochamadaRealizada)
           missing.push('Verificação: Videochamada realizada com o motorista');
-        if (!freight.ordemCarregamentoNumero)
-          missing.push('Ordem de coleta gerada');
-        if (!chk.ordemColetaEnviadaMotorista)
-          missing.push('Verificação: Ordem de coleta enviada ao motorista');
+        const hasOrderCompleted = Boolean(
+          freight.ordemCarregamentoNumero && chk.ordemColetaEnviadaMotorista
+        );
+        const hasPendingOrderSkip = freight.ordemColetaPendente === true;
+        if (!hasOrderCompleted && !hasPendingOrderSkip) {
+          if (!freight.ordemCarregamentoNumero)
+            missing.push('Ordem de coleta gerada (ou clique em "Ignorar por enquanto")');
+          if (!chk.ordemColetaEnviadaMotorista)
+            missing.push(
+              'Verificação: Ordem de coleta enviada ao motorista (ou clique em "Ignorar por enquanto")'
+            );
+        }
 
         let monOperator: Employee | undefined;
         if (!targetMonId) {
@@ -3453,9 +4029,23 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const isAssignedOrManager =
-        freight.monitoramentoResponsavelId === user.id || canViewFreightTeam(user);
-      if (
+      const canReopen =
+        user.accessLevel === 'ADMINISTRADOR' ||
+        user.accessLevel === 'DIRETORIA' ||
+        hasPagePermission(user, 'fretes_cancelar') ||
+        (canOperateMonitoring(user) && freight.monitoramentoResponsavelId === user.id);
+
+      const requestedAction = String((req.body || {}).action || '');
+      if (requestedAction === 'REABRIR_FRETE') {
+        if (!canReopen) {
+          res.status(403).json({
+            error:
+              'Permissão negada: apenas o Operador responsável, Diretoria ou usuários autorizados podem reabrir este frete.',
+            code: 'FORBIDDEN_REOPEN_FREIGHT',
+          });
+          return;
+        }
+      } else if (
         user.accessLevel !== 'ADMINISTRADOR' &&
         (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id)
       ) {
@@ -3750,7 +4340,184 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
+      // ACTION D: REABRIR_FRETE (Reopen a ENTREGUE or FINALIZADO freight back to active monitoring without altering history)
+      if (action === 'REABRIR_FRETE') {
+        if (freight.situacaoMonitoramento !== 'FINALIZADO' && freight.situacaoMonitoramento !== 'ENTREGUE') {
+          res.status(400).json({
+            error: 'Apenas fretes entregues ou finalizados podem ser reabertos.',
+            code: 'INVALID_REOPEN_STATE',
+          });
+          return;
+        }
+        if (cleanObs.length < 5) {
+          res.status(400).json({
+            error: 'Informe o motivo obrigatório da reabertura (mínimo 5 caracteres).',
+            code: 'MISSING_REOPEN_REASON',
+          });
+          return;
+        }
+        const reopenStage: MonitoringFreightStatus =
+          freight.situacaoMonitoramento === 'FINALIZADO' && targetStage === 'ENTREGUE'
+            ? 'ENTREGUE'
+            : 'NO_LOCAL_ENTREGA';
+        const prevStatusLabel =
+          freight.situacaoMonitoramento === 'FINALIZADO' ? 'Finalizado' : 'Entregue';
+        const nextStatusLabel =
+          reopenStage === 'ENTREGUE' ? 'Entregue' : 'No local de entrega';
+
+        freight.situacaoMonitoramento = reopenStage;
+        freight.situacaoComercial = 'EM_MONITORAMENTO';
+        freight.situacaoOperacional = 'LIBERADO_MONITORAMENTO';
+        freight.updatedAtIso = sp.iso;
+        freight.updatedAtFormatted = sp.formatted;
+        freight.revision += 1;
+
+        appendHistoryEntry(sub, {
+          actorId: user.id,
+          actorName: user.name,
+          actorSector: 'Monitoramento',
+          eventType: 'REABERTURA_MONITORAMENTO',
+          summary: `Frete reaberto de "${prevStatusLabel}" para "${nextStatusLabel}" por ${user.name}.`,
+          horarioRealEvento: cleanRealTime,
+          reason: cleanObs,
+        });
+
+        persistFreightAndSubDoc(freight, sub);
+        appendServerAuditLog(
+          user.id,
+          user.name,
+          user.accessLevel,
+          'REABERTURA_FRETE_MONITORAMENTO',
+          `Frete ${freight.protocol} reaberto (${prevStatusLabel} -> ${nextStatusLabel}). Motivo: ${cleanObs}`,
+          req.ip
+        );
+
+        const payload = {
+          ok: true,
+          freight: sanitizeFreightForUser(freight, user),
+          historico: sub.historico,
+        };
+        storeIdempotentResponse(idemKey, 200, payload);
+        res.json(payload);
+        return;
+      }
+
       res.status(400).json({ error: 'Ação de monitoramento desconhecida.' });
+    }
+  );
+
+  // Dedicated reopen endpoint for completed/delivered freights (same authorization & audit guarantees)
+  app.post(
+    '/api/meus-fretes/:freightId/reopen',
+    requireApprovedSession,
+    (req: any, res: Response) => {
+      const user = req.sessionUser as Employee;
+      const freightId = String(req.params.freightId || '');
+      const freight = freightsIndex.get(freightId);
+      if (!freight) {
+        res.status(404).json({ error: 'Frete não encontrado.' });
+        return;
+      }
+
+      const canReopen =
+        user.accessLevel === 'ADMINISTRADOR' ||
+        user.accessLevel === 'DIRETORIA' ||
+        hasPagePermission(user, 'fretes_cancelar') ||
+        (canOperateMonitoring(user) && freight.monitoramentoResponsavelId === user.id);
+
+      if (!canReopen) {
+        res.status(403).json({
+          error:
+            'Permissão negada: apenas usuários autorizados podem reabrir um frete finalizado ou entregue.',
+          code: 'FORBIDDEN_REOPEN_FREIGHT',
+        });
+        return;
+      }
+
+      const { motivo, reason: rawReason, targetStage, baseRevision, horarioRealEvento } =
+        req.body || {};
+
+      const idemKey = checkIdempotency(req, res, user.id);
+      if (idemKey === '__HANDLED__') return;
+
+      if (typeof baseRevision === 'number' && baseRevision !== freight.revision) {
+        res.status(409).json({
+          error: 'Conflito de revisão detectado. Recarregue os dados do frete antes de prosseguir.',
+          code: 'REVISION_CONFLICT',
+          currentRevision: freight.revision,
+          freight: sanitizeFreightForUser(freight, user),
+        });
+        return;
+      }
+
+      if (freight.situacaoMonitoramento !== 'FINALIZADO' && freight.situacaoMonitoramento !== 'ENTREGUE') {
+        res.status(400).json({
+          error: 'Apenas fretes entregues ou finalizados podem ser reabertos.',
+          code: 'INVALID_REOPEN_STATE',
+        });
+        return;
+      }
+
+      const cleanObs = String(motivo || rawReason || '').trim().slice(0, 500);
+      if (cleanObs.length < 5) {
+        res.status(400).json({
+          error: 'Informe o motivo obrigatório da reabertura (mínimo 5 caracteres).',
+          code: 'MISSING_REOPEN_REASON',
+        });
+        return;
+      }
+
+      const sp = formatSaoPauloDateTime();
+      const sub = freightSubDocs.get(freight.id) || {
+        freightId: freight.id,
+        anexos: [],
+        comentarios: [],
+        ocorrencias: [],
+        historico: [],
+      };
+      const cleanRealTime = String(horarioRealEvento || sp.formatted).trim().slice(0, 60);
+      const reopenStage: MonitoringFreightStatus =
+        freight.situacaoMonitoramento === 'FINALIZADO' && targetStage === 'ENTREGUE'
+          ? 'ENTREGUE'
+          : 'NO_LOCAL_ENTREGA';
+      const prevStatusLabel =
+        freight.situacaoMonitoramento === 'FINALIZADO' ? 'Finalizado' : 'Entregue';
+      const nextStatusLabel = reopenStage === 'ENTREGUE' ? 'Entregue' : 'No local de entrega';
+
+      freight.situacaoMonitoramento = reopenStage;
+      freight.situacaoComercial = 'EM_MONITORAMENTO';
+      freight.situacaoOperacional = 'LIBERADO_MONITORAMENTO';
+      freight.updatedAtIso = sp.iso;
+      freight.updatedAtFormatted = sp.formatted;
+      freight.revision += 1;
+
+      appendHistoryEntry(sub, {
+        actorId: user.id,
+        actorName: user.name,
+        actorSector: 'Monitoramento',
+        eventType: 'REABERTURA_MONITORAMENTO',
+        summary: `Frete reaberto de "${prevStatusLabel}" para "${nextStatusLabel}" por ${user.name}.`,
+        horarioRealEvento: cleanRealTime,
+        reason: cleanObs,
+      });
+
+      persistFreightAndSubDoc(freight, sub);
+      appendServerAuditLog(
+        user.id,
+        user.name,
+        user.accessLevel,
+        'REABERTURA_FRETE_MONITORAMENTO',
+        `Frete ${freight.protocol} reaberto (${prevStatusLabel} -> ${nextStatusLabel}). Motivo: ${cleanObs}`,
+        req.ip
+      );
+
+      const payload = {
+        ok: true,
+        freight: sanitizeFreightForUser(freight, user),
+        historico: sub.historico,
+      };
+      storeIdempotentResponse(idemKey, 200, payload);
+      res.json(payload);
     }
   );
 

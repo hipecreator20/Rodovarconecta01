@@ -187,14 +187,16 @@ export const MuralEditorModal: React.FC<MuralEditorModalProps> = ({
     if (!file) return;
     setLocalError('');
     try {
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-        throw new Error('Formato inválido para capa. Utilize PNG, JPG ou WebP.');
-      }
-      const dataUrl = await readFileAsDataUrl(file);
+      const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
+      const processed = await processImageFileForUpload(file, {
+        maxWidth: 1600,
+        maxHeight: 900,
+        maxDataUrlBytes: 1_500_000,
+      });
       setForm((prev) => ({
         ...prev,
-        coverImage: dataUrl,
-        bannerImage: prev.bannerImage.startsWith('/assets/') ? prev.bannerImage : dataUrl,
+        coverImage: processed.dataUrl,
+        bannerImage: prev.bannerImage.startsWith('/assets/') ? prev.bannerImage : processed.dataUrl,
       }));
     } catch (err: any) {
       setLocalError(err.message || 'Erro ao carregar imagem de capa.');
