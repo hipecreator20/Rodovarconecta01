@@ -23,14 +23,9 @@ import {
   Edit3,
   Save,
   RotateCcw,
-  ClipboardPaste,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import { CorporateModal } from './ui/CorporateModal';
 import { FreightDocumentsManager } from './FreightDocumentsManager';
-import { ImportFreightScriptModal } from './ImportFreightScriptModal';
-import { ParsedTrafficScript } from '../lib/carrierLogos';
 import {
   CarrierBrand,
   CommercialFreightStatus,
@@ -350,9 +345,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
 
   // Create / Edit Modal
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
-  const [showImportedOpFields, setShowImportedOpFields] = useState(false);
-  const [localToast, setLocalToast] = useState<string | null>(null);
   const [editingFreight, setEditingFreight] = useState<UnifiedFreightRecord | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -383,17 +375,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     condicoesComerciais: '',
     condicoesOperacionais: '',
     observacoes: '',
-    comercialScriptRef: '',
-    motoristaNome: '',
-    motoristaTelefone: '',
-    emergenciaNome: '',
-    emergenciaTelefone: '',
-    valorContratadoReais: '',
-    favorecidoPagamento: '',
-    tipoChavePix: '',
-    chavePix: '',
-    bancoPagamento: '',
-    condicoesPagamento: '',
   });
 
   // Client & CNPJ Autocomplete State (Requirement 1)
@@ -469,10 +450,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
 
   const showToast = useCallback(
     (msg: string) => {
-      setLocalToast(msg);
-      setTimeout(() => {
-        setLocalToast((prev) => (prev === msg ? null : prev));
-      }, 4500);
       if (onToast) onToast(msg);
     },
     [onToast]
@@ -588,7 +565,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     setEditingFreight(null);
     setFormError(null);
     setFormEditReason('');
-    setShowImportedOpFields(false);
     setFormExpedicaoAssignee('FILA_DISPONIVEL');
     setFormState({
       empresaMarca: 'RODOVAR',
@@ -615,153 +591,8 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
       condicoesComerciais: 'Frete dedicado CIF. Seguro averbado.',
       condicoesOperacionais: '',
       observacoes: '',
-      comercialScriptRef: '',
-      motoristaNome: '',
-      motoristaTelefone: '',
-      emergenciaNome: '',
-      emergenciaTelefone: '',
-      valorContratadoReais: '',
-      favorecidoPagamento: '',
-      tipoChavePix: '',
-      chavePix: '',
-      bancoPagamento: '',
-      condicoesPagamento: '',
     });
     setIsFormOpen(true);
-  };
-
-  const applyParsedScriptToForm = (parsed: Partial<ParsedTrafficScript>) => {
-    setEditingFreight(null);
-    setFormError(null);
-    setFormEditReason('');
-    setFormExpedicaoAssignee('FILA_DISPONIVEL');
-    const hasOpFields = Boolean(
-      parsed.motoristaNome ||
-        parsed.motoristaTelefone ||
-        parsed.emergenciaNome ||
-        parsed.emergenciaTelefone ||
-        parsed.valorFreteMotorista ||
-        parsed.favorecido ||
-        parsed.chavePix ||
-        parsed.banco ||
-        parsed.condicoesPagamento ||
-        parsed.comercialResponsavel
-    );
-    setShowImportedOpFields(hasOpFields);
-    setFormState({
-      empresaMarca:
-        parsed.empresaMarca === 'VL TRANSPORTES' || parsed.empresaMarca === 'RODOVAR'
-          ? parsed.empresaMarca
-          : 'RODOVAR',
-      unidadeOperacional:
-        parsed.unidadeOperacional ||
-        ((currentUser.location || 'BA - Salvador') as OperationalUnit),
-      cliente: parsed.cliente || '',
-      clienteCnpj: parsed.clienteCnpj ? normalizeCnpj(parsed.clienteCnpj) : '',
-      clienteContato: parsed.telefoneCliente || '',
-      origemCidadeUf: parsed.origem || '',
-      enderecoColeta: parsed.enderecoColeta || '',
-      destinoCidadeUf: parsed.destino || '',
-      enderecoEntrega: parsed.enderecoEntrega || '',
-      instrucoesColetaEntrega: '',
-      tipoCarga: parsed.tipoCarga || '',
-      pesoKg: parsed.pesoKg && parsed.pesoKg > 0 ? String(parsed.pesoKg) : '',
-      volumes: parsed.volumes && parsed.volumes > 0 ? String(parsed.volumes) : '',
-      veiculoNecessario: parsed.veiculoNecessario || '',
-      dataColetaIso: parsed.dataColetaIso || '',
-      janelaColetaInicio: '',
-      janelaColetaFim: '',
-      dataEntregaPrevistaIso: '',
-      janelaEntregaInicio: '',
-      janelaEntregaFim: '',
-      valorCobradoReais:
-        parsed.valorFreteEmpresa && parsed.valorFreteEmpresa > 0
-          ? parsed.valorFreteEmpresa.toFixed(2).replace('.', ',')
-          : '',
-      condicoesComerciais: parsed.condicoesPagamento || '',
-      condicoesOperacionais: '',
-      observacoes: parsed.observacoes || '',
-      comercialScriptRef: parsed.comercialResponsavel || '',
-      motoristaNome: parsed.motoristaNome || '',
-      motoristaTelefone: parsed.motoristaTelefone || '',
-      emergenciaNome: parsed.emergenciaNome || '',
-      emergenciaTelefone: parsed.emergenciaTelefone || '',
-      valorContratadoReais:
-        parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
-          ? parsed.valorFreteMotorista.toFixed(2).replace('.', ',')
-          : '',
-      favorecidoPagamento: parsed.favorecido || '',
-      tipoChavePix: parsed.tipoChavePix || '',
-      chavePix: parsed.chavePix || '',
-      bancoPagamento: parsed.banco || '',
-      condicoesPagamento: parsed.condicoesPagamento || '',
-    });
-    setIsFormOpen(true);
-    showToast('Script aplicado ao formulário. Os campos não informados permaneceram em branco.');
-  };
-
-  const handleImportScriptDirect = async (parsed: Partial<ParsedTrafficScript>) => {
-    const valorCobradoClienteCentavos =
-      parsed.valorFreteEmpresa && parsed.valorFreteEmpresa > 0
-        ? Math.round(parsed.valorFreteEmpresa * 100)
-        : 0;
-    const valorContratadoCentavos =
-      parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
-        ? Math.round(parsed.valorFreteMotorista * 100)
-        : 0;
-    const res = await apiCreateCommercialFreight({
-      empresaMarca:
-        parsed.empresaMarca === 'VL TRANSPORTES' || parsed.empresaMarca === 'RODOVAR'
-          ? parsed.empresaMarca
-          : 'RODOVAR',
-      unidadeOperacional:
-        parsed.unidadeOperacional ||
-        ((currentUser.location || 'BA - Salvador') as OperationalUnit),
-      cliente: (parsed.cliente || '').trim(),
-      clienteCnpj: (parsed.clienteCnpj || '').trim(),
-      clienteContato: (parsed.telefoneCliente || '').trim(),
-      origemCidadeUf: (parsed.origem || '').trim(),
-      enderecoColeta: (parsed.enderecoColeta || '').trim(),
-      destinoCidadeUf: (parsed.destino || '').trim(),
-      enderecoEntrega: (parsed.enderecoEntrega || '').trim(),
-      tipoCarga: (parsed.tipoCarga || '').trim(),
-      pesoKg: parsed.pesoKg || 0,
-      volumes: parsed.volumes || 0,
-      veiculoNecessario: (parsed.veiculoNecessario || '').trim(),
-      dataColetaIso: parsed.dataColetaIso || '',
-      janelaColetaInicio: '',
-      janelaColetaFim: '',
-      dataEntregaPrevistaIso: '',
-      janelaEntregaInicio: '',
-      janelaEntregaFim: '',
-      valorCobradoClienteCentavos,
-      valorContratadoCentavos,
-      condicoesComerciais: parsed.condicoesPagamento || '',
-      condicoesOperacionais: '',
-      condicoesPagamento: parsed.condicoesPagamento || '',
-      observacoes: parsed.observacoes || '',
-      comercialScriptRef: parsed.comercialResponsavel || '',
-      motoristaNome: parsed.motoristaNome || '',
-      motoristaCpf: parsed.motoristaCpf || '',
-      motoristaTelefone: parsed.motoristaTelefone || '',
-      emergenciaNome: parsed.emergenciaNome || '',
-      emergenciaTelefone: parsed.emergenciaTelefone || '',
-      placaVeiculo: parsed.placaVeiculo || '',
-      favorecidoPagamento: parsed.favorecido || '',
-      tipoChavePix: parsed.tipoChavePix || '',
-      chavePix: parsed.chavePix || '',
-      bancoPagamento: parsed.banco || '',
-      confirmAndSendToExpedicao: false,
-      idempotencyKey: `script-import-${currentUser.id}-${Date.now()}`,
-    });
-    if (!res.ok || !res.freight) {
-      throw new Error(res.error || 'Não foi possível importar o frete a partir do script.');
-    }
-    await fetchFreights(true);
-    showToast(
-      `Frete ${res.freight.protocol} importado para Meus Fretes (Em negociação)!`
-    );
-    void loadFreightDetails(res.freight.id);
   };
 
   const openEditModal = (freight: UnifiedFreightRecord) => {
@@ -769,19 +600,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     setFormError(null);
     setFormEditReason('');
     setFormExpedicaoAssignee(freight.expedicaoResponsavelId || 'FILA_DISPONIVEL');
-    const hasOpFields = Boolean(
-      freight.motoristaNome ||
-        freight.motoristaTelefone ||
-        freight.emergenciaNome ||
-        freight.emergenciaTelefone ||
-        freight.valorContratadoCentavos ||
-        freight.favorecidoPagamento ||
-        freight.chavePix ||
-        freight.bancoPagamento ||
-        freight.condicoesPagamento ||
-        freight.comercialScriptRef
-    );
-    setShowImportedOpFields(hasOpFields);
     setFormState({
       empresaMarca: freight.empresaMarca,
       unidadeOperacional: freight.unidadeOperacional,
@@ -802,26 +620,13 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
       janelaColetaFim: freight.janelaColetaFim,
       dataEntregaPrevistaIso: freight.dataEntregaPrevistaIso,
       janelaEntregaInicio: freight.janelaEntregaInicio,
-      janelaEntregaFim: freight.janelaEntregaFim || '',
+      janelaEntregaFim: freight.janelaEntregaFim || '18:00',
       valorCobradoReais: freight.valorCobradoClienteCentavos
         ? (freight.valorCobradoClienteCentavos / 100).toFixed(2).replace('.', ',')
         : '',
       condicoesComerciais: freight.condicoesComerciais,
       condicoesOperacionais: freight.condicoesOperacionais,
       observacoes: freight.observacoes || '',
-      comercialScriptRef: freight.comercialScriptRef || '',
-      motoristaNome: freight.motoristaNome || '',
-      motoristaTelefone: freight.motoristaTelefone || '',
-      emergenciaNome: freight.emergenciaNome || '',
-      emergenciaTelefone: freight.emergenciaTelefone || '',
-      valorContratadoReais: freight.valorContratadoCentavos
-        ? (freight.valorContratadoCentavos / 100).toFixed(2).replace('.', ',')
-        : '',
-      favorecidoPagamento: freight.favorecidoPagamento || '',
-      tipoChavePix: freight.tipoChavePix || '',
-      chavePix: freight.chavePix || '',
-      bancoPagamento: freight.bancoPagamento || '',
-      condicoesPagamento: freight.condicoesPagamento || '',
     });
     setIsFormOpen(true);
   };
@@ -888,17 +693,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           condicoesComerciais: formState.condicoesComerciais.trim(),
           condicoesOperacionais: formState.condicoesOperacionais.trim(),
           observacoes: formState.observacoes.trim(),
-          comercialScriptRef: formState.comercialScriptRef.trim(),
-          motoristaNome: formState.motoristaNome.trim(),
-          motoristaTelefone: formState.motoristaTelefone.trim(),
-          emergenciaNome: formState.emergenciaNome.trim(),
-          emergenciaTelefone: formState.emergenciaTelefone.trim(),
-          valorContratadoCentavos: parseBrlInputToCentavos(formState.valorContratadoReais),
-          favorecidoPagamento: formState.favorecidoPagamento.trim(),
-          tipoChavePix: formState.tipoChavePix.trim(),
-          chavePix: formState.chavePix.trim(),
-          bancoPagamento: formState.bancoPagamento.trim(),
-          condicoesPagamento: formState.condicoesPagamento.trim(),
           reason: formEditReason.trim() || undefined,
         });
 
@@ -961,20 +755,9 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           janelaEntregaInicio: formState.janelaEntregaInicio,
           janelaEntregaFim: formState.janelaEntregaFim,
           valorCobradoClienteCentavos,
-          valorContratadoCentavos: parseBrlInputToCentavos(formState.valorContratadoReais),
           condicoesComerciais: formState.condicoesComerciais.trim(),
           condicoesOperacionais: formState.condicoesOperacionais.trim(),
           observacoes: formState.observacoes.trim(),
-          comercialScriptRef: formState.comercialScriptRef.trim(),
-          motoristaNome: formState.motoristaNome.trim(),
-          motoristaTelefone: formState.motoristaTelefone.trim(),
-          emergenciaNome: formState.emergenciaNome.trim(),
-          emergenciaTelefone: formState.emergenciaTelefone.trim(),
-          favorecidoPagamento: formState.favorecidoPagamento.trim(),
-          tipoChavePix: formState.tipoChavePix.trim(),
-          chavePix: formState.chavePix.trim(),
-          bancoPagamento: formState.bancoPagamento.trim(),
-          condicoesPagamento: formState.condicoesPagamento.trim(),
           confirmAndSendToExpedicao,
           expedicaoResponsavelId: confirmAndSendToExpedicao ? expedicaoId : null,
           idempotencyKey: idemKey,
@@ -1282,7 +1065,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           </p>
         </div>
 
-        <div className="relative z-10 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* User Identity Pill */}
           <div className="inline-flex items-center gap-2.5 bg-white border border-slate-200/80 rounded-full px-3.5 py-1.5 shadow-2xs">
             <div className="w-7 h-7 rounded-full bg-[#FFF3B0] text-slate-900 font-bold text-xs flex items-center justify-center">
@@ -1295,15 +1078,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsScriptModalOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/95 hover:bg-white text-slate-900 border border-white/40 font-semibold text-sm shadow-xs transition-colors cursor-pointer"
-          >
-            <ClipboardPaste className="w-4 h-4 text-slate-700" />
-            Importar Script
-          </button>
-
           {/* Primary Action: + Novo frete */}
           <button
             type="button"
@@ -1315,13 +1089,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           </button>
         </div>
       </div>
-
-      {localToast && !onToast && (
-        <div className="fixed bottom-5 right-5 z-50 bg-[#080B0D] text-white border-l-4 border-[#FFD400] px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold max-w-md">
-          <CheckCircle2 className="w-4 h-4 text-[#FFD400] shrink-0" />
-          <span>{localToast}</span>
-        </div>
-      )}
 
       {/* ERROR / FEEDBACK BANNER */}
       {errorBanner && (
@@ -1884,22 +1651,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           }
         >
           <div className="space-y-5 text-xs">
-            {!editingFreight && (
-              <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs text-amber-950">
-                  <strong>Recebeu um script no WhatsApp?</strong> Cole e preencha automaticamente — campos ausentes ficam em branco.
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsScriptModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#080B0D] text-[#FFD400] font-extrabold text-xs hover:bg-slate-800 cursor-pointer"
-                >
-                  <ClipboardPaste className="w-3.5 h-3.5" />
-                  Colar Script do WhatsApp
-                </button>
-              </div>
-            )}
-
             {formError && (
               <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs font-bold flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-[#E5252A] shrink-0 mt-0.5" />
@@ -2049,11 +1800,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                   >
                     <option value="RODOVAR">RODOVAR LOGÍSTICA</option>
                     <option value="VL TRANSPORTES">VL TRANSPORTES</option>
-                    {formState.empresaMarca === 'AXD' && (
-                      <option value="AXD" disabled>
-                        AXD (Histórico — selecione RODOVAR ou VL TRANSPORTES para alterar)
-                      </option>
-                    )}
+                    <option value="AXD">AXD LOGÍSTICA</option>
                   </select>
                 </div>
                 <div>
@@ -2380,179 +2127,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                   </ul><p className="mt-2 text-[11px] text-gray-600">Monitoramento: confirmar e registrar o endereço detalhado de entrega.</p>
                 </div>
               </div>
-            </div>
-
-            {/* CARD 5: MOTORISTA, EMERGÊNCIA, PIX E OBSERVAÇÕES IMPORTADAS (OPCIONAL) */}
-            <div className="bg-[#F8FAFC] border border-gray-200/90 rounded-2xl p-4 shadow-2xs">
-              <button
-                type="button"
-                onClick={() => setShowImportedOpFields((prev) => !prev)}
-                className="w-full flex items-center justify-between text-left cursor-pointer"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-lg bg-slate-900 text-[#FFD400] font-black flex items-center justify-center text-xs">
-                    5
-                  </div>
-                  <div>
-                    <h3 className="font-black text-sm text-[#080B0D] uppercase tracking-wide">
-                      Motorista, PIX, Emergência e Observações (Opcional)
-                    </h3>
-                    <p className="text-[11px] text-gray-500">
-                      Preenchido automaticamente ao importar script; campos não informados ficam em branco.
-                    </p>
-                  </div>
-                </div>
-                {showImportedOpFields ? (
-                  <ChevronUp className="w-4 h-4 text-gray-600 shrink-0" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-gray-600 shrink-0" />
-                )}
-              </button>
-
-              {showImportedOpFields && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3.5 mt-3 border-t border-gray-200">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Comercial (Script)
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.comercialScriptRef}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, comercialScriptRef: e.target.value }))
-                      }
-                      placeholder="Ex: MARIVAL/CÉSAR"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Motorista
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.motoristaNome}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, motoristaNome: e.target.value }))
-                      }
-                      placeholder="Nome completo do motorista"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Tel. Motorista
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.motoristaTelefone}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, motoristaTelefone: e.target.value }))
-                      }
-                      placeholder="(00) 00000-0000"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Contato de Emergência
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.emergenciaNome}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, emergenciaNome: e.target.value }))
-                      }
-                      placeholder="Deixar em branco se não houver"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Tel. Emergência
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.emergenciaTelefone}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, emergenciaTelefone: e.target.value }))
-                      }
-                      placeholder="Deixar em branco se não houver"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Frete Motorista (R$)
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.valorContratadoReais}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, valorContratadoReais: e.target.value }))
-                      }
-                      placeholder="Ex: 900,00"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Favorecido
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.favorecidoPagamento}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, favorecidoPagamento: e.target.value }))
-                      }
-                      placeholder="Nome do favorecido PIX"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Chave PIX
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.chavePix}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, chavePix: e.target.value }))
-                      }
-                      placeholder="Chave PIX"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Banco
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.bancoPagamento}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, bancoPagamento: e.target.value }))
-                      }
-                      placeholder="Ex: Nubank"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                  <div className="sm:col-span-3">
-                    <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                      Observações Gerais (Obs.)
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.observacoes}
-                      onChange={(e) =>
-                        setFormState((s) => ({ ...s, observacoes: e.target.value }))
-                      }
-                      placeholder="Ex: PAGAMENTO INTEGRAL DO FRETE"
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs"
-                    />
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </CorporateModal>
@@ -2994,78 +2568,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                           </div>
                         )}
                       </div>
-
-                      {(detailFreight.comercialScriptRef ||
-                        detailFreight.motoristaTelefone ||
-                        detailFreight.emergenciaNome ||
-                        detailFreight.emergenciaTelefone ||
-                        detailFreight.favorecidoPagamento ||
-                        detailFreight.chavePix ||
-                        detailFreight.bancoPagamento ||
-                        detailFreight.condicoesPagamento ||
-                        detailFreight.observacoes) && (
-                        <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2 text-xs">
-                          <h4 className="font-bold text-slate-900 text-sm">
-                            Dados de Pagamento, Contato e Observações
-                          </h4>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                            {detailFreight.comercialScriptRef && (
-                              <div>
-                                <span className="text-slate-400 block">Comercial (Script)</span>
-                                <strong className="text-slate-800">{detailFreight.comercialScriptRef}</strong>
-                              </div>
-                            )}
-                            {detailFreight.motoristaTelefone && (
-                              <div>
-                                <span className="text-slate-400 block">Tel. Motorista</span>
-                                <strong className="text-slate-800">{detailFreight.motoristaTelefone}</strong>
-                              </div>
-                            )}
-                            {(detailFreight.emergenciaNome || detailFreight.emergenciaTelefone) && (
-                              <div>
-                                <span className="text-slate-400 block">Emergência</span>
-                                <strong className="text-slate-800">
-                                  {[detailFreight.emergenciaNome, detailFreight.emergenciaTelefone]
-                                    .filter(Boolean)
-                                    .join(' • ')}
-                                </strong>
-                              </div>
-                            )}
-                            {detailFreight.favorecidoPagamento && (
-                              <div>
-                                <span className="text-slate-400 block">Favorecido</span>
-                                <strong className="text-slate-800">{detailFreight.favorecidoPagamento}</strong>
-                              </div>
-                            )}
-                            {detailFreight.chavePix && (
-                              <div>
-                                <span className="text-slate-400 block">
-                                  Chave PIX{detailFreight.tipoChavePix ? ` (${detailFreight.tipoChavePix})` : ''}
-                                </span>
-                                <strong className="text-slate-800">{detailFreight.chavePix}</strong>
-                              </div>
-                            )}
-                            {detailFreight.bancoPagamento && (
-                              <div>
-                                <span className="text-slate-400 block">Banco</span>
-                                <strong className="text-slate-800">{detailFreight.bancoPagamento}</strong>
-                              </div>
-                            )}
-                            {detailFreight.condicoesPagamento && (
-                              <div>
-                                <span className="text-slate-400 block">Pagamento</span>
-                                <strong className="text-slate-800">{detailFreight.condicoesPagamento}</strong>
-                              </div>
-                            )}
-                            {detailFreight.observacoes && (
-                              <div className="col-span-2 sm:col-span-3">
-                                <span className="text-slate-400 block">Observações</span>
-                                <strong className="text-slate-800">{detailFreight.observacoes}</strong>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
                     </>
                   )}
 
@@ -3418,15 +2920,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           </div>
         </CorporateModal>
       )}
-
-      <ImportFreightScriptModal
-        isOpen={isScriptModalOpen}
-        onClose={() => setIsScriptModalOpen(false)}
-        onFillForm={applyParsedScriptToForm}
-        onImportDirect={handleImportScriptDirect}
-        fillFormLabel="Preencher formulário"
-        importDirectLabel="Importar frete para a página"
-      />
     </div>
   );
 };

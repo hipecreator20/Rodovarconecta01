@@ -2,20 +2,14 @@ import {CustomerCover} from './CustomerCover';
 import {CarrierBrandLogo,CARRIER_BRANDS} from '../lib/carrierLogos';
 import {useGlobalLoading} from './GlobalLoading';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   AlertCircle,
   AlertTriangle,
-  Archive,
-  ArrowLeft,
   ArrowRight,
   Calendar,
   Building2,
   Check,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
   Download,
   Eye,
   Flag,
@@ -30,7 +24,6 @@ import {
   Upload,
   User,
   X,
-  ClipboardPaste,
 } from 'lucide-react';
 import {
   CarrierBrand,
@@ -45,46 +38,30 @@ import {
   UnifiedFreightRecord,
 } from '../types';
 import {
-  apiCreateCommercialFreight,
   apiDownloadFreightAttachment,
+  apiFetchFreightDetails,
+  apiFetchFreightOperators,
   apiFetchFreightsList,
   apiMonitoramentoAction,
   apiRegisterFreightOccurrence,
-  apiReopenFreight,
   apiResolveFreightOccurrence,
   apiTransferFreightResponsibility,
   apiUploadFreightAttachment,
   apiVerifyFreightAttachment,
   formatCentavosToBrl,
+  FreightOperatorOption,
   sanitizeApiErrorMessage,
 } from '../lib/serverApi';
 import {
-  appQueryClient,
-  FREIGHT_CACHE_TIMES,
-  FREIGHT_PAGE_SIZE,
-  fetchActiveFreightsQuery,
-  fetchFinalizedFreightsQuery,
-  fetchFreightDetailsQuery,
-  fetchFreightOperatorsQuery,
-  freightQueryKeys,
-  invalidateFreightDetailCache,
-  invalidateFreightQueriesAfterMutation,
-} from '../lib/freightQueryCache';
-import {
-  canAccessComercialFreights,
   canAccessExpedicaoFreights,
-  canOperateMonitoring,
   canTransferFreightResponsibility,
   canViewFreightTeam,
-  hasPagePermission,
 } from '../lib/permissions';
 import {
   formatSituacaoFinanceiraLabel,
   formatSituacaoMonitoramentoLabel,
 } from './MeusFretesComercialView';
-import { OrdemColetaModal } from './OrdemColetaDocument';
-import { ImportFreightScriptModal } from './ImportFreightScriptModal';
-import { ParsedTrafficScript } from '../lib/carrierLogos';
+import { printIsolatedOrdemColeta } from './MeusFretesExpedicaoView';
 import { CorporateModal } from './ui/CorporateModal';
 import './FretesAtivosView.css';
 
@@ -235,10 +212,10 @@ function getFreightTone(status?: MonitoringFreightStatus): string {
   }
 }
 
-function FreightCard({ freight: f, userId, selected, showPendingOrderBadge, onOpen }: { freight: UnifiedFreightRecord; userId: string; selected: boolean; showPendingOrderBadge?: boolean; onOpen: (event: React.SyntheticEvent<HTMLElement>) => void }) {
+function FreightCard({ freight: f, selected, onOpen }: { freight: UnifiedFreightRecord; selected: boolean; onOpen: (event: React.SyntheticEvent<HTMLElement>) => void }) {
   const StatusIcon = f.situacaoMonitoramento === 'FINALIZADO' ? CheckCircle2 : f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA' ? Navigation : Truck;
   return <article tabIndex={0} onClick={event=>{if(!(event.target as HTMLElement).closest('button,a,input,select,textarea'))onOpen(event);}} onKeyDown={event=>{if(event.target===event.currentTarget&&(event.key==='Enter'||event.key===' ')){event.preventDefault();onOpen(event);}}} className="fa-freight-card" data-tone={getFreightTone(f.situacaoMonitoramento)} data-selected={selected} aria-label={`Frete ${f.protocol}`}>
-    <CustomerCover customer={f.cliente} userId={userId}/>
+    <CustomerCover customer={f.cliente}/>
     <div className="fa-card-top"><div className="fa-protocol"><span className="fa-protocol-icon"><Truck size={15} /></span>{f.protocol}</div><span className="fa-status"><StatusIcon size={13} />{formatSituacaoMonitoramentoLabel(f.situacaoMonitoramento)}</span></div>
     <div className="fa-card-customer"><span className="fa-icon-tile"><Building2 size={17} /></span><div className="min-w-0 flex-1"><span className="fa-label">Cliente</span><h2 className="fa-customer-name">{f.cliente}</h2></div></div>
     <div className="fa-card-route"><div><span className="fa-route-point" aria-hidden="true"/><div><span className="fa-label">Origem</span><strong>{f.origemCidadeUf}</strong></div></div><div><span className="fa-route-point fa-route-point--destination" aria-hidden="true"/><div><span className="fa-label">Destino</span><strong>{f.destinoCidadeUf}</strong></div></div></div>
@@ -249,7 +226,6 @@ function FreightCard({ freight: f, userId, selected, showPendingOrderBadge, onOp
       <div className="fa-data-item"><span className="fa-icon-tile"><Truck size={16} /></span><div className="min-w-0"><span className="fa-label">Veículo / Placas</span><strong className="font-mono">{f.placaVeiculo || 'Não informada'}{f.placaCarreta && <><br />{f.placaCarreta}</>}</strong></div></div>
     </div>
     <div className="fa-card-location"><MapPin size={18} /><div className="min-w-0"><span className="fa-label">Última localização informada</span><p>{f.ultimaLocalizacaoInformada || 'Localização ainda não informada'}</p>{f.ultimaLocalizacaoAtualizadaEm && <time>{f.ultimaLocalizacaoAtualizadaEm}</time>}</div></div>
-    {showPendingOrderBadge && f.ordemColetaPendente && !f.ordemCarregamentoNumero && <p className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1"><Clock size={12} />Ordem de coleta pendente</p>}
     {f.ocorrenciasAbertasCount > 0 && <p className="fa-card-warning"><AlertCircle size={12} />{f.ocorrenciasAbertasCount} ocorrência(s) em aberto</p>}
     <div className="fa-card-footer"><div className="fa-card-operator"><span className="fa-label">Operador responsável</span><strong title={f.monitoramentoResponsavelNome || undefined}>{f.monitoramentoResponsavelNome || 'Não atribuído'}</strong></div><button type="button" className="fa-details-button" onClick={onOpen} aria-label={`Ver detalhes do frete ${f.protocol}`} aria-expanded={selected} aria-controls="active-freight-detail"><Eye size={14} />Ver detalhes</button></div>
   </article>;
@@ -323,7 +299,7 @@ function FreightOverview({ freight: f }: { freight: UnifiedFreightRecord }) {
       <section className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
           <h3 className="text-sm font-extrabold text-[#15191D]">Motorista, veículo e responsáveis</h3>
-          {f.empresaMarca && (CARRIER_BRANDS as readonly string[]).includes(f.empresaMarca) && (
+          {f.empresaMarca && CARRIER_BRANDS.includes(f.empresaMarca) && (
             <CarrierBrandLogo brand={f.empresaMarca} size="sm" />
           )}
         </div>
@@ -408,7 +384,6 @@ interface FretesAtivosViewProps {
   selectedFreightIdFromNotification?: string | null;
   onClearSelectedNotificationFreight?: () => void;
   onSwitchToExpedicao?: () => void;
-  onSwitchToComercial?: () => void;
   onSyncNewFreightToFinanceiro?: (item: ActiveFreightCardItem) => void;
   onSyncStageToFinanceiro?: (code: string, stage: ActiveFreightStage) => void;
 }
@@ -418,193 +393,39 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   selectedFreightIdFromNotification,
   onClearSelectedNotificationFreight,
   onSwitchToExpedicao,
-  onSwitchToComercial,
 }) => {
+  const [freights, setFreights] = useState<UnifiedFreightRecord[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  useGlobalLoading(loading && freights.length === 0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [orderModalFreight, setOrderModalFreight] = useState<UnifiedFreightRecord | null>(null);
-  const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
-  const canImportComercialScript = useMemo(() => canAccessComercialFreights(currentUser), [currentUser]);
 
-  const isOperationalProfile = useMemo(
-    () =>
-      canAccessExpedicaoFreights(currentUser) ||
-      canOperateMonitoring(currentUser) ||
-      currentUser.accessLevel === 'ADMINISTRADOR' ||
-      currentUser.accessLevel === 'DIRETORIA',
-    [currentUser]
-  );
-
-  // Panel Mode: 'ATIVOS' (cards, paginated 12/page) | 'FINALIZADOS' (compact table loaded on demand)
-  const [panelMode, setPanelMode] = useState<'ATIVOS' | 'FINALIZADOS'>('ATIVOS');
-
-  // Synchronous Scope Initialization prevents duplicate mount fetch (MINE -> TEAM)
-  const [viewScope, setViewScope] = useState<'MINE' | 'TEAM'>(() =>
-    canViewFreightTeam(currentUser) ? 'TEAM' : 'MINE'
-  );
+  // Scope & Filters
+  const [viewScope, setViewScope] = useState<'MINE' | 'TEAM'>('MINE');
   const [responsibleFilterId, setResponsibleFilterId] = useState<string>('');
-
-  // Active Panel Filters & Pagination
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
   const [stageFilter, setStageFilter] = useState<string>('TODOS');
   const [periodFilter, setPeriodFilter] = useState<'HOJE' | 'SEMANA' | 'MES' | 'TODOS'>('TODOS');
-  const [activePage, setActivePage] = useState<number>(1);
 
-  // Finalizados Panel Filters & Pagination (independent, only queried when requested)
-  const [finSearchInput, setFinSearchInput] = useState<string>('');
-  const [debouncedFinSearch, setDebouncedFinSearch] = useState<string>('');
-  const [finStatusFilter, setFinStatusFilter] = useState<'TODAS' | 'FINALIZADO' | 'ENTREGUE'>('TODAS');
-  const [finPeriodFilter, setFinPeriodFilter] = useState<'HOJE' | 'SEMANA' | 'MES' | 'TODOS'>('TODOS');
-  const [finPage, setFinPage] = useState<number>(1);
+  // Operators list
+  const [monitoramentoOperators, setMonitoramentoOperators] = useState<FreightOperatorOption[]>([]);
+  const [canViewTeam, setCanViewTeam] = useState<boolean>(() => canViewFreightTeam(currentUser));
 
-  // Debounce search inputs cleanly
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setDebouncedSearch(searchQuery.trim());
-      setActivePage(1);
-    }, 300);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setDebouncedFinSearch(finSearchInput.trim());
-      setFinPage(1);
-    }, 300);
-    return () => clearTimeout(t);
-  }, [finSearchInput]);
-
-  // Reset pagination when scope or filter dropdowns change
-  const changeScopeFilter = (val: string) => {
-    if (val === 'MINE') {
-      setViewScope('MINE');
-      setResponsibleFilterId('');
-    } else if (val === 'TEAM') {
-      setViewScope('TEAM');
-      setResponsibleFilterId('');
-    } else {
-      setViewScope('TEAM');
-      setResponsibleFilterId(val);
-    }
-    setActivePage(1);
-    setFinPage(1);
-  };
-
-  // Operators query (cached 1h per user)
-  const operatorsQuery = useQuery({
-    queryKey: freightQueryKeys.operators(currentUser.id),
-    queryFn: fetchFreightOperatorsQuery,
-    staleTime: FREIGHT_CACHE_TIMES.STATIC_DATA_STALE_MS,
-    gcTime: FREIGHT_CACHE_TIMES.STATIC_DATA_STALE_MS,
-    refetchOnWindowFocus: false,
-  });
-
-  const monitoramentoOperators = operatorsQuery.data?.monitoramentoOperators || [];
-  const canViewTeam = operatorsQuery.data?.permissions
-    ? Boolean(operatorsQuery.data.permissions.canViewTeam)
-    : canViewFreightTeam(currentUser);
-
-  const activeFilters = useMemo(
-    () => ({
-      scope: viewScope,
-      responsibleFilterId,
-      stageFilter,
-      periodFilter,
-      searchQuery: debouncedSearch,
-      page: activePage,
-      limit: FREIGHT_PAGE_SIZE,
-    }),
-    [viewScope, responsibleFilterId, stageFilter, periodFilter, debouncedSearch, activePage]
-  );
-
-  const finalizedFilters = useMemo(
-    () => ({
-      scope: viewScope,
-      responsibleFilterId,
-      stageFilter: finStatusFilter,
-      periodFilter: finPeriodFilter,
-      searchQuery: debouncedFinSearch,
-      page: finPage,
-      limit: FREIGHT_PAGE_SIZE,
-    }),
-    [viewScope, responsibleFilterId, finStatusFilter, finPeriodFilter, debouncedFinSearch, finPage]
-  );
-
-  // Active Freights Query (staleTime 2m, server pagination 12/page, omitKanban=true)
-  const activeQuery = useQuery({
-    queryKey: freightQueryKeys.activeList(currentUser.id, activeFilters),
-    queryFn: () => fetchActiveFreightsQuery(activeFilters),
-    enabled: panelMode === 'ATIVOS',
-    staleTime: FREIGHT_CACHE_TIMES.ACTIVE_LIST_STALE_MS,
-    gcTime: FREIGHT_CACHE_TIMES.GC_TIME_MS,
-    placeholderData: keepPreviousData,
-    refetchOnWindowFocus: false,
-  });
-
-  // Finalized Freights Query (ONLY fetched when user clicks "Ver Finalizados", staleTime 15m)
-  const finalizedQuery = useQuery({
-    queryKey: freightQueryKeys.finalizedList(currentUser.id, finalizedFilters),
-    queryFn: () => fetchFinalizedFreightsQuery(finalizedFilters),
-    enabled: panelMode === 'FINALIZADOS',
-    staleTime: FREIGHT_CACHE_TIMES.FINALIZADOS_LIST_STALE_MS,
-    gcTime: FREIGHT_CACHE_TIMES.GC_TIME_MS,
-    placeholderData: keepPreviousData,
-    refetchOnWindowFocus: false,
-  });
-
-  const currentListQuery = panelMode === 'FINALIZADOS' ? finalizedQuery : activeQuery;
-  const freights = activeQuery.data?.items || [];
-  const finalizedRows = finalizedQuery.data?.items || [];
-  const loading = currentListQuery.isFetching;
-  const initialActiveLoading = panelMode === 'ATIVOS' && activeQuery.isLoading && freights.length === 0;
-  useGlobalLoading(initialActiveLoading);
-
-  useEffect(() => {
-    if (currentListQuery.error) {
-      setErrorMsg(
-        sanitizeApiErrorMessage(
-          currentListQuery.error,
-          'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
-        )
-      );
-    }
-  }, [currentListQuery.error]);
-
-  // Selected Freight ID & lazy-loaded full detail query (never preloaded!)
-  const [selectedFreightId, setSelectedFreightId] = useState<string | null>(null);
-  const [selectedPreview, setSelectedPreview] = useState<UnifiedFreightRecord | null>(null);
+  // Selected Freight & Sub-collections
+  const [selectedFreight, setSelectedFreight] = useState<UnifiedFreightRecord | null>(null);
+  const [detailAnexos, setDetailAnexos] = useState<UnifiedFreightAttachment[]>([]);
+  const [detailOcorrencias, setDetailOcorrencias] = useState<UnifiedFreightOccurrence[]>([]);
+  const [detailHistorico, setDetailHistorico] = useState<UnifiedFreightHistoryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<
     'RESUMO' | 'ACOMPANHAMENTO' | 'DADOS_ORDEM' | 'ANEXOS' | 'OCORRENCIAS' | 'HISTORICO'
   >('RESUMO');
-
-  const isSelectedHistorical = Boolean(
-    selectedPreview?.situacaoMonitoramento === 'FINALIZADO' ||
-      selectedPreview?.situacaoMonitoramento === 'ENTREGUE'
-  );
-
-  const detailQuery = useQuery({
-    queryKey: freightQueryKeys.detail(currentUser.id, selectedFreightId || ''),
-    queryFn: () => fetchFreightDetailsQuery(selectedFreightId!),
-    enabled: Boolean(selectedFreightId),
-    staleTime: isSelectedHistorical
-      ? FREIGHT_CACHE_TIMES.HISTORICAL_DETAIL_STALE_MS
-      : FREIGHT_CACHE_TIMES.ACTIVE_DETAIL_STALE_MS,
-    gcTime: FREIGHT_CACHE_TIMES.GC_TIME_MS,
-    refetchOnWindowFocus: false,
-  });
-
-  const selectedFreight = detailQuery.data?.freight || selectedPreview;
-  const detailAnexos: UnifiedFreightAttachment[] = detailQuery.data?.anexos || [];
-  const detailOcorrencias: UnifiedFreightOccurrence[] = detailQuery.data?.ocorrencias || [];
-  const detailHistorico: UnifiedFreightHistoryEntry[] = detailQuery.data?.historico || [];
 
   // Monitoring Stage Advance Form
   const [targetNextStage, setTargetNextStage] =
     useState<MonitoringFreightStatus>('NOVO_PARA_CARREGAR');
   const [realEventTimeInput, setRealEventTimeInput] = useState<string>('');
   const [stageObservationInput, setStageObservationInput] = useState<string>('');
-  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryAddress,setDeliveryAddress]=useState('');
   const [informedLocationInput, setInformedLocationInput] = useState<string>('');
   const [driverInstructionsInput, setDriverInstructionsInput] = useState<string>('');
   const [previsaoEntregaInput, setPrevisaoEntregaInput] = useState<string>('');
@@ -613,12 +434,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   // Return to Expedição Modal
   const [showReturnExpedicaoModal, setShowReturnExpedicaoModal] = useState<boolean>(false);
   const [returnExpedicaoReason, setReturnExpedicaoReason] = useState<string>('');
-
-  // Reopen Freight Modal
-  const [showReopenModal, setShowReopenModal] = useState<boolean>(false);
-  const [reopenReason, setReopenReason] = useState<string>('');
-  const [reopenTargetStage, setReopenTargetStage] =
-    useState<MonitoringFreightStatus>('NO_LOCAL_ENTREGA');
 
   // Occurrence creation state
   const [occTitulo, setOccTitulo] = useState<string>('');
@@ -634,6 +449,24 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   const detailTriggerRef = useRef<HTMLElement | null>(null);
   const isDetailDocked = false;
 
+  useEffect(() => {
+    if (!selectedFreight || showReturnExpedicaoModal) return;
+    const panel = detailPanelRef.current;
+    const previousOverflow = document.body.style.overflow;
+    if (!isDetailDocked) document.body.style.overflow = 'hidden';
+    panel?.querySelector<HTMLButtonElement>('[data-detail-close]')?.focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setSelectedFreight(null); }
+      if (event.key !== 'Tab' || isDetailDocked || !panel) return;
+      const controls = Array.from(panel.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled)')).filter(node => node.getClientRects().length > 0);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', keydown);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener('keydown', keydown); detailTriggerRef.current?.focus(); };
+  }, [selectedFreight?.id, isDetailDocked, showReturnExpedicaoModal]);
+
   // Transfer responsibility state
   const [transferTargetId, setTransferTargetId] = useState<string>('');
   const [transferMotivo, setTransferMotivo] = useState<string>('');
@@ -641,19 +474,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
 
   const hasExpedicaoAccess = useMemo(() => canAccessExpedicaoFreights(currentUser), [currentUser]);
   const isSupervisor = useMemo(() => canTransferFreightResponsibility(currentUser), [currentUser]);
-
-  const canReopenSelected = useMemo(() => {
-    if (!selectedFreight) return false;
-    const st = selectedFreight.situacaoMonitoramento;
-    if (st !== 'FINALIZADO' && st !== 'ENTREGUE') return false;
-    return (
-      currentUser.accessLevel === 'ADMINISTRADOR' ||
-      currentUser.accessLevel === 'DIRETORIA' ||
-      hasPagePermission(currentUser, 'fretes_cancelar') ||
-      (canOperateMonitoring(currentUser) &&
-        selectedFreight.monitoramentoResponsavelId === currentUser.id)
-    );
-  }, [selectedFreight, currentUser]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -678,144 +498,177 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     setStageObservationInput('');
   }, []);
 
-  useEffect(() => {
-    if (detailQuery.data?.freight) {
-      setSelectedPreview(detailQuery.data.freight);
-      syncMonitoringFormFromRecord(detailQuery.data.freight);
+  const loadFreightFullDetails = useCallback(
+    async (freightId: string) => {
+      try {
+        const res = await apiFetchFreightDetails(freightId);
+        if (res.ok && res.freight) {
+          setSelectedFreight(res.freight);
+          syncMonitoringFormFromRecord(res.freight);
+          setDetailAnexos(res.anexos || []);
+          setDetailOcorrencias(res.ocorrencias || []);
+          setDetailHistorico(res.historico || []);
+        }
+      } catch (err) {
+        console.debug('Load monitoramento detail info:', err);
+      }
+    },
+    [syncMonitoringFormFromRecord]
+  );
+
+  const loadOperators = useCallback(async () => {
+    try {
+      const res = await apiFetchFreightOperators();
+      setMonitoramentoOperators(res.monitoramentoOperators || []);
+      if (res.permissions) {
+        const teamAllowed = Boolean(res.permissions.canViewTeam);
+        setCanViewTeam(teamAllowed);
+        if (teamAllowed) {
+          setViewScope('TEAM');
+        }
+      }
+    } catch (err) {
+      console.debug('Load monitoramento operators info:', err);
     }
-  }, [detailQuery.data, syncMonitoringFormFromRecord]);
+  }, []);
+
+  const loadFreights = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const res = await apiFetchFreightsList({
+        area: 'MONITORAMENTO',
+        scope: viewScope === 'TEAM' ? 'EQUIPE' : 'MEUS',
+        responsavelId: viewScope === 'TEAM' && responsibleFilterId ? responsibleFilterId : undefined,
+        limit: 100,
+      });
+
+      if (!res.ok) {
+        setErrorMsg(
+          sanitizeApiErrorMessage(
+            res.error,
+            'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
+          )
+        );
+        return;
+      }
+
+      setFreights(res.items || []);
+      setSelectedFreight((prev) => {
+        if (!prev) return null;
+        const updated = (res.items || []).find((f) => f.id === prev.id);
+        return updated || prev;
+      });
+    } catch (err) {
+      setErrorMsg(
+        sanitizeApiErrorMessage(
+          err,
+          'Falha ao carregar fila de Fretes Ativos (Monitoramento).'
+        )
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [viewScope, responsibleFilterId]);
 
   useEffect(() => {
-    if (!selectedFreight || showReturnExpedicaoModal || showReopenModal) return;
-    const panel = detailPanelRef.current;
-    const previousOverflow = document.body.style.overflow;
-    if (!isDetailDocked) document.body.style.overflow = 'hidden';
-    panel?.querySelector<HTMLButtonElement>('[data-detail-close]')?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setSelectedFreightId(null);
-        setSelectedPreview(null);
-      }
-      if (event.key !== 'Tab' || isDetailDocked || !panel) return;
-      const controls = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled)'
-        )
-      ).filter((node) => node.getClientRects().length > 0);
-      const first = controls[0],
-        last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener('keydown', keydown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', keydown);
-      detailTriggerRef.current?.focus();
-    };
-  }, [selectedFreight?.id, isDetailDocked, showReturnExpedicaoModal, showReopenModal]);
+    void loadOperators();
+  }, [loadOperators]);
+
+  useEffect(() => {
+    void loadFreights();
+  }, [loadFreights]);
 
   // Open specific freight when clicked from notification ("Novo frete para carregar — #0842...")
   useEffect(() => {
     if (!selectedFreightIdFromNotification) return;
-    setActiveTab('RESUMO');
-    setSelectedFreightId(selectedFreightIdFromNotification);
-    if (onClearSelectedNotificationFreight) onClearSelectedNotificationFreight();
-  }, [selectedFreightIdFromNotification, onClearSelectedNotificationFreight]);
-
-  // Moderate visibility-gated sync check every 90s (zero DB work when unchanged)
-  const latestDataVersionRef = useRef<number | undefined>(undefined);
-  latestDataVersionRef.current =
-    currentListQuery.data?.dataVersion ?? activeQuery.data?.dataVersion ?? finalizedQuery.data?.dataVersion;
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (document.visibilityState !== 'visible' || actionBusy) return;
-      const knownVersion = latestDataVersionRef.current;
-      if (knownVersion === undefined) return;
-      void apiFetchFreightsList({
-        area: 'MONITORAMENTO',
-        scope: viewScope === 'TEAM' ? 'EQUIPE' : 'MEUS',
-        responsavelId: viewScope === 'TEAM' && responsibleFilterId ? responsibleFilterId : undefined,
-        checkOnly: true,
-        sinceVersion: knownVersion,
-      }).then((check) => {
-        if (check.ok && check.unchanged === false) {
-          void appQueryClient.invalidateQueries({
-            queryKey: freightQueryKeys.lists(currentUser.id),
-          });
-        }
-      });
-    }, 90_000);
-    return () => clearInterval(interval);
-  }, [viewScope, responsibleFilterId, actionBusy, currentUser.id]);
-
-  // Manual Refresh ("Atualizar") invalidates cache & refetches
-  const handleManualRefresh = async () => {
-    setErrorMsg(null);
-    await appQueryClient.invalidateQueries({
-      queryKey: freightQueryKeys.lists(currentUser.id),
+    void loadFreightFullDetails(selectedFreightIdFromNotification).finally(() => {
+      if (onClearSelectedNotificationFreight) onClearSelectedNotificationFreight();
     });
-    if (selectedFreightId) {
-      await invalidateFreightDetailCache(currentUser.id, selectedFreightId);
-    }
-    await currentListQuery.refetch();
-  };
+  }, [
+    selectedFreightIdFromNotification,
+    loadFreightFullDetails,
+    onClearSelectedNotificationFreight,
+  ]);
 
-  // Summary counters directly from server operational counters (accurate across all pages)
-  const mc = currentListQuery.data?.monitoramentoCounters || activeQuery.data?.monitoramentoCounters;
-  const stats = useMemo(
-    () => ({
-      novosParaCarregar: mc?.NOVO_PARA_CARREGAR ?? 0,
-      emColetaDeslocamento:
-        (mc?.EM_DESLOCAMENTO_COLETA ?? 0) + (mc?.NO_LOCAL_COLETA ?? 0),
-      emTransporteEntrega:
-        (mc?.CARREGADO_EM_TRANSPORTE ?? 0) + (mc?.NO_LOCAL_ENTREGA ?? 0),
-      finalizados: mc?.completedCount ?? ((mc?.ENTREGUE ?? 0) + (mc?.FINALIZADO ?? 0)),
-      pendencias: mc?.PENDENCIAS ?? 0,
-    }),
-    [mc]
-  );
+  // Filtered freights
+  const filteredFreights = useMemo(() => {
+    const now = new Date();
+    const todayIso = now.toISOString().slice(0, 10);
+
+    return freights.filter((f) => {
+      if (f.situacaoComercial === 'CANCELADO' || f.situacaoOperacional === 'CANCELADO') {
+        return false;
+      }
+
+      if (viewScope === 'MINE' && f.monitoramentoResponsavelId !== currentUser.id) {
+        return false;
+      }
+
+      if (stageFilter !== 'TODOS' && f.situacaoMonitoramento !== stageFilter) {
+        return false;
+      }
+
+      if (periodFilter !== 'TODOS') {
+        const refDate = f.dataColetaIso || f.createdAtIso.slice(0, 10);
+        if (periodFilter === 'HOJE' && refDate !== todayIso) return false;
+        if (periodFilter === 'SEMANA') {
+          const diffDays =
+            Math.abs(new Date(refDate).getTime() - now.getTime()) / (1000 * 3600 * 24);
+          if (diffDays > 7) return false;
+        }
+        if (periodFilter === 'MES' && refDate.slice(0, 7) !== todayIso.slice(0, 7)) {
+          return false;
+        }
+      }
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const match =
+          f.protocol.toLowerCase().includes(q) ||
+          f.cliente.toLowerCase().includes(q) ||
+          f.origemCidadeUf.toLowerCase().includes(q) ||
+          f.destinoCidadeUf.toLowerCase().includes(q) ||
+          (f.motoristaNome || '').toLowerCase().includes(q) ||
+          (f.placaVeiculo || '').toLowerCase().includes(q) ||
+          (f.ultimaLocalizacaoInformada || '').toLowerCase().includes(q) ||
+          (f.monitoramentoResponsavelNome || '').toLowerCase().includes(q);
+        if (!match) return false;
+      }
+
+      return true;
+    });
+  }, [freights, viewScope, stageFilter, periodFilter, searchQuery, currentUser.id]);
+
+  // Summary counters
+  const stats = useMemo(() => {
+    const active = freights.filter(
+      (f) => f.situacaoComercial !== 'CANCELADO' && f.situacaoOperacional !== 'CANCELADO'
+    );
+    return {
+      novosParaCarregar: active.filter((f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR')
+        .length,
+      emColetaDeslocamento: active.filter(
+        (f) =>
+          f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA' ||
+          f.situacaoMonitoramento === 'NO_LOCAL_COLETA'
+      ).length,
+      emTransporteEntrega: active.filter(
+        (f) =>
+          f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE' ||
+          f.situacaoMonitoramento === 'NO_LOCAL_ENTREGA' ||
+          f.situacaoMonitoramento === 'ENTREGUE'
+      ).length,
+      finalizados: active.filter((f) => f.situacaoMonitoramento === 'FINALIZADO').length,
+      pendencias: active.filter((f) => f.ocorrenciasAbertasCount > 0).length,
+    };
+  }, [freights]);
 
   const handleSelectFreight = (f: UnifiedFreightRecord) => {
     setActiveTab('RESUMO');
-    setSelectedPreview(f);
-    setSelectedFreightId(f.id);
+    setSelectedFreight(f);
     syncMonitoringFormFromRecord(f);
-  };
-
-  const closeDetailModal = () => {
-    setSelectedFreightId(null);
-    setSelectedPreview(null);
-  };
-
-  const syncAfterFreightMutation = async (
-    updated: UnifiedFreightRecord,
-    patch?: {
-      anexos?: UnifiedFreightAttachment[];
-      ocorrencias?: UnifiedFreightOccurrence[];
-      historico?: UnifiedFreightHistoryEntry[];
-    }
-  ) => {
-    setSelectedPreview(updated);
-    appQueryClient.setQueryData(freightQueryKeys.detail(currentUser.id, updated.id), (prev: any) => {
-      const base = prev && typeof prev === 'object' ? prev : {};
-      return {
-        ...base,
-        ok: true,
-        freight: updated,
-        ...(patch?.anexos ? { anexos: patch.anexos } : {}),
-        ...(patch?.ocorrencias ? { ocorrencias: patch.ocorrencias } : {}),
-        ...(patch?.historico ? { historico: patch.historico } : {}),
-      };
-    });
-    await invalidateFreightQueriesAfterMutation(currentUser.id, updated);
+    void loadFreightFullDetails(f.id);
   };
 
   const handleAdvanceMonitoringStage = async (
@@ -845,20 +698,15 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       }
 
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, { historico: res.historico });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
       syncMonitoringFormFromRecord(updated);
+      if (res.historico) setDetailHistorico(res.historico);
       showToast(
         `Frete ${updated.protocol} atualizado para "${formatSituacaoMonitoramentoLabel(
           updated.situacaoMonitoramento
         )}"!`
       );
-      if (
-        panelMode === 'ATIVOS' &&
-        (updated.situacaoMonitoramento === 'ENTREGUE' ||
-          updated.situacaoMonitoramento === 'FINALIZADO')
-      ) {
-        closeDetailModal();
-      }
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao avançar etapa do monitoramento.'));
     } finally {
@@ -888,8 +736,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       }
 
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, { historico: res.historico });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
       syncMonitoringFormFromRecord(updated);
+      if (res.historico) setDetailHistorico(res.historico);
       showToast(`Localização informada e orientações salvas no frete ${updated.protocol}.`);
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao registrar localização/orientação.'));
@@ -918,55 +768,13 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         return;
       }
       const updated = res.freight;
-      await syncAfterFreightMutation(updated);
-      closeDetailModal();
+      setFreights((prev) => prev.filter((f) => f.id !== updated.id));
+      setSelectedFreight(null);
       setShowReturnExpedicaoModal(false);
       setReturnExpedicaoReason('');
       showToast(`Frete ${updated.protocol} devolvido à Expedição para correção.`);
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao devolver à Expedição.'));
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
-  const handleReopenFreight = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedFreight) return;
-    if (reopenReason.trim().length < 5) {
-      setErrorMsg('Informe o motivo obrigatório para reabrir o frete (mínimo 5 caracteres).');
-      return;
-    }
-    setActionBusy(true);
-    setErrorMsg(null);
-    try {
-      const res = await apiReopenFreight(selectedFreight.id, {
-        motivo: reopenReason.trim(),
-        targetStage:
-          selectedFreight.situacaoMonitoramento === 'FINALIZADO' && reopenTargetStage === 'ENTREGUE'
-            ? 'ENTREGUE'
-            : 'NO_LOCAL_ENTREGA',
-        baseRevision: selectedFreight.revision,
-      });
-      if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao reabrir frete.'));
-        return;
-      }
-      const updated = res.freight;
-      await syncAfterFreightMutation(updated, { historico: res.historico });
-      syncMonitoringFormFromRecord(updated);
-      setShowReopenModal(false);
-      setReopenReason('');
-      showToast(
-        `Frete ${updated.protocol} reaberto para "${formatSituacaoMonitoramentoLabel(
-          updated.situacaoMonitoramento
-        )}".`
-      );
-      if (updated.situacaoMonitoramento !== 'ENTREGUE' && panelMode === 'FINALIZADOS') {
-        setPanelMode('ATIVOS');
-      }
-    } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao reabrir frete.'));
     } finally {
       setActionBusy(false);
     }
@@ -987,10 +795,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         return;
       }
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, {
-        ocorrencias: res.ocorrencias,
-        historico: res.historico,
-      });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      if (res.ocorrencias) setDetailOcorrencias(res.ocorrencias);
+      if (res.historico) setDetailHistorico(res.historico);
       setOccTitulo('');
       setOccDescricao('');
       showToast('Ocorrência de monitoramento registrada.');
@@ -1011,10 +819,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         return;
       }
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, {
-        ocorrencias: res.ocorrencias,
-        historico: res.historico,
-      });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      if (res.ocorrencias) setDetailOcorrencias(res.ocorrencias);
+      if (res.historico) setDetailHistorico(res.historico);
       showToast('Ocorrência marcada como resolvida.');
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao resolver ocorrência.'));
@@ -1053,10 +861,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       }
 
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, {
-        anexos: res.anexos,
-        historico: res.historico,
-      });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      if (res.anexos) setDetailAnexos(res.anexos);
+      if (res.historico) setDetailHistorico(res.historico);
       showToast(`Comprovante/anexo "${file.name}" enviado.`);
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao enviar anexo.'));
@@ -1076,10 +884,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         return;
       }
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, {
-        anexos: res.anexos,
-        historico: res.historico,
-      });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      if (res.anexos) setDetailAnexos(res.anexos);
+      if (res.historico) setDetailHistorico(res.historico);
       showToast('Comprovante conferido e validado.');
     } catch (err) {
       setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao conferir comprovante.'));
@@ -1104,7 +912,9 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         return;
       }
       const updated = res.freight;
-      await syncAfterFreightMutation(updated, { historico: res.historico });
+      setFreights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+      setSelectedFreight(updated);
+      if (res.historico) setDetailHistorico(res.historico);
       setTransferTargetId('');
       setTransferMotivo('');
       showToast('Responsabilidade de monitoramento transferida.');
@@ -1114,11 +924,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       setTransferBusy(false);
     }
   };
-
-  const activeTotalMatched = activeQuery.data?.totalMatched ?? freights.length;
-  const activeTotalPages = activeQuery.data?.totalPages ?? Math.max(1, Math.ceil(activeTotalMatched / FREIGHT_PAGE_SIZE));
-  const finTotalMatched = finalizedQuery.data?.totalMatched ?? finalizedRows.length;
-  const finTotalPages = finalizedQuery.data?.totalPages ?? Math.max(1, Math.ceil(finTotalMatched / FREIGHT_PAGE_SIZE));
 
   return (
     <div className="fa-surface space-y-4">
@@ -1151,16 +956,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
               >
                 <ArrowRight className="w-3.5 h-3.5" />
                 <span>Ir para Expedição</span>
-              </button>
-            )}
-            {canImportComercialScript && (
-              <button
-                type="button"
-                onClick={() => setIsScriptModalOpen(true)}
-                className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-white/95 text-slate-950 px-3 py-1 rounded-lg hover:bg-white transition cursor-pointer"
-              >
-                <ClipboardPaste className="w-3.5 h-3.5" />
-                <span>Importar Script</span>
               </button>
             )}
           </div>
@@ -1238,26 +1033,17 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setPanelMode('FINALIZADOS')}
-          className={`rounded-2xl p-3.5 border shadow-2xs flex items-center gap-3 text-left transition cursor-pointer ${
-            panelMode === 'FINALIZADOS'
-              ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-200'
-              : 'bg-white border-gray-200/80 hover:border-emerald-300'
-          }`}
-          title="Abrir histórico compacto de fretes finalizados e entregues"
-        >
+        <div className="bg-white rounded-2xl p-3.5 border border-gray-200/80 shadow-2xs flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200/60 flex items-center justify-center text-emerald-700 shrink-0">
             <CheckCircle2 className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[11px] font-semibold text-gray-500">Finalizados / Entregues</p>
+            <p className="text-[11px] font-semibold text-gray-500">Finalizados</p>
             <p className="text-xl font-black text-emerald-700 tabular-nums leading-tight">
               {stats.finalizados}
             </p>
           </div>
-        </button>
+        </div>
 
         <div className="bg-white rounded-2xl p-3.5 border border-gray-200/80 shadow-2xs flex items-center gap-3 col-span-2 lg:col-span-1">
           <div className="w-10 h-10 rounded-xl bg-red-50 border border-red-200/60 flex items-center justify-center text-[#E5252A] shrink-0">
@@ -1272,400 +1058,113 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         </div>
       </div>
 
-      {/* 3. FILTER BAR (CONTEXTUAL: ATIVOS vs FINALIZADOS) */}
-      {panelMode === 'ATIVOS' ? (
-        <div className="bg-white rounded-2xl p-3 border border-gray-200/80 shadow-2xs flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex flex-wrap items-center gap-2 flex-1">
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar protocolo, motorista, placa, localização..."
-                className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#F3F5F7] border border-gray-200 text-xs text-[#15191D] placeholder-gray-400 focus:outline-none focus:border-[#FFD400]"
-              />
-            </div>
+      {/* 3. FILTER BAR */}
+      <div className="bg-white rounded-2xl p-3 border border-gray-200/80 shadow-2xs flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 flex-1">
+          <div className="relative flex-1 min-w-[200px] max-w-xs">
+            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar protocolo, motorista, placa, localização..."
+              className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#F3F5F7] border border-gray-200 text-xs text-[#15191D] placeholder-gray-400 focus:outline-none focus:border-[#FFD400]"
+            />
+          </div>
 
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <User className="w-3.5 h-3.5 text-gray-500" />
-              <select
-                value={viewScope === 'MINE' ? 'MINE' : responsibleFilterId || 'TEAM'}
-                onChange={(e) => changeScopeFilter(e.target.value)}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="MINE">
-                  Meus fretes em monitoramento ({currentUser.name.split(' ')[0]})
-                </option>
-                {canViewTeam && <option value="TEAM">Todos os Operadores (Equipe)</option>}
-                {canViewTeam &&
-                  monitoramentoOperators.map((op) => (
-                    <option key={op.id} value={op.id}>
-                      Operador: {op.name}
-                    </option>
-                  ))}
-              </select>
-            </div>
-
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <select
-                value={stageFilter}
-                onChange={(e) => {
-                  setStageFilter(e.target.value);
-                  setActivePage(1);
-                }}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="TODOS">Etapa ativa: Todas</option>
-                {MONITORING_STAGES_ORDER.filter(
-                  (s) => s.id !== 'ENTREGUE' && s.id !== 'FINALIZADO'
-                ).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
+          <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
+            <User className="w-3.5 h-3.5 text-gray-500" />
+            <select
+              value={
+                viewScope === 'MINE' ? 'MINE' : responsibleFilterId || 'TEAM'
+              }
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'MINE') {
+                  setViewScope('MINE');
+                  setResponsibleFilterId('');
+                } else if (val === 'TEAM') {
+                  setViewScope('TEAM');
+                  setResponsibleFilterId('');
+                } else {
+                  setViewScope('TEAM');
+                  setResponsibleFilterId(val);
+                }
+              }}
+              className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
+            >
+              <option value="MINE">
+                Meus fretes em monitoramento ({currentUser.name.split(' ')[0]})
+              </option>
+              {canViewTeam && <option value="TEAM">Todos os Operadores (Equipe)</option>}
+              {canViewTeam &&
+                monitoramentoOperators.map((op) => (
+                  <option key={op.id} value={op.id}>
+                    Operador: {op.name}
                   </option>
                 ))}
-              </select>
-            </div>
-
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <Calendar className="w-3.5 h-3.5 text-gray-500" />
-              <select
-                value={periodFilter}
-                onChange={(e) => {
-                  setPeriodFilter(e.target.value as 'HOJE' | 'SEMANA' | 'MES' | 'TODOS');
-                  setActivePage(1);
-                }}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="TODOS">Todos os dias</option>
-                <option value="HOJE">Coletas de hoje</option>
-                <option value="SEMANA">Esta semana</option>
-                <option value="MES">Este mês</option>
-              </select>
-            </div>
+            </select>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setFinPage(1);
-                setPanelMode('FINALIZADOS');
-              }}
-              className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs cursor-pointer transition"
+          <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
+            <select
+              value={stageFilter}
+              onChange={(e) => setStageFilter(e.target.value)}
+              className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
             >
-              <Archive className="w-3.5 h-3.5" />
-              <span>Ver Finalizados</span>
-              <span className="ml-0.5 px-1.5 py-0.5 rounded-md bg-[#FFD400] text-[#080B0D] text-[10px] font-black tabular-nums">
-                {stats.finalizados}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void handleManualRefresh()}
-              className="inline-flex items-center gap-1.5 bg-[#F3F5F7] hover:bg-gray-200 text-[#15191D] text-xs font-bold px-3 py-2 rounded-xl border border-gray-200 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              <span>Atualizar</span>
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white rounded-2xl p-3 border border-emerald-200 shadow-2xs flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex flex-wrap items-center gap-2 flex-1">
-            <button
-              type="button"
-              onClick={() => setPanelMode('ATIVOS')}
-              className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] text-xs font-extrabold px-3.5 py-2 rounded-xl cursor-pointer transition"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Voltar aos Ativos</span>
-            </button>
-
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={finSearchInput}
-                onChange={(e) => setFinSearchInput(e.target.value)}
-                placeholder="Buscar protocolo, motorista, cliente, rota..."
-                className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#F3F5F7] border border-gray-200 text-xs text-[#15191D] placeholder-gray-400 focus:outline-none focus:border-[#FFD400]"
-              />
-            </div>
-
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <User className="w-3.5 h-3.5 text-gray-500" />
-              <select
-                value={viewScope === 'MINE' ? 'MINE' : responsibleFilterId || 'TEAM'}
-                onChange={(e) => changeScopeFilter(e.target.value)}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="MINE">
-                  Meus finalizados ({currentUser.name.split(' ')[0]})
+              <option value="TODOS">Etapa do Monitoramento: Todas</option>
+              {MONITORING_STAGES_ORDER.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
                 </option>
-                {canViewTeam && <option value="TEAM">Todos os Operadores (Equipe)</option>}
-                {canViewTeam &&
-                  monitoramentoOperators.map((op) => (
-                    <option key={op.id} value={op.id}>
-                      Operador: {op.name}
-                    </option>
-                  ))}
-              </select>
-            </div>
-
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <select
-                value={finStatusFilter}
-                onChange={(e) => {
-                  setFinStatusFilter(e.target.value as 'TODAS' | 'FINALIZADO' | 'ENTREGUE');
-                  setFinPage(1);
-                }}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="TODAS">Status: Finalizados e Entregues</option>
-                <option value="FINALIZADO">Somente Finalizado</option>
-                <option value="ENTREGUE">Somente Entregue</option>
-              </select>
-            </div>
-
-            <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
-              <Calendar className="w-3.5 h-3.5 text-gray-500" />
-              <select
-                value={finPeriodFilter}
-                onChange={(e) => {
-                  setFinPeriodFilter(e.target.value as 'HOJE' | 'SEMANA' | 'MES' | 'TODOS');
-                  setFinPage(1);
-                }}
-                className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
-              >
-                <option value="TODOS">Todo o período</option>
-                <option value="HOJE">Hoje</option>
-                <option value="SEMANA">Últimos 7 dias</option>
-                <option value="MES">Este mês</option>
-              </select>
-            </div>
+              ))}
+            </select>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void handleManualRefresh()}
-            className="inline-flex items-center gap-1.5 bg-[#F3F5F7] hover:bg-gray-200 text-[#15191D] text-xs font-bold px-3 py-2 rounded-xl border border-gray-200 cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Atualizar</span>
-          </button>
+          <div className="inline-flex items-center gap-1.5 bg-[#F3F5F7] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs">
+            <Calendar className="w-3.5 h-3.5 text-gray-500" />
+            <select
+              value={periodFilter}
+              onChange={(e) =>
+                setPeriodFilter(e.target.value as 'HOJE' | 'SEMANA' | 'MES' | 'TODOS')
+              }
+              className="bg-transparent font-semibold text-[#15191D] focus:outline-none cursor-pointer"
+            >
+              <option value="TODOS">Todos os dias</option>
+              <option value="HOJE">Coletas de hoje</option>
+              <option value="SEMANA">Esta semana</option>
+              <option value="MES">Este mês</option>
+            </select>
+          </div>
         </div>
-      )}
 
-      {/* 4. CARDS ATIVOS OU TABELA COMPACTA DE FINALIZADOS */}
+        <button
+          type="button"
+          onClick={() => void loadFreights()}
+          className="inline-flex items-center gap-1.5 bg-[#F3F5F7] hover:bg-gray-200 text-[#15191D] text-xs font-bold px-3 py-2 rounded-xl border border-gray-200 cursor-pointer"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <span>Atualizar</span>
+        </button>
+      </div>
+
+      {/* 4. CARDS E JANELA MODAL CLARA DE DETALHES DO FRETE */}
       <div className="fa-workspace">
-        {panelMode === 'ATIVOS' ? (
-          <div className="fa-card-region">
-            <div className="fa-list-meta">
-              <span>
-                {activeTotalMatched} frete(s) ativo(s) encontrado(s) • Página {activePage} de{' '}
-                {activeTotalPages}
-              </span>
-              <span>Monitoramento operacional ({FREIGHT_PAGE_SIZE} por página)</span>
-            </div>
-            {loading && freights.length === 0 ? (
-              <div className="fa-empty" role="status">
-                <RefreshCw className="h-7 w-7 animate-spin text-slate-300" />
-                Carregando fretes ativos em monitoramento...
-              </div>
-            ) : freights.length === 0 ? (
-              <div className="fa-empty">
-                <Truck className="h-9 w-9 text-slate-300" />
-                <strong className="text-sm text-slate-600">Nenhum frete ativo encontrado</strong>
-                <p>
-                  Fretes entregues ou finalizados ficam disponíveis em &quot;Ver Finalizados&quot;.
-                </p>
-              </div>
-            ) : (
-              <>
-                <div className="fa-card-grid">
-                  {freights.map((f) => (
-                    <FreightCard
-                      key={f.id}
-                      freight={f}
-                      userId={currentUser.id}
-                      selected={selectedFreight?.id === f.id}
-                      showPendingOrderBadge={isOperationalProfile}
-                      onOpen={(event) => {
-                        detailTriggerRef.current = event.currentTarget;
-                        handleSelectFreight(f);
-                      }}
-                    />
-                  ))}
-                </div>
-                {activeTotalPages > 1 && (
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 bg-white rounded-2xl border border-slate-200 px-4 py-3 shadow-2xs">
-                    <span className="text-xs font-semibold text-slate-600">
-                      Mostrando {(activePage - 1) * FREIGHT_PAGE_SIZE + 1}–
-                      {Math.min(activePage * FREIGHT_PAGE_SIZE, activeTotalMatched)} de{' '}
-                      {activeTotalMatched} ativos
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        disabled={activePage <= 1 || loading}
-                        onClick={() => setActivePage((p) => Math.max(1, p - 1))}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-                      >
-                        <ChevronLeft className="w-3.5 h-3.5" />
-                        Anterior
-                      </button>
-                      <span className="px-3 py-1.5 rounded-xl bg-[#080B0D] text-[#FFD400] text-xs font-black tabular-nums">
-                        {activePage} / {activeTotalPages}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={activePage >= activeTotalPages || loading}
-                        onClick={() => setActivePage((p) => Math.min(activeTotalPages, p + 1))}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-                      >
-                        Próxima
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        ) : (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-100 bg-slate-50/70">
-              <div className="flex items-center gap-2">
-                <Archive className="w-4 h-4 text-emerald-700" />
-                <h2 className="text-sm font-black text-[#15191D]">
-                  Histórico de Fretes Finalizados e Entregues
-                </h2>
-              </div>
-              <span className="text-xs font-semibold text-slate-500">
-                {finTotalMatched} registro(s) • Página {finPage} de {finTotalPages}
-              </span>
-            </div>
-
-            {loading && finalizedRows.length === 0 ? (
-              <div className="py-12 flex flex-col items-center justify-center gap-2 text-xs font-semibold text-slate-500">
-                <RefreshCw className="w-6 h-6 animate-spin text-slate-400" />
-                <span>Carregando fretes finalizados...</span>
-              </div>
-            ) : finalizedRows.length === 0 ? (
-              <div className="py-12 flex flex-col items-center justify-center gap-2 text-center px-4">
-                <CheckCircle2 className="w-8 h-8 text-slate-300" />
-                <p className="text-sm font-bold text-slate-600">
-                  Nenhum frete finalizado ou entregue encontrado
-                </p>
-                <p className="text-xs text-slate-400">
-                  Ajuste os filtros de busca ou período para visualizar outros registros históricos.
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
-                      <th className="py-2.5 px-3.5">Protocolo</th>
-                      <th className="py-2.5 px-3.5">Motorista</th>
-                      <th className="py-2.5 px-3.5">Cliente</th>
-                      <th className="py-2.5 px-3.5">Rota</th>
-                      <th className="py-2.5 px-3.5">Data de Entrega</th>
-                      <th className="py-2.5 px-3.5">Status</th>
-                      <th className="py-2.5 px-3.5 text-right">Ação</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {finalizedRows.map((f) => (
-                      <tr
-                        key={f.id}
-                        className="hover:bg-amber-50/40 transition-colors"
-                      >
-                        <td className="py-2.5 px-3.5 font-mono font-black text-[#080B0D] whitespace-nowrap">
-                          {f.protocol}
-                        </td>
-                        <td className="py-2.5 px-3.5 font-semibold text-slate-800 whitespace-nowrap">
-                          {f.motoristaNome || 'Não informado'}
-                        </td>
-                        <td className="py-2.5 px-3.5 font-bold text-[#15191D] max-w-[220px] truncate">
-                          {f.cliente}
-                        </td>
-                        <td className="py-2.5 px-3.5 text-slate-700 whitespace-nowrap">
-                          {f.origemCidadeUf} → {f.destinoCidadeUf}
-                        </td>
-                        <td className="py-2.5 px-3.5 text-slate-600 whitespace-nowrap tabular-nums">
-                          {f.entregaComprovadaEm || formatIsoDateBr(f.dataEntregaPrevistaIso)}
-                        </td>
-                        <td className="py-2.5 px-3.5 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-extrabold ${getMonitoringBadgeStyle(
-                              f.situacaoMonitoramento
-                            )}`}
-                          >
-                            {formatSituacaoMonitoramentoLabel(f.situacaoMonitoramento)}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              detailTriggerRef.current = event.currentTarget;
-                              handleSelectFreight(f);
-                            }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] text-[11px] font-extrabold cursor-pointer"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>Detalhes</span>
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {finTotalPages > 1 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 bg-slate-50/50">
-                <span className="text-xs font-semibold text-slate-600">
-                  Mostrando {(finPage - 1) * FREIGHT_PAGE_SIZE + 1}–
-                  {Math.min(finPage * FREIGHT_PAGE_SIZE, finTotalMatched)} de {finTotalMatched}{' '}
-                  registros
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    disabled={finPage <= 1 || loading}
-                    onClick={() => setFinPage((p) => Math.max(1, p - 1))}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                    Anterior
-                  </button>
-                  <span className="px-3 py-1.5 rounded-xl bg-[#080B0D] text-[#FFD400] text-xs font-black tabular-nums">
-                    {finPage} / {finTotalPages}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={finPage >= finTotalPages || loading}
-                    onClick={() => setFinPage((p) => Math.min(finTotalPages, p + 1))}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
-                  >
-                    Próxima
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        <div className="fa-card-region">
+          <div className="fa-list-meta"><span>{filteredFreights.length} frete(s) nos filtros atuais</span><span>Monitoramento operacional</span></div>
+          {loading && filteredFreights.length === 0 ? (
+            <div className="fa-empty" role="status"><RefreshCw className="h-7 w-7 animate-spin text-slate-300" />Carregando fretes em monitoramento...</div>
+          ) : filteredFreights.length === 0 ? (
+            <div className="fa-empty"><Truck className="h-9 w-9 text-slate-300" /><strong className="text-sm text-slate-600">Nenhum frete ativo encontrado</strong><p>Nenhum frete ativo encontrado para os filtros selecionados.</p></div>
+          ) : (
+            <div className="fa-card-grid">{filteredFreights.map(f => <FreightCard key={f.id} freight={f} selected={selectedFreight?.id === f.id} onOpen={event => {detailTriggerRef.current = event.currentTarget; handleSelectFreight(f);}} />)}</div>
+          )}
+        </div>
 
         {selectedFreight && (
           <CorporateModal
             isOpen={Boolean(selectedFreight)}
-            onClose={closeDetailModal}
+            onClose={() => setSelectedFreight(null)}
             maxWidth="5xl"
             icon={<Truck className="w-5 h-5" />}
             title={`Detalhes do Frete — ${selectedFreight.protocol}`}
@@ -1679,17 +1178,9 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                   {formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)}
                 </span>
                 {selectedFreight.empresaMarca &&
-                  (CARRIER_BRANDS as readonly string[]).includes(selectedFreight.empresaMarca) && (
+                  CARRIER_BRANDS.includes(selectedFreight.empresaMarca) && (
                     <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5">
                       <CarrierBrandLogo brand={selectedFreight.empresaMarca} size="sm" />
-                    </span>
-                  )}
-                {isOperationalProfile &&
-                  selectedFreight.ordemColetaPendente &&
-                  !selectedFreight.ordemCarregamentoNumero && (
-                    <span className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-extrabold text-amber-900">
-                      <Clock className="w-3 h-3" />
-                      Ordem de coleta pendente
                     </span>
                   )}
               </div>
@@ -1698,72 +1189,50 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
               selectedFreight.situacaoFinanceira
             )}`}
             headerRight={
-              selectedFreight.empresaMarca !== 'AXD' && (
-                <button
-                  type="button"
-                  onClick={() => setOrderModalFreight(selectedFreight)}
-                  className="hidden sm:inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-3 py-1.5 rounded-xl text-xs cursor-pointer shadow-2xs"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Ordem de Coleta</span>
-                </button>
-              )
+              <button
+                type="button"
+                onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                className="hidden sm:inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-3 py-1.5 rounded-xl text-xs cursor-pointer shadow-2xs"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Ordem de Coleta</span>
+              </button>
             }
             footer={
               <div className="flex flex-wrap items-center justify-between gap-2 w-full">
                 <div className="flex flex-wrap items-center gap-2">
-                  {selectedFreight.empresaMarca !== 'AXD' && (
-                    <button
-                      type="button"
-                      onClick={() => setOrderModalFreight(selectedFreight)}
-                      className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-100 text-[#15191D] border border-slate-300 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
-                    >
-                      <Printer className="w-3.5 h-3.5" />
-                      <span>Ordem de Coleta (PDF)</span>
-                    </button>
-                  )}
-                  {selectedFreight.situacaoMonitoramento !== 'FINALIZADO' &&
-                    selectedFreight.situacaoMonitoramento !== 'ENTREGUE' && (
-                      <button
-                        type="button"
-                        onClick={() => setShowReturnExpedicaoModal(true)}
-                        className="inline-flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-[#E5252A] border border-red-200 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Devolver à Expedição</span>
-                      </button>
-                    )}
-                  {canReopenSelected && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReopenTargetStage('NO_LOCAL_ENTREGA');
-                        setReopenReason('');
-                        setShowReopenModal(true);
-                      }}
-                      className="inline-flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Reabrir frete</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                    className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-100 text-[#15191D] border border-slate-300 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Ordem de Coleta (PDF)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowReturnExpedicaoModal(true)}
+                    className="inline-flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-[#E5252A] border border-red-200 font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Devolver à Expedição</span>
+                  </button>
                 </div>
                 <div className="flex items-center gap-2">
-                  {activeTab !== 'ACOMPANHAMENTO' &&
-                    selectedFreight.situacaoMonitoramento !== 'FINALIZADO' && (
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('ACOMPANHAMENTO')}
-                        className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-4 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
-                      >
-                        <Navigation className="w-3.5 h-3.5" />
-                        <span>Atualizar Etapa / Monitorar</span>
-                      </button>
-                    )}
+                  {activeTab !== 'ACOMPANHAMENTO' && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('ACOMPANHAMENTO')}
+                      className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffe033] text-[#080B0D] font-extrabold px-4 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
+                    >
+                      <Navigation className="w-3.5 h-3.5" />
+                      <span>Atualizar Etapa / Monitorar</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     data-detail-close
-                    onClick={closeDetailModal}
+                    onClick={() => setSelectedFreight(null)}
                     className="px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
                   >
                     Fechar
@@ -1914,32 +1383,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
 
                   <h3 className="pt-2 text-xs font-black text-slate-700">Operação do monitoramento</h3>
 
-                  {selectedFreight.situacaoMonitoramento === 'FINALIZADO' ? (
-                    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-2">
-                      <div className="flex items-center gap-2 text-emerald-900 font-black text-xs">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                        <span>Frete Finalizado — Registro Histórico Protegido</span>
-                      </div>
-                      <p className="text-xs text-emerald-900/90 leading-relaxed">
-                        Este frete foi concluído e permanece arquivado na lista de Finalizados. Caso seja necessária alguma correção ou reconferência, utilize a opção <strong>Reabrir frete</strong>.
-                      </p>
-                      {canReopenSelected && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setReopenTargetStage('NO_LOCAL_ENTREGA');
-                            setReopenReason('');
-                            setShowReopenModal(true);
-                          }}
-                          className="inline-flex items-center gap-1.5 bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] font-extrabold px-3.5 py-2 rounded-xl text-xs cursor-pointer"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Reabrir frete</span>
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <>
                   {/* Avançar Etapa do Monitoramento */}
                   <form
                     onSubmit={(e) => void handleAdvanceMonitoringStage(e)}
@@ -2079,16 +1522,14 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
 
                   {/* Botão Devolver à Expedição para Correção */}
                   <div className="flex items-center justify-between gap-2 pt-1">
-                    {selectedFreight.empresaMarca !== 'AXD' ? (
-                      <button
-                        type="button"
-                        onClick={() => setOrderModalFreight(selectedFreight)}
-                        className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-extrabold px-3 py-2 rounded-xl text-xs cursor-pointer"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>Ordem de Coleta (PDF)</span>
-                      </button>
-                    ) : <span />}
+                    <button
+                      type="button"
+                      onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                      className="inline-flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#15191D] font-extrabold px-3 py-2 rounded-xl text-xs cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>Ordem de Coleta (PDF)</span>
+                    </button>
 
                     <button
                       type="button"
@@ -2137,8 +1578,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                       </button>
                     </form>
                   )}
-                    </>
-                  )}
                 </div>
               )}
 
@@ -2150,16 +1589,14 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                       <p className="font-extrabold text-[#15191D] uppercase text-[11px]">
                         Dados Operacionais Recebidos da Expedição
                       </p>
-                      {selectedFreight.empresaMarca !== 'AXD' && (
-                        <button
-                          type="button"
-                          onClick={() => setOrderModalFreight(selectedFreight)}
-                          className="inline-flex items-center gap-1 bg-[#FFD400] text-[#080B0D] font-extrabold px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>Visualizar / Imprimir Ordem de Coleta</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => printIsolatedOrdemColeta(selectedFreight)}
+                        className="inline-flex items-center gap-1 bg-[#FFD400] text-[#080B0D] font-extrabold px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Imprimir Ordem de Coleta</span>
+                      </button>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
@@ -2251,17 +1688,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
 
               {/* TAB 3: COMPROVANTES E ANEXOS */}
               {activeTab === 'ANEXOS' && (
-                <div className="space-y-3">
-                  {selectedFreight.empresaMarca !== 'AXD' && (
-                    <button
-                      type="button"
-                      className="fa-details-order-button"
-                      onClick={() => setOrderModalFreight(selectedFreight)}
-                    >
-                      <Printer size={16} />
-                      Ordem de Coleta
-                    </button>
-                  )}
+                <div className="space-y-3"><button type="button" className="fa-details-order-button" onClick={()=>printIsolatedOrdemColeta(selectedFreight)}><Printer size={16}/>Ordem de Coleta</button>
                   <div className="bg-[#F8FAFC] p-3 rounded-xl border border-gray-200 space-y-2">
                     <p className="font-extrabold text-[#15191D]">
                       Anexar Comprovante de Entrega ou Documento
@@ -2552,152 +1979,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           </form>
         </div>
       )}
-
-      {/* =====================================================================
-          MODAL: REABRIR FRETE FINALIZADO OU ENTREGUE
-      ===================================================================== */}
-      {showReopenModal && selectedFreight && (
-        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
-          <form
-            onSubmit={handleReopenFreight}
-            className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-3"
-          >
-            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
-              <h3 className="text-sm font-black text-[#15191D]">
-                Reabrir Frete {selectedFreight.protocol}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowReopenModal(false)}
-                className="text-gray-400 hover:text-gray-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-xs text-gray-600">
-              Todo o histórico e comprovantes anteriores serão preservados. Informe o motivo da reabertura (mínimo 5 caracteres):
-            </p>
-            {selectedFreight.situacaoMonitoramento === 'FINALIZADO' && (
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                  Retornar para a etapa
-                </label>
-                <select
-                  value={reopenTargetStage}
-                  onChange={(e) => setReopenTargetStage(e.target.value as MonitoringFreightStatus)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs font-semibold bg-white"
-                >
-                  <option value="NO_LOCAL_ENTREGA">No local de entrega (painel ativo)</option>
-                  <option value="ENTREGUE">Entregue (pendente de conferência final)</option>
-                </select>
-              </div>
-            )}
-            <textarea
-              rows={3}
-              required
-              minLength={5}
-              value={reopenReason}
-              onChange={(e) => setReopenReason(e.target.value)}
-              placeholder="Ex.: Necessária reconferência do canhoto assinado..."
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs"
-            />
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowReopenModal(false)}
-                className="px-3.5 py-2 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-100 cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={actionBusy || reopenReason.trim().length < 5}
-                className="bg-[#080B0D] hover:bg-gray-800 text-[#FFD400] text-xs font-extrabold px-4 py-2 rounded-xl cursor-pointer disabled:opacity-50"
-              >
-                Confirmar Reabertura
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-      {orderModalFreight && (
-        <OrdemColetaModal
-          freight={orderModalFreight}
-          issuedByName={currentUser.name}
-          onClose={() => setOrderModalFreight(null)}
-        />
-      )}
-      <ImportFreightScriptModal
-        isOpen={isScriptModalOpen}
-        onClose={() => setIsScriptModalOpen(false)}
-        importDirectLabel="Importar para Meus Fretes"
-        onImportDirect={async (parsed: Partial<ParsedTrafficScript>) => {
-          const valorCobradoClienteCentavos =
-            parsed.valorFreteEmpresa && parsed.valorFreteEmpresa > 0
-              ? Math.round(parsed.valorFreteEmpresa * 100)
-              : 0;
-          const valorContratadoCentavos =
-            parsed.valorFreteMotorista && parsed.valorFreteMotorista > 0
-              ? Math.round(parsed.valorFreteMotorista * 100)
-              : 0;
-          const res = await apiCreateCommercialFreight({
-            empresaMarca:
-              parsed.empresaMarca === 'VL TRANSPORTES' || parsed.empresaMarca === 'RODOVAR'
-                ? parsed.empresaMarca
-                : 'RODOVAR',
-            unidadeOperacional:
-              parsed.unidadeOperacional ||
-              ((currentUser.location || 'BA - Salvador') as OperationalUnit),
-            cliente: (parsed.cliente || '').trim(),
-            clienteCnpj: (parsed.clienteCnpj || '').trim(),
-            clienteContato: (parsed.telefoneCliente || '').trim(),
-            origemCidadeUf: (parsed.origem || '').trim(),
-            enderecoColeta: (parsed.enderecoColeta || '').trim(),
-            destinoCidadeUf: (parsed.destino || '').trim(),
-            enderecoEntrega: (parsed.enderecoEntrega || '').trim(),
-            tipoCarga: (parsed.tipoCarga || '').trim(),
-            pesoKg: parsed.pesoKg || 0,
-            volumes: parsed.volumes || 0,
-            veiculoNecessario: (parsed.veiculoNecessario || '').trim(),
-            dataColetaIso: parsed.dataColetaIso || '',
-            janelaColetaInicio: '',
-            janelaColetaFim: '',
-            dataEntregaPrevistaIso: '',
-            janelaEntregaInicio: '',
-            janelaEntregaFim: '',
-            valorCobradoClienteCentavos,
-            valorContratadoCentavos,
-            condicoesComerciais: parsed.condicoesPagamento || '',
-            condicoesOperacionais: '',
-            condicoesPagamento: parsed.condicoesPagamento || '',
-            observacoes: parsed.observacoes || '',
-            comercialScriptRef: parsed.comercialResponsavel || '',
-            motoristaNome: parsed.motoristaNome || '',
-            motoristaCpf: parsed.motoristaCpf || '',
-            motoristaTelefone: parsed.motoristaTelefone || '',
-            emergenciaNome: parsed.emergenciaNome || '',
-            emergenciaTelefone: parsed.emergenciaTelefone || '',
-            placaVeiculo: parsed.placaVeiculo || '',
-            favorecidoPagamento: parsed.favorecido || '',
-            tipoChavePix: parsed.tipoChavePix || '',
-            chavePix: parsed.chavePix || '',
-            bancoPagamento: parsed.banco || '',
-            confirmAndSendToExpedicao: false,
-            idempotencyKey: `ativos-script-import-${currentUser.id}-${Date.now()}`,
-          });
-          if (!res.ok || !res.freight) {
-            throw new Error(res.error || 'Não foi possível importar o frete pelo script.');
-          }
-          await appQueryClient.invalidateQueries({ queryKey: freightQueryKeys.userRoot(currentUser.id) });
-          setToastMsg(
-            `Frete ${res.freight.protocol} importado para Meus Fretes — Comercial!`
-          );
-          setTimeout(() => setToastMsg(null), 5000);
-          if (onSwitchToComercial) {
-            onSwitchToComercial();
-          }
-        }}
-      />
     </div>
   );
 };

@@ -88,6 +88,18 @@ export const AVAILABLE_MODULES: ModulePermissionOption[] = [
     badgeCategory: 'Normas',
   },
   {
+    id: 'mensagens',
+    label: 'Mensagens',
+    description: 'Chat individual direto entre colaboradores.',
+    badgeCategory: 'Comunicação',
+  },
+  {
+    id: 'grupos',
+    label: 'Grupos',
+    description: 'Canais temáticos e operacionais da transportadora.',
+    badgeCategory: 'Comunicação',
+  },
+  {
     id: 'diretorio',
     label: 'Diretório de Funcionários',
     description: 'Lista de contatos, telefones e departamentos autorizados.',

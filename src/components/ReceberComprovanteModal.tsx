@@ -30,7 +30,6 @@ import {
 } from '../types';
 import { formatCurrencyBRL, formatFileSize, readFileAsDataUrl } from '../lib/freightDatabase';
 import { canAccessFinanceiroFreights, canConfirmFreightPayment } from '../lib/permissions';
-import { getAuthHeaders } from '../lib/serverApi';
 import {
   SharedReceiptDraft,
   clearSharedReceiptDraft,
@@ -101,7 +100,6 @@ export const ReceberComprovanteModal: React.FC<ReceberComprovanteModalProps> = (
     async function fetchUserIntents() {
       try {
         const res = await fetch('/api/pagamentos/intencoes', {
-          headers: getAuthHeaders(),
           credentials: 'include',
         });
         if (!res.ok) return;
@@ -367,9 +365,10 @@ trailer << /Root 1 0 R >>
     try {
       const res = await fetch('/api/pagamentos/comprovantes', {
         method: 'POST',
-        headers: getAuthHeaders({
+        headers: {
+          'Content-Type': 'application/json',
           'X-Idempotency-Key': idempotencyKey,
-        }),
+        },
         credentials: 'include',
         body: JSON.stringify({
           freightId: selectedFreight.id,
@@ -442,7 +441,7 @@ trailer << /Root 1 0 R >>
     try {
       const res = await fetch(`/api/pagamentos/comprovantes/${savedReceipt.id}/confirmar`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
           transactionCode: transactionCode.trim() || savedReceipt.transactionCode,

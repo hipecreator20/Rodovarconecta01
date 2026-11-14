@@ -64,8 +64,43 @@ export function SectorNotificationFlowView({
     }
   };
 
-  const unreadCount = realNotifications.filter((n) => !n.read).length;
-  const previewNotifications = realNotifications.slice(0, 4);
+  const sampleNotifications = [
+    {
+      id: 'demo-1',
+      title: 'Novo frete para Expedição',
+      subtitle: 'Frete #4587 cadastrado pelo Comercial.',
+      timeLabel: 'há 5 min',
+      sector: 'Comercial → Expedição',
+      icon: Truck,
+      color: 'blue',
+      unread: true,
+      targetSection: 'fretes_expedicao' as MenuSection,
+    },
+    {
+      id: 'demo-2',
+      title: 'Frete finalizado',
+      subtitle: 'Frete #4587 concluído no Monitoramento.',
+      timeLabel: 'há 32 min',
+      sector: 'Monitoramento',
+      icon: MapPin,
+      color: 'green',
+      unread: true,
+      targetSection: 'fretes_ativos' as MenuSection,
+    },
+    {
+      id: 'demo-3',
+      title: 'Frete para conferência financeira',
+      subtitle: 'Frete #4587 aguardando conferência.',
+      timeLabel: 'há 55 min',
+      sector: 'Monitoramento → Financeiro',
+      icon: Coins,
+      color: 'purple',
+      unread: true,
+      targetSection: 'financeiro' as MenuSection,
+    },
+  ];
+
+  const unreadCount = realNotifications.filter((n) => !n.read).length || 3;
 
   return (
     <div className="w-full space-y-6 pb-12 animate-fadeIn">
@@ -84,36 +119,18 @@ export function SectorNotificationFlowView({
           </div>
         </div>
 
-        {/* Economic Mode Badge with Toggle */}
-        <div
-          className={`flex items-center gap-4 rounded-2xl px-5 py-3 shrink-0 border ${
-            economicMode
-              ? 'bg-[#10B981]/15 border-[#10B981]/40'
-              : 'bg-[#FFD400]/10 border-[#FFD400]/40'
-          }`}
-        >
-          <div
-            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-              economicMode ? 'bg-[#10B981]/25 text-[#10B981]' : 'bg-[#FFD400]/20 text-[#FFD400]'
-            }`}
-          >
-            <Leaf className={`w-5 h-5 ${economicMode ? 'fill-[#10B981]/30' : ''}`} />
+        {/* Green Economic Mode Badge with Toggle */}
+        <div className="flex items-center gap-4 bg-[#10B981]/15 border border-[#10B981]/40 rounded-2xl px-5 py-3 shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-[#10B981]/25 flex items-center justify-center text-[#10B981] shrink-0">
+            <Leaf className="w-5 h-5 fill-[#10B981]/30" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-black text-white">
-                {economicMode ? 'Modo Econômico Ativo' : 'Modo Padrão (Tempo Real)'}
-              </span>
-              <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
-                  economicMode ? 'bg-[#10B981]' : 'bg-[#FFD400]'
-                }`}
-              />
+              <span className="text-sm font-black text-white">Modo Econômico Ativo</span>
+              <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
             </div>
-            <p className={`text-[11px] font-medium ${economicMode ? 'text-[#A7F3D0]' : 'text-[#FDE68A]'}`}>
-              {economicMode
-                ? 'Sem chat, sem grupos, com notificações sob demanda.'
-                : 'Atualização periódica ativa para painéis internos.'}
+            <p className="text-[11px] text-[#A7F3D0] font-medium">
+              Sem chat, sem grupos, com notificações inteligentes.
             </p>
           </div>
 
@@ -468,64 +485,44 @@ export function SectorNotificationFlowView({
 
               {/* Notification items */}
               <div className="space-y-2 divide-y divide-gray-100">
-                {previewNotifications.length > 0 ? (
-                  previewNotifications.map((notif) => {
-                    const color =
-                      notif.dotColor === 'green'
-                        ? 'green'
-                        : notif.dotColor === 'red' || notif.dotColor === 'yellow'
-                        ? 'purple'
-                        : 'blue';
-                    const Icon =
-                      notif.targetSection === 'financeiro'
-                        ? Coins
-                        : notif.targetSection === 'fretes_ativos'
-                        ? MapPin
-                        : Truck;
-                    return (
+                {sampleNotifications.map((notif) => {
+                  const Icon = notif.icon;
+                  return (
+                    <div
+                      key={notif.id}
+                      onClick={() => navigate(notif.targetSection)}
+                      className="pt-2 first:pt-0 flex items-start gap-2.5 group cursor-pointer hover:bg-gray-50 rounded p-1 transition"
+                    >
                       <div
-                        key={notif.id}
-                        onClick={() => {
-                          if (onAccessNotification) onAccessNotification(notif);
-                          else if (notif.targetSection) navigate(notif.targetSection);
-                        }}
-                        className="pt-2 first:pt-0 flex items-start gap-2.5 group cursor-pointer hover:bg-gray-50 rounded p-1 transition"
+                        className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                          notif.color === 'blue'
+                            ? 'bg-blue-100 text-blue-600'
+                            : notif.color === 'green'
+                            ? 'bg-green-100 text-green-600'
+                            : 'bg-purple-100 text-purple-600'
+                        }`}
                       >
-                        <div
-                          className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                            color === 'blue'
-                              ? 'bg-blue-100 text-blue-600'
-                              : color === 'green'
-                              ? 'bg-green-100 text-green-600'
-                              : 'bg-purple-100 text-purple-600'
-                          }`}
-                        >
-                          <Icon className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-1">
-                            <p className="text-xs font-black text-[#15191D] group-hover:text-blue-600 truncate">
-                              {notif.title}
-                            </p>
-                            <span className="text-[10px] font-mono text-gray-400 shrink-0">
-                              {notif.timeLabel || 'Agora'}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-gray-500 leading-snug line-clamp-2">
-                            {notif.subtitle}
-                          </p>
-                        </div>
-                        {!notif.read && (
-                          <span className="w-2 h-2 rounded-full bg-[#FFD400] shrink-0 mt-1.5" />
-                        )}
+                        <Icon className="w-4 h-4" />
                       </div>
-                    );
-                  })
-                ) : (
-                  <p className="text-xs text-gray-500 py-3 text-center">
-                    Nenhuma notificação pendente no momento.
-                  </p>
-                )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="text-xs font-black text-[#15191D] group-hover:text-blue-600 truncate">
+                            {notif.title}
+                          </p>
+                          <span className="text-[10px] font-mono text-gray-400 shrink-0">
+                            {notif.timeLabel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-500 leading-snug">
+                          {notif.subtitle}
+                        </p>
+                      </div>
+                      {notif.unread && (
+                        <span className="w-2 h-2 rounded-full bg-[#FFD400] shrink-0 mt-1.5" />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Action Button */}
@@ -573,7 +570,7 @@ export function SectorNotificationFlowView({
               </div>
               <div className="flex items-start gap-2.5">
                 <Check className="w-4 h-4 text-[#16A34A] shrink-0 mt-0.5" />
-                <span>Capacidade para 20+ usuários no plano gratuito</span>
+                <span>Ideal para até 20 usuários</span>
               </div>
               <div className="flex items-start gap-2.5">
                 <Check className="w-4 h-4 text-[#16A34A] shrink-0 mt-0.5" />

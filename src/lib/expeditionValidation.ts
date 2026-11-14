@@ -16,11 +16,6 @@ export function effectiveExpeditionChecklist(f:UnifiedFreightRecord){
 }
 export function expeditionChecklistCount(f:UnifiedFreightRecord){const c=effectiveExpeditionChecklist(f);return [c.motoristaConfirmado,c.veiculoConfirmado,c.condicoesConferidas&&c.documentosConferidos,c.videochamadaRealizada,c.ordemColetaEnviadaMotorista].filter(Boolean).length;}
 
-export function canReleaseWithCollectionOrderOrPending(f:UnifiedFreightRecord):boolean {
- const c=effectiveExpeditionChecklist(f);
- return Boolean((f.ordemCarregamentoNumero&&c.ordemColetaEnviadaMotorista)||f.ordemColetaPendente);
-}
-
 export function expeditionVerificationIssue(f:UnifiedFreightRecord,key:string):{message:string;field:string}|null {
  if(key==='MOTORISTA'){
   if(String(f.motoristaNome||'').trim().length<3)return {message:'Informe o nome completo do motorista.',field:'exp-driver-name'};
@@ -36,4 +31,3 @@ export function expeditionVerificationIssue(f:UnifiedFreightRecord,key:string):{
  if(key==='ORDEM_ENVIADA'&&!f.ordemCarregamentoNumero)return {message:'Gere a Ordem de Coleta, envie ao motorista e depois confirme o envio.',field:''};
  return null;
 }
-

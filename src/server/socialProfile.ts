@@ -237,7 +237,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
   });
 
   // 2. PUT /api/profile/social - Update social profile
-  app.put('/api/profile/social', guard, async (req: any, res) => {
+  app.put('/api/profile/social', guard, (req: any, res) => {
     const sessionUser = req.sessionUser;
     const {
       bio,
@@ -282,7 +282,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
 
     profile.updatedAt = new Date().toISOString();
     persistState();
-    await persistSocialProfileToNeon(profile).catch(() => {});
+    void persistSocialProfileToNeon(profile);
 
     res.json({
       ok: true,
@@ -335,7 +335,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     profile.updatedAt = new Date().toISOString();
 
     persistState();
-    await persistSocialProfileToNeon(profile).catch(() => {});
+    void persistSocialProfileToNeon(profile);
 
     res.json({
       ok: true,

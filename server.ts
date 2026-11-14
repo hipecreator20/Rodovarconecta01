@@ -1,10 +1,9 @@
-import 'dotenv/config';
 import { registerCustomerCovers } from './src/server/customerCovers.ts';
 import { registerDrivers } from './src/server/drivers.ts';
 import { registerAgenda, hydrateAgendaFromPayload } from './src/server/agenda.ts';
 import { registerMural } from './src/server/mural.ts';
-import { registerExternalRh, hydrateExternalRhFromPayload } from './src/server/externalRh.ts';
-import { hydrateMuralPollsFromPayload } from './src/server/muralPolls.ts';
+import { registerChats } from './src/server/chats.ts';
+import { registerExternalRh } from './src/server/externalRh.ts';
 import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
 import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
@@ -16,24 +15,9 @@ import {
   isIsolatedTestEnv,
   testNeonConnection,
   initializeNeonSchema,
-  ensureNeonReady,
   getNeonHealthStats,
   persistAuditLogToNeon,
-  loadAuditLogsFromNeon,
   persistUserToNeon,
-  loadAllUsersFromNeon,
-  persistAccessPolicyToNeon,
-  loadAccessPolicyFromNeon,
-  persistLoginLockToNeon,
-  loadLoginLocksFromNeon,
-  persistPasswordResetTokenToNeon,
-  markUserPasswordResetTokensUsedInNeon,
-  loadPasswordResetTokensFromNeon,
-  persistAccessDecisionToNeon,
-  loadAccessDecisionsFromNeon,
-  persistSessionRevocationToNeon,
-  persistUserSessionsRevocationToNeon,
-  loadSessionRevocationsFromNeon,
   persistStateSnapshotToNeon,
   loadStateSnapshotFromNeon,
   fetchNeonStateTimestamps,
@@ -43,8 +27,6 @@ import {
   loadSystemConfigFromNeon,
   persistEconomicModeToNeon,
   loadEconomicModeFromNeon,
-  hasPendingNeonWrites,
-  flushPendingNeonWrites,
 } from './neon.ts';
 import { resolveDataRoot } from './src/server/dataRoot.ts';
 import express from 'express';
@@ -1099,56 +1081,28 @@ function loadOrInitDatabase(): ServerDatabase {
     }
   }
 
-  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
-    console.warn(
-      'Local DB seed absent in serverless/Neon environment; booting empty skeleton until Neon sync.'
-    );
-    return {
-      users: [],
-      loginLocks: {},
-      sessions: {},
-      passwordResetTokens: [],
-      accessDecisions: [],
-      auditLogs: [],
-      systemConfig: getDefaultSystemConfig(),
-      accessPolicy: {
-        protectedAdminUid: 'emp-admin-master',
-        authorizedUids: [],
-        version: 1,
-      },
-    };
-  }
-
   throw new Error('Banco ausente ou inválido. Restaure o banco existente; criação automática de contas desabilitada.');
 }
 
-function saveLocalDbFile(db: ServerDatabase): void {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
-    fs.renameSync(tmpFile, DB_FILE_PATH);
-  } catch (err) {
-    console.warn('saveLocalDbFile notice:', (err as Error).message);
-  }
-}
-
 function saveDatabase(db: ServerDatabase): void {
-  saveLocalDbFile(db);
-
-  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
-    return;
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
+  const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
+  fs.renameSync(tmpFile, DB_FILE_PATH);
 
-  // Asynchronous replication of lean core operational state to Neon PostgreSQL
-  // (Heavy modules like mural, drivers and customerCovers are replicated in dedicated snapshots)
+  // Asynchronous replication of full operational core state to Neon PostgreSQL
+  const rawDb = db as any;
   void persistStateSnapshotToNeon('rodovar-core-state', {
     users: db.users,
     accessPolicy: db.accessPolicy,
     archivedUsers: db.archivedUsers,
     accessDecisions: db.accessDecisions,
+    mural: rawDb.mural,
+    drivers: rawDb.drivers,
+    driverAudit: rawDb.driverAudit,
+    customerCovers: rawDb.customerCovers,
     systemConfig: db.systemConfig,
     updatedAtIso: new Date().toISOString(),
   });
@@ -1160,383 +1114,103 @@ function saveDatabase(db: ServerDatabase): void {
   });
 }
 
-async function saveDatabaseAsync(db: ServerDatabase): Promise<void> {
-  saveLocalDbFile(db);
-  if ((!db.users || db.users.length === 0) && isNeonConfigured && !initialNeonBootDone) {
-    return;
-  }
-  await Promise.allSettled([
-    persistStateSnapshotToNeon('rodovar-core-state', {
-      users: db.users,
-      accessPolicy: db.accessPolicy,
-      archivedUsers: db.archivedUsers,
-      accessDecisions: db.accessDecisions,
-      systemConfig: db.systemConfig,
-      updatedAtIso: new Date().toISOString(),
-    }),
-    persistStateSnapshotToNeon('rodovar-server-db', {
-      systemConfig: db.systemConfig,
-      accessPolicy: db.accessPolicy,
-      userCount: db.users?.length,
-      updatedAt: new Date().toISOString(),
-    }),
-  ]);
-}
-
-function saveMuralState(db: ServerDatabase): void {
-  saveLocalDbFile(db);
-  const rawDb = db as any;
-  void persistStateSnapshotToNeon('rodovar-mural-state', rawDb.mural);
-}
-
-async function saveMuralStateAsync(db: ServerDatabase): Promise<void> {
-  saveLocalDbFile(db);
-  const rawDb = db as any;
-  await persistStateSnapshotToNeon('rodovar-mural-state', rawDb.mural).catch(() => {});
-}
-
-function saveDriversState(db: ServerDatabase): void {
-  saveLocalDbFile(db);
-  const rawDb = db as any;
-  void persistStateSnapshotToNeon('rodovar-drivers-state', {
-    drivers: rawDb.drivers,
-    driverAudit: rawDb.driverAudit,
-    updatedAtIso: new Date().toISOString(),
-  });
-}
-
-function saveCustomerCoversState(db: ServerDatabase): void {
-  saveLocalDbFile(db);
-  const rawDb = db as any;
-  void persistStateSnapshotToNeon('rodovar-covers-state', {
-    customerCovers: rawDb.customerCovers,
-    updatedAtIso: new Date().toISOString(),
-  });
-}
-
-async function saveCustomerCoversStateAsync(db: ServerDatabase): Promise<void> {
-  saveLocalDbFile(db);
-  const rawDb = db as any;
-  await persistStateSnapshotToNeon('rodovar-covers-state', {
-    customerCovers: rawDb.customerCovers,
-    updatedAtIso: new Date().toISOString(),
-  }).catch(() => {});
-}
-
 let dbState: ServerDatabase = loadOrInitDatabase();
 
 const localNeonTimestamps: Record<string, number> = {};
 let lastNeonSyncCheckMs = 0;
-let lastFreightNeonSyncCheckMs = 0;
-let activeNeonSyncPromise: Promise<boolean> | null = null;
-let activeFreightNeonSyncPromise: Promise<boolean> | null = null;
-let initialNeonBootDone = false;
-let initialNeonBootPromise: Promise<void> | null = null;
-let cachedEconomicMode: { value: boolean; fetchedAtMs: number } | null = null;
+let activeNeonSyncPromise: Promise<void> | null = null;
 
-async function ensureNeonBootstrapped(): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || (initialNeonBootDone && dbState.users.length > 0)) return;
-  if (initialNeonBootPromise) return initialNeonBootPromise;
-  initialNeonBootPromise = (async () => {
-    try {
-      await ensureNeonReady();
-      const syncOk = await syncAllModulesFromNeonIfNeeded(true);
-      if (syncOk && dbState.users.length > 0) {
-        initialNeonBootDone = true;
-      }
-    } catch (err) {
-      console.warn('Neon bootstrap notice:', (err as Error).message);
-    } finally {
-      initialNeonBootPromise = null;
-    }
-  })();
-  return initialNeonBootPromise;
-}
-
-async function syncAllModulesFromNeonIfNeeded(force = false): Promise<boolean> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
+async function syncAllModulesFromNeonIfNeeded(force = false): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv()) return;
   const now = Date.now();
-  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
-  const minCooldownMs = force
-    ? 0
-    : isVercelEnv
-      ? cachedEconomicMode?.value
-        ? 2500
-        : 1000
-      : cachedEconomicMode?.value
-        ? 10000
-        : 5000;
-  if (!force && now - lastNeonSyncCheckMs < minCooldownMs) return true;
+  if (!force && now - lastNeonSyncCheckMs < 1500) return;
   if (activeNeonSyncPromise) return activeNeonSyncPromise;
 
   activeNeonSyncPromise = (async () => {
     try {
       lastNeonSyncCheckMs = Date.now();
       const remoteTs = await fetchNeonStateTimestamps();
+      if (!remoteTs || Object.keys(remoteTs).length === 0) return;
 
       const shouldPull = (key: string) =>
         Boolean(remoteTs[key] && (force || localNeonTimestamps[key] !== remoteTs[key]));
 
-      const tasks: Promise<void>[] = [];
-
-      if (force || shouldPull('rodovar-core-state')) {
-        tasks.push(
-          (async () => {
-            const [
-              neonUsers,
-              neonPolicy,
-              neonLocks,
-              neonTokens,
-              neonDecisions,
-              neonAuditLogs,
-              neonRevocations,
-              coreSnap,
-            ] = await Promise.all([
-              loadAllUsersFromNeon(),
-              loadAccessPolicyFromNeon(),
-              loadLoginLocksFromNeon(),
-              loadPasswordResetTokensFromNeon(),
-              loadAccessDecisionsFromNeon(100),
-              loadAuditLogsFromNeon(150),
-              loadSessionRevocationsFromNeon(),
-              loadStateSnapshotFromNeon<any>('rodovar-core-state'),
-            ]);
-
-            if (Array.isArray(neonUsers) && neonUsers.length > 0) {
-              dbState.users = neonUsers;
+      if (shouldPull('rodovar-core-state')) {
+        const coreSnap = await loadStateSnapshotFromNeon<any>('rodovar-core-state');
+        const core = coreSnap?.payload;
+        if (core && typeof core === 'object') {
+          if (Array.isArray(core.users) && core.users.length > 0) dbState.users = core.users;
+          if (core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
+          if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
+          if (Array.isArray(core.accessDecisions)) dbState.accessDecisions = core.accessDecisions;
+          if (Array.isArray(core.mural)) (dbState as any).mural = core.mural;
+          if (Array.isArray(core.drivers)) (dbState as any).drivers = core.drivers;
+          if (Array.isArray(core.driverAudit)) (dbState as any).driverAudit = core.driverAudit;
+          if (core.customerCovers && typeof core.customerCovers === 'object') {
+            (dbState as any).customerCovers = core.customerCovers;
+          }
+          if (
+            core.systemConfig &&
+            typeof core.systemConfig.revision === 'number' &&
+            core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
+          ) {
+            if (core.systemConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+              core.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
             }
-            if (neonPolicy) {
-              dbState.accessPolicy = neonPolicy;
-            }
-            if (neonLocks && Object.keys(neonLocks).length > 0) {
-              dbState.loginLocks = { ...dbState.loginLocks, ...neonLocks };
-            }
-            if (Array.isArray(neonTokens) && neonTokens.length > 0) {
-              dbState.passwordResetTokens = neonTokens;
-            }
-            if (Array.isArray(neonDecisions) && neonDecisions.length > 0) {
-              dbState.accessDecisions = neonDecisions;
-            }
-            if (Array.isArray(neonAuditLogs) && neonAuditLogs.length > 0) {
-              dbState.auditLogs = neonAuditLogs;
-            }
-            if (neonRevocations) {
-              for (const sid of neonRevocations.revokedSessions) {
-                revokedSessionIds.add(sid);
-              }
-              for (const [uid, ts] of Object.entries(neonRevocations.userRevocations)) {
-                revokedUserAfterMap.set(uid, ts);
-              }
-            }
-
-            const core = coreSnap?.payload;
-            if (core && typeof core === 'object') {
-              if (
-                (!Array.isArray(neonUsers) || neonUsers.length === 0) &&
-                Array.isArray(core.users) &&
-                core.users.length > 0
-              ) {
-                dbState.users = core.users;
-              }
-              if (!neonPolicy && core.accessPolicy) dbState.accessPolicy = core.accessPolicy;
-              if (Array.isArray(core.archivedUsers)) dbState.archivedUsers = core.archivedUsers;
-              if (
-                (!Array.isArray(neonDecisions) || neonDecisions.length === 0) &&
-                Array.isArray(core.accessDecisions)
-              ) {
-                dbState.accessDecisions = core.accessDecisions;
-              }
-              // Backward compatibility if dedicated keys do not exist yet
-              if (!remoteTs['rodovar-mural-state'] && core.mural) {
-                (dbState as any).mural = core.mural;
-              }
-              if (!remoteTs['rodovar-drivers-state'] && Array.isArray(core.drivers)) {
-                (dbState as any).drivers = core.drivers;
-              }
-              if (!remoteTs['rodovar-drivers-state'] && Array.isArray(core.driverAudit)) {
-                (dbState as any).driverAudit = core.driverAudit;
-              }
-              if (!remoteTs['rodovar-covers-state'] && core.customerCovers && typeof core.customerCovers === 'object') {
-                (dbState as any).customerCovers = core.customerCovers;
-              }
-              if (
-                core.systemConfig &&
-                typeof core.systemConfig.revision === 'number' &&
-                core.systemConfig.revision >= (dbState.systemConfig?.revision || 0)
-              ) {
-                if (core.systemConfig.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
-                  core.systemConfig.topHeader.imageUrl = '/assets/header-sunset.jpg';
-                }
-                dbState.systemConfig = core.systemConfig;
-              }
-            }
-            if (remoteTs['rodovar-core-state']) {
-              localNeonTimestamps['rodovar-core-state'] = remoteTs['rodovar-core-state'];
-            }
-          })()
-        );
-      }
-
-      if (shouldPull('rodovar-mural-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-mural-state').then((snap) => {
-            if (snap?.payload) (dbState as any).mural = snap.payload;
-            localNeonTimestamps['rodovar-mural-state'] = remoteTs['rodovar-mural-state'];
-          })
-        );
-      }
-
-      if (shouldPull('rodovar-drivers-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-drivers-state').then((snap) => {
-            if (snap?.payload && typeof snap.payload === 'object') {
-              if (Array.isArray(snap.payload.drivers)) (dbState as any).drivers = snap.payload.drivers;
-              if (Array.isArray(snap.payload.driverAudit)) (dbState as any).driverAudit = snap.payload.driverAudit;
-            }
-            localNeonTimestamps['rodovar-drivers-state'] = remoteTs['rodovar-drivers-state'];
-          })
-        );
-      }
-
-      if (shouldPull('rodovar-covers-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-covers-state').then((snap) => {
-            if (snap?.payload?.customerCovers && typeof snap.payload.customerCovers === 'object') {
-              (dbState as any).customerCovers = snap.payload.customerCovers;
-            }
-            localNeonTimestamps['rodovar-covers-state'] = remoteTs['rodovar-covers-state'];
-          })
-        );
-      }
-
-      if (shouldPull('rodovar-mural-polls')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-mural-polls').then((snap) => {
-            if (snap?.payload) hydrateMuralPollsFromPayload(snap.payload);
-            localNeonTimestamps['rodovar-mural-polls'] = remoteTs['rodovar-mural-polls'];
-          })
-        );
-      }
-
-      if (shouldPull('rodovar-external-rh')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-external-rh').then((snap) => {
-            if (snap?.payload) hydrateExternalRhFromPayload(snap.payload);
-            localNeonTimestamps['rodovar-external-rh'] = remoteTs['rodovar-external-rh'];
-          })
-        );
+            dbState.systemConfig = core.systemConfig;
+          }
+        }
+        localNeonTimestamps['rodovar-core-state'] = remoteTs['rodovar-core-state'];
       }
 
       if (shouldPull('rodovar-system-config')) {
-        tasks.push(
-          loadSystemConfigFromNeon().then((neonCfg) => {
-            if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
-              if (neonCfg.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
-                neonCfg.topHeader.imageUrl = '/assets/header-sunset.jpg';
-              }
-              dbState.systemConfig = neonCfg;
-            }
-            localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
-          })
-        );
+        const neonCfg = await loadSystemConfigFromNeon();
+        if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
+          if (neonCfg.topHeader?.imageUrl === '/assets/banner-rodovar-conecta-highway.png') {
+            neonCfg.topHeader.imageUrl = '/assets/header-sunset.jpg';
+          }
+          dbState.systemConfig = neonCfg;
+        }
+        localNeonTimestamps['rodovar-system-config'] = remoteTs['rodovar-system-config'];
       }
 
       if (shouldPull('rodovar-freights-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-freights-state').then((freightsSnap) => {
-            if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
-            localNeonTimestamps['rodovar-freights-state'] = remoteTs['rodovar-freights-state'];
-          })
-        );
+        const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
+        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
+        localNeonTimestamps['rodovar-freights-state'] = remoteTs['rodovar-freights-state'];
       }
 
       if (shouldPull('rodovar-payments-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-payments-state').then((paymentsSnap) => {
-            if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
-            localNeonTimestamps['rodovar-payments-state'] = remoteTs['rodovar-payments-state'];
-          })
-        );
+        const paymentsSnap = await loadStateSnapshotFromNeon<any>('rodovar-payments-state');
+        if (paymentsSnap?.payload) hydratePaymentReceiptsFromPayload(paymentsSnap.payload);
+        localNeonTimestamps['rodovar-payments-state'] = remoteTs['rodovar-payments-state'];
       }
 
       if (shouldPull('rodovar-requests-state')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-requests-state').then((requestsSnap) => {
-            if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
-            localNeonTimestamps['rodovar-requests-state'] = remoteTs['rodovar-requests-state'];
-          })
-        );
+        const requestsSnap = await loadStateSnapshotFromNeon<any>('rodovar-requests-state');
+        if (requestsSnap?.payload) hydrateRequestQueueFromPayload(requestsSnap.payload);
+        localNeonTimestamps['rodovar-requests-state'] = remoteTs['rodovar-requests-state'];
       }
 
       if (shouldPull('rodovar-agenda')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-agenda').then((agendaSnap) => {
-            if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
-            localNeonTimestamps['rodovar-agenda'] = remoteTs['rodovar-agenda'];
-          })
-        );
+        const agendaSnap = await loadStateSnapshotFromNeon<any>('rodovar-agenda');
+        if (agendaSnap?.payload) hydrateAgendaFromPayload(agendaSnap.payload);
+        localNeonTimestamps['rodovar-agenda'] = remoteTs['rodovar-agenda'];
       }
 
       if (shouldPull('rodovar-social')) {
-        tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-social').then((socialSnap) => {
-            if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
-            localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
-          })
-        );
+        const socialSnap = await loadStateSnapshotFromNeon<any>('rodovar-social');
+        if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+        localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
       }
-
-      if (tasks.length > 0) {
-        await Promise.all(tasks);
-      }
-      return true;
-    } catch (err) {
-      console.warn('Neon syncAll notice:', (err as Error).message);
-      return false;
+    } catch {
+      // Non-blocking fallback to in-memory state
     } finally {
       activeNeonSyncPromise = null;
     }
   })();
 
   return activeNeonSyncPromise;
-}
-
-async function syncFreightsOnlyFromNeonIfNeeded(force = false): Promise<boolean> {
-  if (!isNeonConfigured || isIsolatedTestEnv()) return true;
-  const now = Date.now();
-  const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
-  const minCooldownMs = force
-    ? 0
-    : isVercelEnv
-      ? cachedEconomicMode?.value
-        ? 2500
-        : 1000
-      : cachedEconomicMode?.value
-        ? 15000
-        : 8000;
-  if (!force && now - lastFreightNeonSyncCheckMs < minCooldownMs) return true;
-  if (activeFreightNeonSyncPromise) return activeFreightNeonSyncPromise;
-
-  activeFreightNeonSyncPromise = (async () => {
-    try {
-      lastFreightNeonSyncCheckMs = Date.now();
-      const remoteTs = await fetchNeonStateTimestamps();
-      const freightTs = remoteTs['rodovar-freights-state'];
-      if (freightTs && (force || localNeonTimestamps['rodovar-freights-state'] !== freightTs)) {
-        const freightsSnap = await loadStateSnapshotFromNeon<any>('rodovar-freights-state');
-        if (freightsSnap?.payload) hydrateUnifiedFreightsFromPayload(freightsSnap.payload);
-        localNeonTimestamps['rodovar-freights-state'] = freightTs;
-      }
-      return true;
-    } catch (err) {
-      console.warn('Neon syncFreights notice:', (err as Error).message);
-      return false;
-    } finally {
-      activeFreightNeonSyncPromise = null;
-    }
-  })();
-
-  return activeFreightNeonSyncPromise;
 }
 
 function resolveUserAvatarUrl(user: ServerUserRecord, config: SystemConfig): string {
@@ -1587,12 +1261,10 @@ function appendAuditLog(
 ) {
   const now = new Date();
   const logId = `aud-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-  const timestampIso = now.toISOString();
-  const timestampFormatted = now.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   dbState.auditLogs.unshift({
     id: logId,
-    timestampIso,
-    timestampFormatted,
+    timestampIso: now.toISOString(),
+    timestampFormatted: now.toLocaleString('pt-BR'),
     actorId,
     actorName,
     actorRole,
@@ -1609,12 +1281,9 @@ function appendAuditLog(
     id: logId,
     actorId,
     actorName,
-    actorRole,
     action,
     details,
     ip,
-    timestampIso,
-    timestampFormatted,
   });
 }
 
@@ -1698,30 +1367,8 @@ function countActiveAdmins(): number {
   ).length;
 }
 
-const rawSessionSecret = (process.env.SESSION_SECRET || '').trim();
-let STATELESS_SESSION_SECRET = rawSessionSecret;
-if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
-  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
-    const seedMaterial = (
-      process.env.DATABASE_URL ||
-      process.env.POSTGRES_URL ||
-      process.env.POSTGRES_PRISMA_URL ||
-      process.env.VERCEL_PROJECT_ID ||
-      'rodovar-conecta-serverless-default-session-seed'
-    ).trim();
-    STATELESS_SESSION_SECRET = crypto
-      .createHash('sha256')
-      .update(`rodovar-session-secret:${seedMaterial}`)
-      .digest('hex');
-    console.warn(
-      'SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo determinístico derivado do ambiente.'
-    );
-  } else {
-    throw new Error(
-      'Configuração ausente ou insegura: A variável de ambiente SESSION_SECRET é obrigatória e deve possuir no mínimo 32 caracteres.'
-    );
-  }
-}
+const STATELESS_SESSION_SECRET =
+  process.env.SESSION_SECRET || 'rodovar-conecta-stateless-session-key-2027-v1';
 const revokedSessionIds = new Set<string>();
 const revokedUserAfterMap = new Map<string, number>();
 
@@ -1808,14 +1455,11 @@ function resolveSessionRecord(sid?: string): ServerSessionRecord | undefined {
 }
 
 function revokeAllSessionsForUser(userId: string): number {
-  const revokedAt = Date.now();
-  revokedUserAfterMap.set(userId, revokedAt);
-  void persistUserSessionsRevocationToNeon(userId, revokedAt);
+  revokedUserAfterMap.set(userId, Date.now());
   let count = 0;
   for (const [sid, sess] of Object.entries(dbState.sessions)) {
     if (sess.userId === userId) {
       revokedSessionIds.add(sid);
-      void persistSessionRevocationToNeon(sid, userId);
       delete dbState.sessions[sid];
       count++;
     }
@@ -1934,94 +1578,18 @@ export function createExpressApp(): express.Express {
   }
 
   const app = express();
-  app.set('trust proxy', 1);
-
-  const installNeonWriteFlush = (req: Request, res: Response, next: NextFunction) => {
-    if (
-      !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ||
-      !isNeonConfigured ||
-      isIsolatedTestEnv()
-    ) {
-      return next();
-    }
-    const origEnd = res.end.bind(res);
-    let flushing = false;
-    let finished = false;
-    (res as any).end = (...args: any[]) => {
-      if (finished) return res;
-      if (!flushing && hasPendingNeonWrites()) {
-        flushing = true;
-        void flushPendingNeonWrites()
-          .catch((err) => console.warn('Neon flush on response end notice:', (err as Error).message))
-          .finally(() => {
-            finished = true;
-            origEnd(...args);
-          });
-        return res;
-      }
-      finished = true;
-      return origEnd(...args);
-    };
-    next();
-  };
-
-  app.use('/receber-comprovante', installNeonWriteFlush, async (req, _res, next) => {
-    if (req.method === 'POST' && isNeonConfigured && !isIsolatedTestEnv()) {
-      await ensureNeonBootstrapped();
-      await syncAllModulesFromNeonIfNeeded(true);
-    }
-    next();
-  });
-
-  app.use('/api', installNeonWriteFlush, async (req, res, next) => {
-    const isLightPath =
-      req.path === '/health' ||
-      req.path === '/neon/health' ||
-      req.path.startsWith('/system-config/assets/') ||
-      req.path === '/system-config/version';
-    const isFreightPath = req.path.startsWith('/meus-fretes');
-    const isVercelEnv = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
-    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
-    const forceSync =
-      isVercelEnv &&
-      (isMutation ||
-        req.path.startsWith('/auth') ||
-        req.path.startsWith('/pagamentos/shared-staging/'));
-
-    if (isFreightPath) {
-      res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Vary', 'Authorization, Cookie');
-    }
-    if (!isLightPath) {
-      await ensureNeonBootstrapped();
-      if (isFreightPath) {
-        await syncFreightsOnlyFromNeonIfNeeded(forceSync);
-      } else {
-        await syncAllModulesFromNeonIfNeeded(forceSync);
-      }
-      if (isNeonConfigured && !isIsolatedTestEnv() && dbState.users.length === 0) {
-        res.status(503).json({
-          ok: false,
-          error:
-            'Banco de dados indisponível no momento. Verifique DATABASE_URL e a conexão com Neon PostgreSQL.',
-          code: 'DATABASE_UNAVAILABLE',
-        });
-        return;
-      }
-    }
+  app.use('/api', async (req, res, next) => {
+    await syncAllModulesFromNeonIfNeeded(false);
     if (
       req.path.startsWith('/auth') ||
       req.path.startsWith('/profile') ||
       (req.method === 'GET' &&
         (req.path === '/system-config' ||
           req.path === '/system-config/version' ||
-          req.path === '/economic-mode' ||
           req.path === '/neon/health' ||
           req.path === '/health')) ||
       req.path === '/rh-external/webhook' ||
-      req.path === '/pagamentos/share-target' ||
-      req.path.startsWith('/pagamentos/shared-staging/')
+      req.path === '/pagamentos/share-target'
     ) {
       return next();
     }
@@ -2031,29 +1599,13 @@ export function createExpressApp(): express.Express {
       if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method) && user.accessProfile !== 'FINANCEIRO' && user.accessLevel !== 'ADMINISTRADOR') {
         res.status(403).json({error:'Ação exclusiva do Financeiro.'}); return;
       }
-      if (req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
-        const p = req.path, profile = user.accessProfile;
-        const isManagerOrAdmin = user.accessLevel === 'ADMINISTRADOR' || user.accessLevel === 'DIRETORIA';
-        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate|reopen)$/.test(p);
-        const permitted =
-          isManagerOrAdmin ||
-          (isSharedAction &&
-            (profile === 'COMERCIAL' ||
-              profile === 'EXPEDICAO' ||
-              canOperateMonitoring(user) ||
-              hasPagePermission(user, 'fretes_transferir') ||
-              hasPagePermission(user, 'fretes_cancelar'))) ||
-          (profile === 'COMERCIAL' &&
-            (p === '/meus-fretes' ||
-              /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p))) ||
-          (profile === 'EXPEDICAO' &&
-            /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p)) ||
-          (canOperateMonitoring(user) &&
-            /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p));
-        if (!permitted) {
-          res.status(403).json({error:'Etapa exclusiva de outro perfil.'});
-          return;
-        }
+      if(req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
+        const p=req.path, profile=user.accessProfile;
+        const permitted=user.accessLevel==='ADMINISTRADOR' ||
+          (profile==='COMERCIAL' && (p==='/meus-fretes' || /\/(comercial|commercial|comercial-transition|commercial-transition|comments|attachments)$/.test(p))) ||
+          (profile==='EXPEDICAO' && /\/(claim|operational-data|operational|expedicao-action|comments|attachments)$/.test(p)) ||
+          (canOperateMonitoring(user) && /\/(monitoramento-action|occurrences|resolve|comments|attachments|verify)$/.test(p));
+        if(!permitted) {res.status(403).json({error:'Etapa exclusiva de outro perfil.'});return;}
       }
       next();
     });
@@ -2063,7 +1615,7 @@ export function createExpressApp(): express.Express {
   app.all(['/api/auth/request-access', '/api/auth/register', '/api/auth/signup'], (_req, res) => {
     res.status(403).json({error: 'Cadastro público desabilitado. Procure o administrador.', code:'PUBLIC_REGISTRATION_DISABLED'});
   });
-  app.use('/uploads/documents', requireApprovedSession);
+  app.use('/uploads/documents', requireAdminSession);
   // Security headers
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -2071,26 +1623,13 @@ export function createExpressApp(): express.Express {
     next();
   });
 
-  app.use(
-    express.json({
-      limit: '20mb',
-      verify: (req: any, _res, bytes) => {
-        const cleanPath = String(req.originalUrl || req.url || '').split('?')[0];
-        if (cleanPath === '/api/rh-external/webhook') {
-          req.rawBody = Buffer.from(bytes);
-        }
-      },
-    })
-  );
-  app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+  app.use(express.json({ limit: '20mb', verify: (req: any, _res, bytes) => { if (req.url === '/api/rh-external/webhook') req.rawBody = Buffer.from(bytes); } }));
 
-  // Neon Postgres background warm-up (idempotent)
-  void ensureNeonBootstrapped();
-  app.get(['/api/neon/health', '/api/health'], (_req, res) => {
-    res.json({ ok: true });
-  });
-
-  app.get('/api/admin/health', requireAdminSession, async (_req, res) => {
+  // Neon Postgres initialization & health check
+  initializeNeonSchema().then(async () => {
+    await syncAllModulesFromNeonIfNeeded(true);
+  }).catch(() => {});
+  app.get(['/api/neon/health', '/api/health'], async (_req, res) => {
     const stats = await getNeonHealthStats();
     res.json({
       ok: true,
@@ -2157,7 +1696,6 @@ export function createExpressApp(): express.Express {
           lastFailureAt: 0,
         };
         saveDatabase(dbState);
-        void persistLoginLockToNeon(dbState.loginLocks[lockKey]);
       }
     }
 
@@ -2172,7 +1710,7 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   // REQUIREMENT 4 & 5: LOGIN WITH 5 FAILURES = 120 SECONDS LOCKOUT
   // --------------------------------------------------------------------------
-  app.post('/api/auth/login', async (req, res) => {
+  app.post('/api/auth/login', (req, res) => {
     const ip = req.ip || 'unknown';
     if (!checkIpRateLimit(ip, 'login_burst', 60)) {
       res.status(429).json({
@@ -2231,7 +1769,6 @@ export function createExpressApp(): express.Express {
           lastFailureAt: 0,
         };
         dbState.loginLocks[lockKey] = lock;
-        void persistLoginLockToNeon(lock);
       }
     }
 
@@ -2286,7 +1823,6 @@ export function createExpressApp(): express.Express {
           ip
         );
         saveDatabase(dbState);
-        void persistLoginLockToNeon(lock);
         res.status(429).json({
           error:
             'Não foi possível entrar. Confira os dados ou tente novamente após o prazo indicado.',
@@ -2309,7 +1845,6 @@ export function createExpressApp(): express.Express {
         ip
       );
       saveDatabase(dbState);
-      void persistLoginLockToNeon(lock);
       res.status(401).json({
         error:
           'Não foi possível entrar. Confira os dados ou tente novamente após o prazo indicado.',
@@ -2324,12 +1859,9 @@ export function createExpressApp(): express.Express {
     }
 
     // 3. Valid password outside of lock -> atomically reset failure counter
-    if (lock.consecutiveFailures > 0 || lock.blockedUntil !== null) {
-      lock.consecutiveFailures = 0;
-      lock.blockedUntil = null;
-      lock.lastFailureAt = 0;
-      void persistLoginLockToNeon(lock);
-    }
+    lock.consecutiveFailures = 0;
+    lock.blockedUntil = null;
+    lock.lastFailureAt = 0;
 
     // 4. Verify account approval status BEFORE issuing any session
     if (user.approvalStatus === 'PENDENTE') {
@@ -2406,8 +1938,7 @@ export function createExpressApp(): express.Express {
       `Login autenticado com sucesso no servidor (${user.login} • ${user.accessLevel}).`,
       ip
     );
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
+    saveDatabase(dbState);
 
     const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
     setSessionCookie(res, sessionId, ttl, isSecure);
@@ -2540,7 +2071,6 @@ export function createExpressApp(): express.Express {
       ip
     );
     saveDatabase(dbState);
-    void persistUserToNeon(newPendingUser);
 
     res.status(201).json({
       ok: true,
@@ -2568,7 +2098,6 @@ export function createExpressApp(): express.Express {
 
     if (Date.now() >= sess.expiresAt) {
       revokedSessionIds.add(sid);
-      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -2582,7 +2111,6 @@ export function createExpressApp(): express.Express {
     const user = dbState.users.find((u) => u.id === sess.userId);
     if (!user || user.approvalStatus !== 'APROVADO' || !user.active) {
       revokedSessionIds.add(sid);
-      void persistSessionRevocationToNeon(sid, sess.userId);
       delete dbState.sessions[sid];
       saveDatabase(dbState);
       clearSessionCookie(res);
@@ -2603,14 +2131,13 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.post('/api/auth/logout', async (req, res) => {
+  app.post('/api/auth/logout', (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
     const headerSid = req.headers['x-rodovar-session'] as string | undefined;
     const sid = cookies.rodovar_sid || headerSid;
     const sess = resolveSessionRecord(sid);
     if (sid) {
       revokedSessionIds.add(sid);
-      void persistSessionRevocationToNeon(sid, sess?.userId);
     }
     if (sid && sess) {
       const user = dbState.users.find((u) => u.id === sess.userId);
@@ -2625,9 +2152,8 @@ export function createExpressApp(): express.Express {
         );
       }
       delete dbState.sessions[sid];
-      await saveDatabaseAsync(dbState);
+      saveDatabase(dbState);
     }
-    await flushPendingNeonWrites();
     clearSessionCookie(res);
     res.json({ ok: true });
   });
@@ -2636,7 +2162,7 @@ export function createExpressApp(): express.Express {
   // REQUIREMENT 4: PASSWORD RECOVERY WITH SINGLE-USE EXPIRING TOKEN
   // (Never unlocks RECUSADO, SUSPENSO, or PENDENTE accounts)
   // --------------------------------------------------------------------------
-  app.post('/api/auth/request-password-reset', requireAdminSession, async (req, res) => {
+  app.post('/api/auth/request-password-reset', requireAdminSession, (req, res) => {
     const ip = req.ip || 'unknown';
     if (!checkIpRateLimit(ip, 'pw_reset_req', 6)) {
       res.status(429).json({
@@ -2658,17 +2184,14 @@ export function createExpressApp(): express.Express {
       for (const t of dbState.passwordResetTokens) {
         if (t.userId === user.id) t.used = true;
       }
-      void markUserPasswordResetTokensUsedInNeon(user.id);
 
-      const newTokenRecord = {
+      dbState.passwordResetTokens.push({
         tokenHash,
         userId: user.id,
         createdAt: now,
         expiresAt: now + 15 * 60 * 1000, // 15 minutes expiration
         used: false,
-      };
-      dbState.passwordResetTokens.push(newTokenRecord);
-      void persistPasswordResetTokenToNeon(newTokenRecord);
+      });
 
       appendAuditLog(
         user.id,
@@ -2678,8 +2201,7 @@ export function createExpressApp(): express.Express {
         `Token único de recuperação de senha emitido com expiração de 15 minutos.`,
         ip
       );
-      await saveDatabaseAsync(dbState);
-      await flushPendingNeonWrites();
+      saveDatabase(dbState);
 
       res.json({
         ok: true,
@@ -2699,7 +2221,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.post('/api/auth/reset-password', async (req, res) => {
+  app.post('/api/auth/reset-password', (req, res) => {
     const { token, newPassword } = req.body || {};
     const rawToken = String(token || '').trim().toUpperCase();
     if (!rawToken) {
@@ -2731,7 +2253,6 @@ export function createExpressApp(): express.Express {
     const onboarding=(record as any).onboarding && (dbState as any).accessPolicy?.authorizedUids.includes(user?.id);
     if (!user || (!onboarding && (user.approvalStatus !== 'APROVADO' || !user.active))) {
       record.used = true;
-      void persistPasswordResetTokenToNeon(record);
       saveDatabase(dbState);
       res.status(403).json({
         error: 'Esta conta não está autorizada ou encontra-se suspensa/recusada.',
@@ -2742,7 +2263,6 @@ export function createExpressApp(): express.Express {
 
     // Mark single-use token as used immediately
     record.used = true;
-    void persistPasswordResetTokenToNeon(record);
     const { hash, salt } = hashPassword(String(newPassword));
     user.passwordHash = hash;
     user.passwordSalt = salt;
@@ -2760,9 +2280,7 @@ export function createExpressApp(): express.Express {
       `Senha redefinida com sucesso via token único para ${user.login}.`,
       req.ip
     );
-    void persistUserToNeon(user);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
+    saveDatabase(dbState);
 
     res.json({
       ok: true,
@@ -2804,7 +2322,7 @@ export function createExpressApp(): express.Express {
   app.post(
     '/api/admin/access-requests/:userId/decision',
     requireAdminSession,
-    async (req: AuthenticatedRequest, res) => {
+    (req: AuthenticatedRequest, res) => {
       const admin = req.sessionUser!;
       const targetUserId = String(req.params.userId || '');
       const { action, accessLevel, permissoesPaginas, reason, department, roleTitle, accessProfile } =
@@ -2887,7 +2405,6 @@ export function createExpressApp(): express.Express {
         const policy = (dbState as any).accessPolicy;
         if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(targetUser.id) && targetUser.id !== policy.protectedAdminUid) {
           policy.authorizedUids.push(targetUser.id);
-          void persistAccessPolicyToNeon(policy);
         }
       } else if (action === 'RECUSAR') {
         newStatus = 'RECUSADO';
@@ -2947,7 +2464,6 @@ export function createExpressApp(): express.Express {
       };
 
       dbState.accessDecisions.unshift(decisionRecord);
-      void persistAccessDecisionToNeon(decisionRecord);
       appendAuditLog(
         admin.id,
         admin.name,
@@ -2956,9 +2472,8 @@ export function createExpressApp(): express.Express {
         `Administrador ${admin.login} executou ${action} na conta ${targetUser.name} (${targetUser.login}) -> Situação: ${newStatus}, Perfil: ${targetUser.accessLevel}.${cleanReason ? ` Motivo: ${cleanReason}` : ''}`,
         req.ip
       );
+      saveDatabase(dbState);
       void persistUserToNeon(targetUser);
-      await saveDatabaseAsync(dbState);
-      await flushPendingNeonWrites();
 
       const pendingCount = dbState.users.filter((u) => u.approvalStatus === 'PENDENTE').length;
       res.json({
@@ -2971,7 +2486,7 @@ export function createExpressApp(): express.Express {
   );
 
   // Admin direct account creation or update (preserving security rules)
-  app.post('/api/admin/users', requireAdminSession, async (req: AuthenticatedRequest, res) => {
+  app.post('/api/admin/users', requireAdminSession, (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
     const {
       name,
@@ -3050,7 +2565,6 @@ export function createExpressApp(): express.Express {
     const policy = (dbState as any).accessPolicy;
     if (policy && Array.isArray(policy.authorizedUids) && !policy.authorizedUids.includes(newUser.id)) {
       policy.authorizedUids.push(newUser.id);
-      void persistAccessPolicyToNeon(policy);
     }
     dbState.users.unshift(newUser);
     appendAuditLog(
@@ -3061,9 +2575,8 @@ export function createExpressApp(): express.Express {
       `Criou conta aprovada para ${newUser.name} (${newUser.login} • ${newUser.accessLevel}).`,
       req.ip
     );
+    saveDatabase(dbState);
     void persistUserToNeon(newUser);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
 
     res.status(201).json({
       ok: true,
@@ -3071,7 +2584,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.put('/api/admin/users/:userId', requireAdminSession, async (req: AuthenticatedRequest, res) => {
+  app.put('/api/admin/users/:userId', requireAdminSession, (req: AuthenticatedRequest, res) => {
     const admin = req.sessionUser!;
     const targetId = String(req.params.userId || '');
     const target = dbState.users.find((u) => u.id === targetId);
@@ -3160,9 +2673,8 @@ export function createExpressApp(): express.Express {
       req.ip
     );
     revokeAllSessionsForUser(target.id);
+    saveDatabase(dbState);
     void persistUserToNeon(target);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -3173,7 +2685,7 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   // REQUIREMENT 1: AVATAR UPLOAD, VALIDATION, METADATA REMOVAL & RESTORE DEFAULT
   // --------------------------------------------------------------------------
-  app.post('/api/profile/avatar', requireApprovedSession, async (req: AuthenticatedRequest, res) => {
+  app.post('/api/profile/avatar', requireApprovedSession, (req: AuthenticatedRequest, res) => {
     const actor = req.sessionUser!;
     const { dataUrl, targetUserId } = req.body || {};
 
@@ -3227,10 +2739,7 @@ export function createExpressApp(): express.Express {
     // Generate system storage filename with UUID
     const fileName = `avatar-${crypto.randomUUID()}.${validation.extension}`;
     const filePath = path.join(UPLOADS_DIR, fileName);
-    try {
-      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-      fs.writeFileSync(filePath, validation.sanitizedBuffer);
-    } catch {}
+    fs.writeFileSync(filePath, validation.sanitizedBuffer);
     void persistSystemAssetToNeon({
       id: fileName,
       slot: 'userAvatar',
@@ -3264,9 +2773,8 @@ export function createExpressApp(): express.Express {
       `Foto de perfil atualizada e sanitizada (${validation.mimeType}, ${validation.width}x${validation.height}px) para ${targetUser.login}.`,
       req.ip
     );
+    saveDatabase(dbState);
     void persistUserToNeon(targetUser);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -3278,7 +2786,7 @@ export function createExpressApp(): express.Express {
   app.post(
     '/api/profile/restore-default-avatar',
     requireApprovedSession,
-    async (req: AuthenticatedRequest, res) => {
+    (req: AuthenticatedRequest, res) => {
       const actor = req.sessionUser!;
       const { targetUserId } = req.body || {};
       const effectiveUserId = targetUserId ? String(targetUserId) : actor.id;
@@ -3321,9 +2829,7 @@ export function createExpressApp(): express.Express {
         `Avatar padrão neutro restaurado para a conta ${targetUser.login}.`,
         req.ip
       );
-      void persistUserToNeon(targetUser);
-      await saveDatabaseAsync(dbState);
-      await flushPendingNeonWrites();
+      saveDatabase(dbState);
 
       res.json({
         ok: true,
@@ -3332,7 +2838,7 @@ export function createExpressApp(): express.Express {
     }
   );
 
-  app.put('/api/profile', requireApprovedSession, async (req: AuthenticatedRequest, res) => {
+  app.put('/api/profile', requireApprovedSession, (req: AuthenticatedRequest, res) => {
     const actor = req.sessionUser!;
     const { name, phoneExt, login, password } = req.body || {};
 
@@ -3371,11 +2877,7 @@ export function createExpressApp(): express.Express {
       actor.passwordSalt = salt;
       actor.mustChangePassword = false;
       for (const [sid, session] of Object.entries(dbState.sessions)) {
-        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) {
-          revokedSessionIds.add(sid);
-          void persistSessionRevocationToNeon(sid, actor.id);
-          delete dbState.sessions[sid];
-        }
+        if (session.userId === actor.id && sid !== req.sessionRecord?.sessionId) delete dbState.sessions[sid];
       }
     }
 
@@ -3387,9 +2889,7 @@ export function createExpressApp(): express.Express {
       `Titular ${actor.name} atualizou seus dados pessoais em Meu Perfil.`,
       req.ip
     );
-    void persistUserToNeon(actor);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
+    saveDatabase(dbState);
 
     res.json({
       ok: true,
@@ -3421,15 +2921,7 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  app.get('/api/system-config/version', async (_req, res) => {
-    if (isNeonConfigured && !isIsolatedTestEnv()) {
-      await ensureNeonReady().catch(() => {});
-      const neonCfg = await loadSystemConfigFromNeon().catch(() => null);
-      if (neonCfg && typeof neonCfg.revision === 'number' && neonCfg.revision >= (dbState.systemConfig?.revision || 0)) {
-        dbState.systemConfig = neonCfg;
-      }
-    }
-    res.setHeader('Cache-Control', 'no-store');
+  app.get('/api/system-config/version', (_req, res) => {
     res.json({
       revision: dbState.systemConfig.revision,
       updatedAtIso: dbState.systemConfig.updatedAtIso,
@@ -3441,12 +2933,7 @@ export function createExpressApp(): express.Express {
   // ECONOMIC MODE API (Low-consumption configuration for Neon Free + Vercel)
   // --------------------------------------------------------------------------
   app.get('/api/economic-mode', async (_req, res) => {
-    const now = Date.now();
-    if (!cachedEconomicMode || now - cachedEconomicMode.fetchedAtMs > 30000) {
-      const enabled = await loadEconomicModeFromNeon();
-      cachedEconomicMode = { value: enabled, fetchedAtMs: now };
-    }
-    const enabled = cachedEconomicMode.value;
+    const enabled = await loadEconomicModeFromNeon();
     res.json({
       ok: true,
       economicMode: enabled,
@@ -3462,7 +2949,6 @@ export function createExpressApp(): express.Express {
   app.post('/api/economic-mode', requireAdminSession, async (req: AuthenticatedRequest, res) => {
     const { enabled } = req.body || {};
     const targetState = Boolean(enabled);
-    cachedEconomicMode = { value: targetState, fetchedAtMs: Date.now() };
     await persistEconomicModeToNeon(targetState);
     appendAuditLog(
       req.sessionUser!.id,
@@ -3472,8 +2958,7 @@ export function createExpressApp(): express.Express {
       `Modo Econômico ${targetState ? 'ATIVADO' : 'DESATIVADO'} pelo Administrador.`,
       req.ip
     );
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
+    saveDatabase(dbState);
     res.json({
       ok: true,
       economicMode: targetState,
@@ -3499,10 +2984,7 @@ export function createExpressApp(): express.Express {
         return res.sendFile(diskPath);
       }
 
-      // 2. Ensure Neon pool/schema initialized on cold serverless invocation before querying asset
-      if (isNeonConfigured && !isIsolatedTestEnv()) {
-        await ensureNeonReady().catch(() => {});
-      }
+      // 2. Query Neon PostgreSQL for permanent serverless storage
       const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
       const asset =
         (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
@@ -3781,11 +3263,12 @@ export function createExpressApp(): express.Express {
         `Configuração visual do sistema publicada (Revisão #${nextRevision}) por ${admin.login}. Banners no carrossel: ${sanitizedBannerItems.length}.`,
         req.ip
       );
-      // Persist state to Neon PostgreSQL synchronously before responding
-      await Promise.all([
-        saveDatabaseAsync(dbState),
-        persistSystemConfigToNeon(nextConfig),
-      ]).catch((err) => console.warn('Neon persistSystemConfigToNeon warn:', err));
+      saveDatabase(dbState);
+
+      // Persist state to Neon PostgreSQL
+      await persistSystemConfigToNeon(nextConfig).catch((err) =>
+        console.warn('Neon persistSystemConfigToNeon warn:', err)
+      );
 
       res.json({
         ok: true,
@@ -3800,40 +3283,25 @@ export function createExpressApp(): express.Express {
   // --------------------------------------------------------------------------
   registerAccountDeletionRoutes(app, requireAdminSession, dbState, saveDatabase);
   registerAgenda(app, requireApprovedSession, () => dbState.users);
-  registerMural(app, requireApprovedSession, dbState, () => saveMuralStateAsync(dbState), INITIAL_ANNOUNCEMENTS);
+  registerMural(app, requireApprovedSession, dbState, () => saveDatabase(dbState), INITIAL_ANNOUNCEMENTS);
+  registerChats(app, requireApprovedSession, dbState);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
-  app.post('/api/admin/first-access/:uid', requireAdminSession, async (req: AuthenticatedRequest, res) => {
-    const user = dbState.users.find((u) => u.id === req.params.uid);
-    const policy = (dbState as any).accessPolicy;
-    if (!user || !policy?.authorizedUids.includes(user.id)) {
-      res.status(403).json({ error: 'Identidade ainda não vinculada à lista autorizada.' });
-      return;
-    }
-    const token = 'RDV-RST-' + crypto.randomBytes(24).toString('hex').toUpperCase();
-    for (const t of dbState.passwordResetTokens) {
-      if (t.userId === user.id) t.used = true;
-    }
-    void markUserPasswordResetTokensUsedInNeon(user.id);
-    const newTokenRecord = {
-      tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-      userId: user.id,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 86400000,
-      used: false,
-      onboarding: true,
-    };
-    dbState.passwordResetTokens.push(newTokenRecord as any);
-    void persistPasswordResetTokenToNeon(newTokenRecord);
+  app.post('/api/admin/first-access/:uid', requireAdminSession, (req: AuthenticatedRequest, res) => {
+    const user=dbState.users.find(u=>u.id===req.params.uid);
+    const policy=(dbState as any).accessPolicy;
+    if (!user || !policy?.authorizedUids.includes(user.id)) { res.status(403).json({error:'Identidade ainda não vinculada à lista autorizada.'}); return; }
+    const token='RDV-RST-'+crypto.randomBytes(24).toString('hex').toUpperCase();
+    for (const t of dbState.passwordResetTokens) if(t.userId===user.id) t.used=true;
+    dbState.passwordResetTokens.push({tokenHash:crypto.createHash('sha256').update(token).digest('hex'),userId:user.id,createdAt:Date.now(),expiresAt:Date.now()+86400000,used:false,onboarding:true} as any);
     revokeAllSessionsForUser(user.id);
-    await saveDatabaseAsync(dbState);
-    await flushPendingNeonWrites();
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ token, login: user.login, expiresInHours: 24 });
+    saveDatabase(dbState);
+    res.setHeader('Cache-Control','no-store');
+    res.json({token,login:user.login,expiresInHours:24});
   });
-  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveCustomerCoversStateAsync(dbState));
-  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDriversState(dbState));
+  registerCustomerCovers(app, requireApprovedSession, dbState, () => saveDatabase(dbState));
+  registerDrivers(app, requireApprovedSession, requireAdminSession, dbState, () => saveDatabase(dbState));
   registerUnifiedFreightRoutes(
     app,
     requireApprovedSession as any,
@@ -3854,18 +3322,16 @@ export function createExpressApp(): express.Express {
   // CORPORATE DOCUMENTS ATTACHMENT UPLOAD & VALIDATION (REQUISITO 4)
   // --------------------------------------------------------------------------
   const DOCS_UPLOADS_DIR = path.join(UPLOADS_DIR, 'documents');
-  try {
-    if (!fs.existsSync(DOCS_UPLOADS_DIR)) {
-      fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
-    }
-  } catch {}
+  if (!fs.existsSync(DOCS_UPLOADS_DIR)) {
+    fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+  }
 
   const ALLOWED_DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx']);
 
   app.post(
     '/api/documentos/upload-anexos',
     requireApprovedSession,
-    async (req: AuthenticatedRequest, res) => {
+    (req: AuthenticatedRequest, res) => {
       const user = req.sessionUser!;
       const { files } = req.body || {};
 
@@ -3926,10 +3392,7 @@ export function createExpressApp(): express.Express {
         const fileId = `doc-att-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
         const fileName = `${fileId}.${ext}`;
         const filePath = path.join(DOCS_UPLOADS_DIR, fileName);
-        try {
-          fs.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
-          fs.writeFileSync(filePath, buffer);
-        } catch {}
+        fs.writeFileSync(filePath, buffer);
         void persistSystemAssetToNeon({
           id: fileName,
           slot: 'documentAttachment',
@@ -3957,8 +3420,7 @@ export function createExpressApp(): express.Express {
         `Anexou ${attachments.length} arquivo(s) oficial(is) com validação de formato e tamanho no servidor.`,
         req.ip
       );
-      await saveDatabaseAsync(dbState);
-      await flushPendingNeonWrites();
+      saveDatabase(dbState);
 
       res.json({
         ok: true,

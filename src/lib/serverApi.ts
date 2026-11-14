@@ -24,25 +24,10 @@ export const DEFAULT_NEUTRAL_AVATAR_URL = '/assets/default-avatar.png';
 
 let currentCsrfToken: string | null = null;
 let currentSessionId: string | null = null;
-const authResetListeners = new Set<() => void>();
-
-export function onAuthTokensReset(listener: () => void): () => void {
-  authResetListeners.add(listener);
-  return () => authResetListeners.delete(listener);
-}
 
 export function setAuthTokens(csrfToken: string | null, sessionId: string | null) {
   currentCsrfToken = csrfToken;
   currentSessionId = sessionId;
-  if (!csrfToken || !sessionId) {
-    for (const listener of authResetListeners) {
-      try {
-        listener();
-      } catch {
-        // ignore cleanup listener error
-      }
-    }
-  }
   try {
     if (csrfToken && sessionId) {
       const serialized = JSON.stringify({ csrfToken, sessionId });
@@ -629,32 +614,21 @@ export async function apiFetchFreightOperators(): Promise<{
 export async function apiFetchFreightsList(params: {
   area: 'COMERCIAL' | 'EXPEDICAO' | 'MONITORAMENTO';
   scope?: 'MEUS' | 'DISPONIVEIS' | 'EQUIPE';
-  viewMode?: 'ATIVOS' | 'FINALIZADOS' | 'ALL';
   responsavelId?: string;
   search?: string;
-  periodo?: 'TODOS' | 'HOJE' | 'SEMANA' | 'MES' | 'ATRASADOS';
+  periodo?: 'TODOS' | 'HOJE' | 'SEMANA' | 'ATRASADOS';
   situacao?: string;
   includeCanceled?: boolean;
   cursor?: string;
-  page?: number;
   limit?: number;
   columnLimit?: number;
-  omitKanban?: boolean;
-  compact?: boolean;
-  checkOnly?: boolean;
-  sinceVersion?: number;
 }): Promise<{
   ok: boolean;
   status: number;
-  page?: number;
-  limit?: number;
-  totalPages?: number;
   totalMatched: number;
   items: UnifiedFreightRecord[];
   nextCursor: string | null;
   hasMore: boolean;
-  dataVersion?: number;
-  unchanged?: boolean;
   comercialCounters: Record<CommercialFreightStatus, number>;
   expedicaoCounters: {
     RECEBIDO: number;
@@ -680,7 +654,6 @@ export async function apiFetchFreightsList(params: {
     COLETAS_HOJE: number;
     PENDENCIAS: number;
     TOTAL_ATIVOS: number;
-    completedCount?: number;
   };
   kanbanColumns: Record<
     string,
@@ -697,20 +670,14 @@ export async function apiFetchFreightsList(params: {
   const qs = new URLSearchParams();
   qs.set('area', params.area);
   if (params.scope) qs.set('scope', params.scope);
-  if (params.viewMode) qs.set('viewMode', params.viewMode);
   if (params.responsavelId) qs.set('responsavelId', params.responsavelId);
   if (params.search) qs.set('search', params.search);
   if (params.periodo) qs.set('periodo', params.periodo);
   if (params.situacao) qs.set('situacao', params.situacao);
   if (params.includeCanceled) qs.set('includeCanceled', 'true');
   if (params.cursor) qs.set('cursor', params.cursor);
-  if (params.page) qs.set('page', String(params.page));
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.columnLimit) qs.set('columnLimit', String(params.columnLimit));
-  if (params.omitKanban) qs.set('omitKanban', 'true');
-  if (params.compact) qs.set('compact', 'true');
-  if (params.checkOnly) qs.set('checkOnly', 'true');
-  if (params.sinceVersion !== undefined) qs.set('sinceVersion', String(params.sinceVersion));
 
   const emptyComercialCounters: Record<CommercialFreightStatus, number> = {
     EM_NEGOCIACAO: 0,
@@ -965,35 +932,9 @@ export async function apiUpdateOperationalData(
     transportadorDocumento?: string;
     motoristaNome?: string;
     motoristaCpf?: string;
-    motoristaRg?: string;
-    motoristaCnh?: string;
     motoristaTelefone?: string;
     placaVeiculo?: string;
     placaCarreta?: string;
-    placaBitrem?: string;
-    numeroPedido?: string;
-    numeroOrcamento?: string;
-    pontoReferencia?: string;
-    especieCarga?: string;
-    embalagemCarga?: string;
-    valorMercadoriaCentavos?: number;
-    quantidadeEntregas?: number;
-    remetenteNome?: string;
-    remetenteCnpjCpf?: string;
-    remetenteIe?: string;
-    remetenteTelefone?: string;
-    remetenteEndereco?: string;
-    remetenteBairro?: string;
-    remetenteMunicipio?: string;
-    remetenteCep?: string;
-    destinatarioNome?: string;
-    destinatarioCnpjCpf?: string;
-    destinatarioIe?: string;
-    destinatarioTelefone?: string;
-    destinatarioEndereco?: string;
-    destinatarioBairro?: string;
-    destinatarioMunicipio?: string;
-    destinatarioCep?: string;
     valorContratadoCentavos?: number;
     condicoesOperacionais?: string;
     condicoesPagamento?: string;
@@ -1035,7 +976,6 @@ export async function apiExpedicaoAction(
     baseRevision: number;
     action:
       | 'EMITIR_ORDEM'
-      | 'IGNORAR_ORDEM_COLETA'
       | 'CONFIRMAR_ENVIO_ORDEM_MOTORISTA'
       | 'REGISTRAR_VIDEOCHAMADA'
       | 'LIBERAR_PARA_MONITORAMENTO'
@@ -1088,8 +1028,7 @@ export async function apiMonitoramentoAction(
     action:
       | 'AVANCAR_ETAPA'
       | 'REGISTRAR_LOCALIZACAO_ORIENTACAO'
-      | 'DEVOLVER_EXPEDICAO'
-      | 'REABRIR_FRETE';
+      | 'DEVOLVER_EXPEDICAO';
     targetStage?: MonitoringFreightStatus;
     horarioRealEvento?: string;
     observacoes?: string;
@@ -1125,42 +1064,6 @@ export async function apiMonitoramentoAction(
       body: JSON.stringify(payload),
     }
   );
-  const data = await safeParseJson(res);
-  return {
-    ...data,
-    ok: Boolean(res.ok && data.ok),
-    status: res.status,
-  };
-}
-
-export async function apiReopenFreight(
-  freightId: string,
-  payload: {
-    baseRevision: number;
-    motivo: string;
-    targetStage?: MonitoringFreightStatus;
-    horarioRealEvento?: string;
-    idempotencyKey?: string;
-  }
-): Promise<{
-  ok: boolean;
-  status: number;
-  freight?: UnifiedFreightRecord;
-  historico?: UnifiedFreightDetailsPayload['historico'];
-  currentRevision?: number;
-  error?: string;
-  code?: string;
-}> {
-  const headers = getAuthHeaders({
-    'X-Idempotency-Key':
-      payload.idempotencyKey || expeditionRequestKey(freightId, 'reopen', payload),
-  });
-  const res = await fetch(`/api/meus-fretes/${encodeURIComponent(freightId)}/reopen`, {
-    method: 'POST',
-    credentials: 'include',
-    headers,
-    body: JSON.stringify(payload),
-  });
   const data = await safeParseJson(res);
   return {
     ...data,

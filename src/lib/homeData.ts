@@ -5,7 +5,7 @@ export function homeSources(user:Employee):[string,string][]{
  if(can('comunicados'))sources.push(['mural','/api/mural']);
  if(can('agenda'))sources.push(['agenda','/api/agenda']);
  if(can('solicitacoes'))sources.push(['requests','/api/requests']);
- if(can('fretes_ativos'))sources.push(['freights','/api/meus-fretes?area=MONITORAMENTO&scope='+(canViewFreightTeam(user)?'EQUIPE':'MEUS')+'&viewMode=ATIVOS&page=1&limit=12&omitKanban=true']);
+ if(can('fretes_ativos'))sources.push(['freights','/api/meus-fretes?area=MONITORAMENTO&scope='+(canViewFreightTeam(user)?'EQUIPE':'MEUS')+'&limit=50']);
  if(canViewPendingPaymentsCount(user))sources.push(['finance','/api/pagamentos/fretes']);
  if(can('administracao'))sources.push(['drivers','/api/drivers']);
  return sources;

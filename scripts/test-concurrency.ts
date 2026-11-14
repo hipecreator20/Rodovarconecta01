@@ -8,6 +8,7 @@ interface ConcurrencyResult {
   sessionOk: boolean;
   authorizedModuleOk: boolean;
   authorizedModuleName: string;
+  chatOk: boolean;
   error?: string;
 }
 
@@ -47,6 +48,7 @@ async function runSingleUserSession(item: (typeof TEST_USERS)[0], index: number)
     sessionOk: false,
     authorizedModuleOk: false,
     authorizedModuleName: item.testModule,
+    chatOk: false,
   };
 
   const t0 = Date.now();
@@ -88,6 +90,20 @@ async function runSingleUserSession(item: (typeof TEST_USERS)[0], index: number)
     if (!moduleRes.ok) {
       result.error = `Module ${item.testModule} failed with HTTP ${moduleRes.status}`;
     }
+
+    // 4. Concurrent Chat query & message write
+    const chatRes = await fetch(`${BASE_URL}/api/chats`, { headers });
+    result.chatOk = chatRes.ok;
+
+    if (index % 5 === 0) {
+      await fetch(`${BASE_URL}/api/chats/g-geral/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          text: `Teste de concorrência Neon: Usuário ${item.email} (${item.profile}) [${new Date().toISOString()}]`,
+        }),
+      });
+    }
   } catch (err) {
     result.error = (err as Error).message;
   }
@@ -116,10 +132,10 @@ async function runConcurrencyAudit() {
   let successCount = 0;
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
-    const ok = r.loginOk && r.sessionOk && r.authorizedModuleOk;
+    const ok = r.loginOk && r.sessionOk && r.authorizedModuleOk && r.chatOk;
     if (ok) successCount++;
     console.log(
-      `[#${String(i + 1).padStart(2, '0')}] ${r.email.padEnd(32)} | Perfil: ${r.role.padEnd(14)} | Login: ${r.loginOk ? 'OK' : 'FALHA'} (${String(r.loginLatencyMs).padStart(3)}ms) | Módulo [${r.authorizedModuleName}]: ${r.authorizedModuleOk ? 'OK' : 'FALHA'}`
+      `[#${String(i + 1).padStart(2, '0')}] ${r.email.padEnd(32)} | Perfil: ${r.role.padEnd(14)} | Login: ${r.loginOk ? 'OK' : 'FALHA'} (${String(r.loginLatencyMs).padStart(3)}ms) | Módulo [${r.authorizedModuleName}]: ${r.authorizedModuleOk ? 'OK' : 'FALHA'} | Chats: ${r.chatOk ? 'OK' : 'FALHA'}`
     );
     if (r.error) {
       console.log(`     -> DETALHE: ${r.error}`);
@@ -138,7 +154,7 @@ async function runConcurrencyAudit() {
   console.log(`Latência média de autenticação       : ${avgLatency} ms`);
   console.log(`Taxa de erros/quedas nas APIs        : 0%`);
   console.log(`Integridade do Banco Neon PostgreSQL : 100% OPERACIONAL`);
-  console.log(`[Neon Counts Final] Usuários: ${statsFinal.counts?.users} | Fretes: ${statsFinal.counts?.fretes} | Pagamentos: ${statsFinal.counts?.payments} | Snapshots: ${statsFinal.counts?.snapshots}`);
+  console.log(`[Neon Counts Final] Usuários: ${statsFinal.counts?.users} | Fretes: ${statsFinal.counts?.fretes} | Pagamentos: ${statsFinal.counts?.payments} | Mensagens: ${statsFinal.counts?.chats} | Snapshots: ${statsFinal.counts?.snapshots}`);
   console.log('================================================================\n');
 
   process.exit(successCount === results.length ? 0 : 1);

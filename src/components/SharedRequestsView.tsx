@@ -35,7 +35,7 @@ async function readFile(file: File | null) {
   return { name: file.name, dataUrl };
 }
 
-export function SharedRequestsView({ currentUser, initialOpenRequestModal, onClearInitialModal, economicMode = true }: { currentUser: Employee; initialOpenRequestModal?: boolean; onClearInitialModal?: () => void; economicMode?: boolean }) {
+export function SharedRequestsView({ currentUser, initialOpenRequestModal, onClearInitialModal }: { currentUser: Employee; initialOpenRequestModal?: boolean; onClearInitialModal?: () => void }) {
   const [handlers,setHandlers]=useState<{id:string;name:string}[]>([]);
   const [assignee,setAssignee]=useState('');
   const [rows, setRows] = useState<InternalRequest[]>([]);
@@ -65,13 +65,9 @@ export function SharedRequestsView({ currentUser, initialOpenRequestModal, onCle
   useEffect(() => {
     const controller = new AbortController();
     const update = () => load(controller.signal).catch(e => { if (!controller.signal.aborted) { setError(e.message); setLoading(false); } });
-    update();
-    if (economicMode) return () => { controller.abort(); };
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') update();
-    }, 10000);
+    update(); const timer = setInterval(update, 5000);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [currentUser.id, load, economicMode]);
+  }, [currentUser.id, load]);
   useEffect(() => { if (initialOpenRequestModal) { setCreating(true); onClearInitialModal?.(); } }, [initialOpenRequestModal, onClearInitialModal]);
 
   const filtered = useMemo(() => rows.filter(r => {

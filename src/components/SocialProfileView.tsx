@@ -200,26 +200,29 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setErrorMessage('');
-    try {
-      const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
-      const processed = await processImageFileForUpload(file, {
-        maxWidth: 1600,
-        maxHeight: 600,
-        maxDataUrlBytes: 1_500_000,
-      });
-      const res = await apiUploadCoverPhoto(processed.dataUrl);
-      if (res.ok && res.coverUrl) {
-        setProfile((prev) => (prev ? { ...prev, coverUrl: res.coverUrl } : null));
-        showToast('Foto de capa atualizada com sucesso!');
-      } else {
-        setErrorMessage(res.error || 'Erro ao enviar foto de capa.');
-      }
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Falha ao enviar imagem de capa.'
-      );
+
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMessage('A foto de capa excede o limite de 5 MB.');
+      return;
     }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (typeof reader.result === 'string') {
+        try {
+          const res = await apiUploadCoverPhoto(reader.result);
+          if (res.ok && res.coverUrl) {
+            setProfile((prev) => (prev ? { ...prev, coverUrl: res.coverUrl } : null));
+            showToast('Foto de capa atualizada com sucesso!');
+          } else {
+            setErrorMessage(res.error || 'Erro ao enviar foto de capa.');
+          }
+        } catch {
+          setErrorMessage('Falha ao enviar imagem de capa.');
+        }
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // Handle post image additions

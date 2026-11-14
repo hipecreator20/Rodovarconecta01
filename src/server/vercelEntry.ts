@@ -7,9 +7,6 @@ export default function handler(req: any, res: any) {
     if (!appInstance) {
       appInstance = createExpressApp();
     }
-    if (req && req.body !== undefined && req.readableEnded && !req._body) {
-      req._body = true;
-    }
     return appInstance(req, res);
   } catch (err: any) {
     console.error('Vercel API Handler Error:', err);

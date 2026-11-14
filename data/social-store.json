@@ -1,0 +1,91 @@
+{
+  "profiles": {
+    "emp-admin-master": {
+      "userId": "emp-admin-master",
+      "coverUrl": "/assets/banner-rodovar-conecta-highway.png",
+      "bio": "Profissional da área comercial, apaixonado por logística e transporte RODOVAR.",
+      "customDisplayName": "Administrador Geral RODOVAR",
+      "phone": "71 9 9920-2476",
+      "location": "Salvador – BA",
+      "socialLinks": {
+        "instagram": "https://instagram.com/carlos.mendes_rodovar",
+        "linkedin": "https://linkedin.com/in/carlosmendes",
+        "facebook": "https://facebook.com/carlos.mendes",
+        "youtube": "",
+        "tiktok": "",
+        "website": ""
+      },
+      "updatedAt": "2026-11-11T00:59:40.825Z"
+    }
+  },
+  "posts": [
+    {
+      "id": "post-init-1",
+      "authorId": "emp-admin-master",
+      "authorName": "Carlos Mendes",
+      "authorAvatar": "/assets/avatar-joao.jpg",
+      "authorRole": "Comercial",
+      "authorDepartment": "Comercial",
+      "content": "Mais uma negociação concluída com sucesso! 🚛 Novo contrato de transporte para a região Sul. Seguimos firmes, levando resultados e fortalecendo parcerias! 💛",
+      "images": [
+        "/assets/aistudio/Banner_Rodovar_Conecta_na_Rodovia_24f668fa.png",
+        "/assets/aistudio/010203_5a4289e5.png",
+        "/assets/aistudio/image_58f528e8.png"
+      ],
+      "likes": [
+        "emp-admin-master",
+        "emp-vitor-diretoria",
+        "emp-monica-comercial",
+        "emp-priscila-expedicao"
+      ],
+      "comments": [
+        {
+          "id": "c-1",
+          "postId": "post-init-1",
+          "authorId": "emp-vitor-diretoria",
+          "authorName": "Vitor Hugo",
+          "authorAvatar": "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
+          "authorRole": "Diretoria",
+          "content": "Excelente trabalho, time Comercial! O compromisso com a excelência faz a diferença.",
+          "createdAt": "2026-11-10T22:59:20.385Z"
+        },
+        {
+          "id": "c-2",
+          "postId": "post-init-1",
+          "authorId": "emp-monica-comercial",
+          "authorName": "Mônica Nery",
+          "authorAvatar": "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
+          "authorRole": "Comercial",
+          "content": "Orgulho de fazer parte dessa equipe! Vamos por mais resultados juntos!",
+          "createdAt": "2026-11-10T23:59:20.385Z"
+        }
+      ],
+      "commentsCount": 2,
+      "audience": "Comercial",
+      "createdAt": "2026-11-10T21:59:20.385Z",
+      "updatedAt": "2026-11-10T21:59:20.385Z"
+    },
+    {
+      "id": "post-init-2",
+      "authorId": "emp-admin-master",
+      "authorName": "Carlos Mendes",
+      "authorAvatar": "/assets/avatar-joao.jpg",
+      "authorRole": "Comercial",
+      "authorDepartment": "Comercial",
+      "content": "Alinhamento com a equipe de Logística e Monitoramento sobre as novas rotas do Corredor Nordeste. Rastreabilidade e segurança máxima do início ao fim!",
+      "images": [
+        "/assets/aistudio/DSC00410_9423424f.JPG",
+        "/assets/aistudio/image_47dbceb5.png"
+      ],
+      "likes": [
+        "emp-admin-master",
+        "emp-jairo-monitoramento"
+      ],
+      "comments": [],
+      "commentsCount": 0,
+      "audience": "Público",
+      "createdAt": "2026-11-10T00:59:20.385Z",
+      "updatedAt": "2026-11-10T00:59:20.385Z"
+    }
+  ]
+}
