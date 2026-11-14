@@ -915,7 +915,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     const company = COMPANY_LEGAL_PROFILES[activeBrand];
     const orderDisplay = extractOrderDisplayNumber(freight);
     const shareText = [
-      `*ORDEM DE COLETA ${activeBrand} Nº ${orderDisplay.seqFormatted}/${orderDisplay.year} — FRETE ${freight.protocol}*`,
+      `*ORDEM DE COLETA ${activeBrand} Nº ${orderDisplay.seqFormatted} — FRETE ${freight.protocol}*`,
       `CNPJ: ${company.cnpj}`,
       `Origem: ${freight.origemCidadeUf} (${freight.enderecoColeta || '—'})`,
       `Destino: ${freight.destinoCidadeUf} (${freight.enderecoEntrega || '—'})`,
@@ -929,7 +929,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
-          title: `Ordem de Coleta ${orderDisplay.seqFormatted}/${orderDisplay.year} — ${activeBrand}`,
+          title: `Ordem de Coleta ${orderDisplay.seqFormatted} — ${activeBrand}`,
           text: shareText,
         });
         return;

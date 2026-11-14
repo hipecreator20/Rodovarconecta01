@@ -1,5 +1,9 @@
 import { createExpressApp } from '../../server.ts';
 
+export const config = {
+  maxDuration: 30,
+};
+
 let appInstance: any = null;
 
 export default function handler(req: any, res: any) {

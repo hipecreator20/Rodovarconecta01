@@ -405,7 +405,7 @@ export function allocateNextOrderNumber(
   }
   nextOrderSeqByBrand[brand] = nextSeq + 1;
   saveSequence();
-  const orderNumber = `${prefix}${String(nextSeq).padStart(6, '0')}/${spYear}`;
+  const orderNumber = `${prefix}${String(nextSeq).padStart(6, '0')}`;
   return { orderNumber, sequence: nextSeq, year: spYear };
 }
 
@@ -567,7 +567,7 @@ function normalizeLegacyFreightRecord(rec: UnifiedFreightRecord): boolean {
         rec.expedicaoResponsavelNome || 'Carlos Eduardo Mendes';
     }
     if (!rec.ordemCarregamentoNumero) {
-      rec.ordemCarregamentoNumero = `OC-RDV-${rec.protocol.replace('#', '')}-2027`;
+      rec.ordemCarregamentoNumero = `OC-RDV-${rec.protocol.replace('#', '')}`;
       rec.ordemCarregamentoEmitidaEm = rec.updatedAtFormatted;
     }
     if (!rec.liberadoMonitoramentoEm) {
@@ -596,7 +596,7 @@ function normalizeLegacyFreightRecord(rec: UnifiedFreightRecord): boolean {
       rec.checklistFechamento.ordemColetaEnviadaPorId = 'emp-4';
       rec.checklistFechamento.ordemColetaEnviadaPorNome = 'Carlos Eduardo Mendes';
       rec.checklistFechamento.ordemColetaEnviadaEm = '27/10/2027 16:10';
-      rec.ordemCarregamentoNumero = 'OC-RDV-0840-2027';
+      rec.ordemCarregamentoNumero = 'OC-RDV-0840';
       rec.ordemCarregamentoEmitidaEm = '27/10/2027 16:08';
       rec.liberadoMonitoramentoEm = '27/10/2027 16:10';
       mutated = true;
@@ -887,7 +887,7 @@ export function loadOrSeedUnifiedFreights(): void {
         devolvidoParaCorrecao: false,
         requerReconfirmacaoOperacional: false,
         comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: 'OC-RDV-0841-2027',
+        ordemCarregamentoNumero: 'OC-RDV-0841',
         ordemCarregamentoEmitidaEm: '25/10/2027 11:50',
         liberadoMonitoramentoEm: '25/10/2027 12:00',
         liberadoMonitoramentoPorId: 'emp-expedicao-2',
@@ -1030,7 +1030,7 @@ export function loadOrSeedUnifiedFreights(): void {
         devolvidoParaCorrecao: false,
         requerReconfirmacaoOperacional: false,
         comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: 'OC-RDV-0840-2027',
+        ordemCarregamentoNumero: 'OC-RDV-0840',
         ordemCarregamentoEmitidaEm: '27/10/2027 16:08',
         liberadoMonitoramentoEm: '27/10/2027 16:10',
         liberadoMonitoramentoPorId: 'emp-expedicao-2',

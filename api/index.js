@@ -2312,15 +2312,15 @@ async function getSystemAssetFromNeon(id) {
   }
   return null;
 }
-function persistSystemConfigToNeon(config) {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !config) return Promise.resolve();
+function persistSystemConfigToNeon(config2) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !config2) return Promise.resolve();
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
         await dbSql`
           INSERT INTO rodovar_state_store (key, payload, updated_at)
-          VALUES ('rodovar-system-config', ${JSON.stringify(config)}::jsonb, CURRENT_TIMESTAMP)
+          VALUES ('rodovar-system-config', ${JSON.stringify(config2)}::jsonb, CURRENT_TIMESTAMP)
           ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
         `;
       } catch (err) {
@@ -4715,7 +4715,7 @@ function allocateNextOrderNumber(brand, year) {
   }
   nextOrderSeqByBrand[brand] = nextSeq + 1;
   saveSequence();
-  const orderNumber = `${prefix}${String(nextSeq).padStart(6, "0")}/${spYear}`;
+  const orderNumber = `${prefix}${String(nextSeq).padStart(6, "0")}`;
   return { orderNumber, sequence: nextSeq, year: spYear };
 }
 function formatProtocolNumber(seq) {
@@ -4843,7 +4843,7 @@ function normalizeLegacyFreightRecord(rec) {
       rec.monitoramentoResponsavelNome = rec.expedicaoResponsavelNome || "Carlos Eduardo Mendes";
     }
     if (!rec.ordemCarregamentoNumero) {
-      rec.ordemCarregamentoNumero = `OC-RDV-${rec.protocol.replace("#", "")}-2027`;
+      rec.ordemCarregamentoNumero = `OC-RDV-${rec.protocol.replace("#", "")}`;
       rec.ordemCarregamentoEmitidaEm = rec.updatedAtFormatted;
     }
     if (!rec.liberadoMonitoramentoEm) {
@@ -4871,7 +4871,7 @@ function normalizeLegacyFreightRecord(rec) {
       rec.checklistFechamento.ordemColetaEnviadaPorId = "emp-4";
       rec.checklistFechamento.ordemColetaEnviadaPorNome = "Carlos Eduardo Mendes";
       rec.checklistFechamento.ordemColetaEnviadaEm = "27/10/2027 16:10";
-      rec.ordemCarregamentoNumero = "OC-RDV-0840-2027";
+      rec.ordemCarregamentoNumero = "OC-RDV-0840";
       rec.ordemCarregamentoEmitidaEm = "27/10/2027 16:08";
       rec.liberadoMonitoramentoEm = "27/10/2027 16:10";
       mutated = true;
@@ -5153,7 +5153,7 @@ function loadOrSeedUnifiedFreights() {
         devolvidoParaCorrecao: false,
         requerReconfirmacaoOperacional: false,
         comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: "OC-RDV-0841-2027",
+        ordemCarregamentoNumero: "OC-RDV-0841",
         ordemCarregamentoEmitidaEm: "25/10/2027 11:50",
         liberadoMonitoramentoEm: "25/10/2027 12:00",
         liberadoMonitoramentoPorId: "emp-expedicao-2",
@@ -5298,7 +5298,7 @@ function loadOrSeedUnifiedFreights() {
         devolvidoParaCorrecao: false,
         requerReconfirmacaoOperacional: false,
         comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: "OC-RDV-0840-2027",
+        ordemCarregamentoNumero: "OC-RDV-0840",
         ordemCarregamentoEmitidaEm: "27/10/2027 16:08",
         liberadoMonitoramentoEm: "27/10/2027 16:10",
         liberadoMonitoramentoPorId: "emp-expedicao-2",
@@ -11863,15 +11863,15 @@ async function syncFreightsOnlyFromNeonIfNeeded(force = false) {
   })();
   return activeFreightNeonSyncPromise;
 }
-function resolveUserAvatarUrl(user, config) {
-  const rev = config.revision || 1;
+function resolveUserAvatarUrl(user, config2) {
+  const rev = config2.revision || 1;
   if (user.hasCustomAvatar && user.avatar && user.avatar.trim() !== "") {
     return user.avatar;
   }
-  const defaultBase = config.defaultAvatar?.imageUrl || DEFAULT_AVATAR_URL;
+  const defaultBase = config2.defaultAvatar?.imageUrl || DEFAULT_AVATAR_URL;
   return defaultBase.includes("?") ? `${defaultBase}&rev=${rev}` : `${defaultBase}?rev=${rev}`;
 }
-function sanitizeUserForClient(user, config) {
+function sanitizeUserForClient(user, config2) {
   return {
     id: user.id,
     name: user.name,
@@ -11883,7 +11883,7 @@ function sanitizeUserForClient(user, config) {
     role: user.roleTitle,
     department: user.department,
     accessLevel: user.accessLevel,
-    avatar: resolveUserAvatarUrl(user, config),
+    avatar: resolveUserAvatarUrl(user, config2),
     hasCustomAvatar: user.hasCustomAvatar,
     approvalStatus: user.approvalStatus,
     requestedAt: user.requestedAt,
@@ -13918,6 +13918,9 @@ if (process.env.VERCEL !== "1" && !isAutomatedTestProcess) {
 }
 
 // src/server/vercelEntry.ts
+var config = {
+  maxDuration: 30
+};
 var appInstance = null;
 function handler(req, res) {
   try {
@@ -13942,5 +13945,6 @@ function handler(req, res) {
   }
 }
 export {
+  config,
   handler as default
 };

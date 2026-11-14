@@ -305,10 +305,10 @@ test('Remoção da AXD em novas operações, preservação histórica (#0840), O
     assert.equal(emitVl1.status, 200);
     assert.equal(emitRdv2.status, 200);
 
-    // Numeração independente e sequencial por empresa
-    assert.match(emitRdv1.body.loadingOrder.orderNumber, /^OC-RDV-000001\/\d{4}$/);
-    assert.match(emitVl1.body.loadingOrder.orderNumber, /^OC-VL-000001\/\d{4}$/);
-    assert.match(emitRdv2.body.loadingOrder.orderNumber, /^OC-RDV-000002\/\d{4}$/);
+    // Numeração independente e sequencial por empresa (sem ano)
+    assert.match(emitRdv1.body.loadingOrder.orderNumber, /^OC-RDV-000001$/);
+    assert.match(emitVl1.body.loadingOrder.orderNumber, /^OC-VL-000001$/);
+    assert.match(emitRdv2.body.loadingOrder.orderNumber, /^OC-RDV-000002$/);
 
     // Dados reais oficiais sem vazamento de valor cobrado do cliente, notas internas ou exemplos do PDF
     assert.equal(emitRdv1.body.loadingOrder.cnpj, COMPANY_LEGAL_PROFILES.RODOVAR.cnpj);
@@ -334,6 +334,8 @@ test('Remoção da AXD em novas operações, preservação histórica (#0840), O
 
     const vmRdv = buildCollectionOrderViewModel(emitRdv1.body.freight, 'Lucas Expedição');
     assert.equal(vmRdv.brand, 'RODOVAR');
+    assert.equal(vmRdv.seqFormatted, '000001');
+    assert.equal(vmRdv.fullCode, 'OC-RDV-000001');
     assert.equal(vmRdv.company.cnpj, '49908710000103');
     assert.equal(vmRdv.company.ie, '205429099');
     assert.equal(vmRdv.pedido, 'PED-100');
@@ -343,6 +345,8 @@ test('Remoção da AXD em novas operações, preservação histórica (#0840), O
 
     const vmVl = buildCollectionOrderViewModel(emitVl1.body.freight, 'Lucas Expedição');
     assert.equal(vmVl.brand, 'VL TRANSPORTES');
+    assert.equal(vmVl.seqFormatted, '000001');
+    assert.equal(vmVl.fullCode, 'OC-VL-000001');
     assert.equal(vmVl.company.cnpj, '54506363000122');
     assert.equal(vmVl.remetenteNome, 'REMETENTE REAL 2');
     assert.equal(vmVl.destinatarioNome, 'DESTINATÁRIO REAL 2');
@@ -395,7 +399,7 @@ test('Remoção da AXD em novas operações, preservação histórica (#0840), O
     });
     assert.equal(lateEmit.status, 200);
     assert.equal(lateEmit.body.freight.ordemColetaPendente, false);
-    assert.match(lateEmit.body.loadingOrder.orderNumber, /^OC-VL-000002\/\d{4}$/);
+    assert.match(lateEmit.body.loadingOrder.orderNumber, /^OC-VL-000002$/);
 
     // 5. Importação de Script WhatsApp para a página de fretes mantendo campos ausentes em branco
     const whatsappScript = [

@@ -112,33 +112,36 @@ export function extractOrderDisplayNumber(freight: UnifiedFreightRecord): {
 } {
   const currentYear = new Date().getFullYear();
   const year = freight.ordemColetaAno || currentYear;
+  const cleanedOrderNum = freight.ordemCarregamentoNumero
+    ? freight.ordemCarregamentoNumero.replace(/(?:\/|-)\d{4}$/, '')
+    : '';
   if (typeof freight.ordemColetaSequencia === 'number' && freight.ordemColetaSequencia > 0) {
-    const seqFormatted = String(freight.ordemColetaSequencia);
+    const seqFormatted = String(freight.ordemColetaSequencia).padStart(6, '0');
     const prefix = freight.empresaMarca === 'VL TRANSPORTES' ? 'OC-VL-' : 'OC-RDV-';
     return {
       seqFormatted,
       year,
-      fullCode: freight.ordemCarregamentoNumero || `${prefix}${seqFormatted.padStart(6, '0')}/${year}`,
+      fullCode: cleanedOrderNum || `${prefix}${seqFormatted}`,
     };
   }
-  if (freight.ordemCarregamentoNumero) {
-    const m = freight.ordemCarregamentoNumero.match(/(\d+)(?:\/(\d{4}))?$/);
+  if (cleanedOrderNum) {
+    const m = cleanedOrderNum.match(/(\d+)$/);
     if (m) {
       return {
-        seqFormatted: String(parseInt(m[1], 10)),
-        year: m[2] ? parseInt(m[2], 10) : year,
-        fullCode: freight.ordemCarregamentoNumero,
+        seqFormatted: String(parseInt(m[1], 10)).padStart(6, '0'),
+        year,
+        fullCode: cleanedOrderNum,
       };
     }
     return {
-      seqFormatted: freight.ordemCarregamentoNumero,
+      seqFormatted: cleanedOrderNum,
       year,
-      fullCode: freight.ordemCarregamentoNumero,
+      fullCode: cleanedOrderNum,
     };
   }
   const protoDigits = freight.protocol.replace(/\D/g, '') || '0';
   return {
-    seqFormatted: String(parseInt(protoDigits, 10) || 1),
+    seqFormatted: String(parseInt(protoDigits, 10) || 1).padStart(6, '0'),
     year,
     fullCode: freight.protocol,
   };
@@ -466,7 +469,7 @@ export async function generateCollectionOrderPdfA4(
     doc.setFontSize(8);
     doc.setTextColor(15, 23, 42);
     doc.text('ORDEM DE COLETA', rightX + 2, startY + 4.3);
-    doc.text(`Nº :  ${data.seqFormatted} / ${data.year}`, rightX + 41, startY + 4.3);
+    doc.text(`Nº :  ${data.seqFormatted}`, rightX + 41, startY + 4.3);
     doc.text(viaLabel, rightX + rightW - 2, startY + 4.3, { align: 'right' });
 
     doc.setFontSize(6.6);
@@ -827,7 +830,7 @@ export async function generateCollectionOrderPdfA4(
     doc.setFontSize(8.2);
     doc.text('ORDEM DE COLETA', margin + 96, y + 4.5, { align: 'center' });
     doc.setFontSize(7.8);
-    doc.text(`Nº : ${data.seqFormatted} / ${data.year}`, margin + 150, y + 4.4, {
+    doc.text(`Nº : ${data.seqFormatted}`, margin + 150, y + 4.4, {
       align: 'center',
     });
     doc.text(viaLabel, margin + contentWidth - 2, y + 4.4, { align: 'right' });

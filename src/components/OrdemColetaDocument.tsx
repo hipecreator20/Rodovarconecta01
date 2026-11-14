@@ -46,7 +46,7 @@ function buildViaHtml(d: CollectionOrderDocumentData, viaLabel: '1ª-VIA' | '2ª
             <td style="width:24%;"><strong>Solicitada Em:</strong> ${escapeHtml(d.solicitadaData)}</td>
             <td style="width:14%;"><strong>às:</strong> ${escapeHtml(d.solicitadaHora)}</td>
             <td style="width:32%;text-align:center;font-weight:900;font-size:11px;">ORDEM DE COLETA</td>
-            <td style="width:18%;text-align:center;font-weight:900;">Nº : ${escapeHtml(d.seqFormatted)} / ${d.year}</td>
+            <td style="width:18%;text-align:center;font-weight:900;">Nº : ${escapeHtml(d.seqFormatted)}</td>
             <td style="width:12%;text-align:right;font-weight:900;">${viaLabel}</td>
           </tr>
         </table>
@@ -109,7 +109,7 @@ function buildViaHtml(d: CollectionOrderDocumentData, viaLabel: '1ª-VIA' | '2ª
         <div class="rdv-head-right">
           <div class="shaded rdv-order-bar">
             <span>ORDEM DE COLETA</span>
-            <span>Nº : ${escapeHtml(d.seqFormatted)} / ${d.year}</span>
+            <span>Nº : ${escapeHtml(d.seqFormatted)}</span>
             <span>${viaLabel}</span>
           </div>
           <div class="rdv-client-body">
@@ -340,7 +340,7 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
           <span className="col-span-2">às: {data.solicitadaHora}</span>
           <span className="col-span-4 text-center font-black">ORDEM DE COLETA</span>
           <span className="col-span-2 text-center font-black">
-            Nº {data.seqFormatted}/{data.year}
+            Nº {data.seqFormatted}
           </span>
           <span className="col-span-1 text-right font-black">{viaLabel}</span>
         </div>
@@ -449,7 +449,7 @@ const ViaSheetPreview: React.FC<{ data: CollectionOrderDocumentData; viaLabel: '
           <div className="bg-slate-100 border-b border-slate-700 px-1.5 py-0.5 flex items-center justify-between font-black text-[11px]">
             <span>ORDEM DE COLETA</span>
             <span>
-              Nº {data.seqFormatted}/{data.year}
+              Nº {data.seqFormatted}
             </span>
             <span>{viaLabel}</span>
           </div>
@@ -788,7 +788,7 @@ export const OrdemColetaModal: React.FC<OrdemColetaModalProps> = ({
         {docData && (
           <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
             <span className="text-[11px] font-bold text-slate-600">
-              {docData.brand} • Nº <strong>{docData.seqFormatted}/{docData.year}</strong> • A4 (2 vias)
+              {docData.brand} • Nº <strong>{docData.seqFormatted}</strong> ({docData.fullCode}) • A4 (2 vias)
             </span>
             <div className="inline-flex items-center rounded-lg bg-slate-200/80 p-0.5 text-[11px] font-bold">
               {(
