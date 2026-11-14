@@ -5,6 +5,7 @@ import {portalLoading} from './lib/portalLoading';
 import {usePortalInitialized, useAuthenticatedPanelLoading} from './components/GlobalLoading';
 import {notificationUrl,notificationRecord,notificationMatches,orderedNotifications} from './lib/notificationNavigation';
 import './components/NotificationsClean.css';
+import { GlobalToastViewport, emitPortalToast } from './components/ui/GlobalToastViewport';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -19,7 +20,6 @@ import {
   Calendar,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   Cloud,
   Download,
@@ -30,7 +30,6 @@ import {
   Leaf,
   Link2,
   LogIn,
-  LogOut,
   Megaphone,
   MessageSquare,
   Phone,
@@ -45,6 +44,7 @@ import {
   X,
 } from 'lucide-react';
 import { RodovarLogo } from './components/RodovarLogo';
+import { UserProfileMenu } from './components/UserProfileMenu';
 import { LoginScreen } from './components/LoginScreen';
 const MobileDeviceView = lazy(() =>
   import('./components/MobileSimulatorModal').then((m) => ({ default: m.MobileDeviceView }))
@@ -93,7 +93,6 @@ import {
   INITIAL_AUDIT_LOGS,
   INITIAL_CHATS,
   INITIAL_DOCUMENTS,
-  INITIAL_EMPLOYEES,
   INITIAL_EVENTS,
   INITIAL_INVITES,
   INITIAL_NOTIFICATIONS,
@@ -123,10 +122,10 @@ import {
   apiFetchFreightNotifications,
   apiMarkFreightNotificationRead,
   apiMarkAllFreightNotificationsRead,
+  apiDeleteFreightNotification,
   apiFetchEconomicMode,
   apiUpdateEconomicMode,
   apiLogout,
-  resolveAvatarUrl,
   withRevisionParam,
   getAuthHeaders,
 } from './lib/serverApi';
@@ -139,6 +138,21 @@ import {
   clearSharedReceiptDraft,
   clearOfflinePendingReceiptsForUser,
 } from './lib/pwaShareTarget';
+
+const UNAUTHENTICATED_FALLBACK_USER: Employee = {
+  id: '',
+  name: '',
+  email: '',
+  roleTitle: '',
+  department: 'Operacional',
+  accessLevel: 'FUNCIONARIO',
+  avatar: '/assets/default-avatar.png',
+  hasCustomAvatar: false,
+  approvalStatus: 'PENDENTE',
+  phoneExt: '',
+  joinedAt: '',
+  active: false,
+};
 
 const SECTION_TO_PATH: Record<MenuSection, string> = {
   inicio: '/',
@@ -194,17 +208,77 @@ function useIsMobile() {
 
 export default function App() {
   const isMobile = useIsMobile();
+  const readNotifIdsRef = useRef<Set<string>>(new Set());
+  const dismissedNotifIdsRef = useRef<Set<string>>(new Set());
+  const activeNotifUserIdRef = useRef<string>('');
+
+  const persistNotifSets = React.useCallback((uid: string) => {
+    if (!uid) return;
+    try {
+      localStorage.setItem(
+        `rodovar_notif_read_v2_${uid}`,
+        JSON.stringify(Array.from(readNotifIdsRef.current))
+      );
+      localStorage.setItem(
+        `rodovar_notif_dismissed_v2_${uid}`,
+        JSON.stringify(Array.from(dismissedNotifIdsRef.current))
+      );
+    } catch {
+      // ignore quota errors
+    }
+  }, []);
+
+  const mergeIncomingNotifications = React.useCallback(
+    (
+      prev: CorporateNotification[],
+      incoming: CorporateNotification[],
+      options?: {
+        replaceTypes?: CorporateNotification['type'][];
+        replaceIdPrefix?: string;
+      }
+    ): CorporateNotification[] => {
+      const replaceSet = new Set(options?.replaceTypes || []);
+      const prefix = options?.replaceIdPrefix;
+      const prevById = new Map(prev.map((n) => [n.id, n]));
+      const base = prev.filter((n) => {
+        if (prefix && n.id.startsWith(prefix)) return false;
+        if (replaceSet.size > 0 && replaceSet.has(n.type)) return false;
+        return true;
+      });
+      const merged = new Map<string, CorporateNotification>();
+      for (const item of base) {
+        if (dismissedNotifIdsRef.current.has(item.id)) continue;
+        const isStickyRead = Boolean(item.read || readNotifIdsRef.current.has(item.id));
+        merged.set(item.id, isStickyRead && !item.read ? { ...item, read: true } : item);
+      }
+      for (const item of incoming) {
+        if (!item || !item.id || dismissedNotifIdsRef.current.has(item.id)) continue;
+        const prevItem = prevById.get(item.id) || merged.get(item.id);
+        const stickyRead = Boolean(
+          prevItem?.read || item.read || readNotifIdsRef.current.has(item.id)
+        );
+        if (stickyRead) readNotifIdsRef.current.add(item.id);
+        merged.set(item.id, { ...item, read: stickyRead });
+      }
+      return Array.from(merged.values());
+    },
+    []
+  );
+
   useEffect(() => {
     const receive = (event: Event) => {
       const notices = (event as CustomEvent).detail;
-      if (Array.isArray(notices)) setNotifications(prev => {
-        const merged = new Map(prev.map(n => [n.id,n]));
-        notices.forEach(n => merged.set(n.id,n)); return [...merged.values()];
-      });
+      if (Array.isArray(notices)) {
+        setNotifications((prev) =>
+          mergeIncomingNotifications(prev, notices as CorporateNotification[], {
+            replaceIdPrefix: 'agenda:',
+          })
+        );
+      }
     };
-    window.addEventListener('rodovar:agenda-notifications',receive);
-    return () => window.removeEventListener('rodovar:agenda-notifications',receive);
-  }, []);
+    window.addEventListener('rodovar:agenda-notifications', receive);
+    return () => window.removeEventListener('rodovar:agenda-notifications', receive);
+  }, [mergeIncomingNotifications]);
   // Navigation & View Mode
   const [activeSection, setActiveSection] = useState<MenuSection>(() => {
     if (typeof window !== 'undefined') {
@@ -374,7 +448,7 @@ export default function App() {
     return [...updatedExisting, ...missingInitial];
   };
 
-  const [currentUserId, setCurrentUserId] = useState<string>('emp-admin-master');
+  const [currentUserId, setCurrentUserId] = useState<string>('');
   const [announcements, setAnnouncements] = useState<Announcement[]>(() => {
     try {
       const saved = localStorage.getItem('rodovar_conecta_announcements_v1');
@@ -473,6 +547,8 @@ export default function App() {
   const [selectedAnnouncementModal, setSelectedAnnouncementModal] =
     useState<Announcement | null>(null);
   const [showProfileDropdown, setShowProfileDropdown] = useState<boolean>(false);
+  const [profileInitialTab, setProfileInitialTab] = useState<'social' | 'settings'>('social');
+  const [profileTabRequestKey, setProfileTabRequestKey] = useState<number>(0);
   const [showNotificationsPopover, setShowNotificationsPopover] = useState<boolean>(false);
   const [showNotificationsCenterModal, setShowNotificationsCenterModal] = useState<boolean>(false);
   const [notifCenterFilter, setNotifCenterFilter] = useState<string>('todas');
@@ -507,10 +583,33 @@ export default function App() {
   const { updateAvailable, isUpdating, applyUpdate, dismissUpdate } = useServiceWorkerUpdate();
   const isOnline = useOnlineStatus();
 
-  const currentUser =
-    employees.find((e) => e && e.id === currentUserId) ||
-    employees.find((e) => e && e.id) ||
-    INITIAL_EMPLOYEES[0];
+  const resolvedCurrentUser = employees.find((e) => e && e.id === currentUserId);
+  const currentUser = resolvedCurrentUser || UNAUTHENTICATED_FALLBACK_USER;
+
+  // Hydrate per-user sticky read & permanently dismissed notification tombstones
+  useEffect(() => {
+    const uid = currentUserId;
+    activeNotifUserIdRef.current = uid;
+    if (!uid) {
+      readNotifIdsRef.current = new Set();
+      dismissedNotifIdsRef.current = new Set();
+      return;
+    }
+    try {
+      const rawRead = localStorage.getItem(`rodovar_notif_read_v2_${uid}`);
+      const rawDismissed = localStorage.getItem(`rodovar_notif_dismissed_v2_${uid}`);
+      readNotifIdsRef.current = new Set(rawRead ? JSON.parse(rawRead) : []);
+      dismissedNotifIdsRef.current = new Set(rawDismissed ? JSON.parse(rawDismissed) : []);
+    } catch {
+      readNotifIdsRef.current = new Set();
+      dismissedNotifIdsRef.current = new Set();
+    }
+    setNotifications((prev) =>
+      prev
+        .filter((n) => !dismissedNotifIdsRef.current.has(n.id))
+        .map((n) => (readNotifIdsRef.current.has(n.id) ? { ...n, read: true } : n))
+    );
+  }, [currentUserId]);
 
   // Global keyboard shortcut Ctrl+K / Cmd+K for Unified Corporate Search
   useEffect(() => {
@@ -520,6 +619,7 @@ export default function App() {
         setShowCommandPalette((prev) => !prev);
       } else if (e.key === 'Escape') {
         setShowCommandPalette(false);
+        setShowNotificationsPopover(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -770,14 +870,12 @@ export default function App() {
       }
       try {
         const fNotifs = await apiFetchFreightNotifications();
-        if (fNotifs.notifications && fNotifs.notifications.length > 0) {
-          setNotifications((prev) => {
-            const map = new Map(prev.map((n) => [n.id, n]));
-            for (const fn of fNotifs.notifications) {
-              map.set(fn.id, fn);
-            }
-            return Array.from(map.values());
-          });
+        if (Array.isArray(fNotifs.notifications)) {
+          setNotifications((prev) =>
+            mergeIncomingNotifications(prev, fNotifs.notifications, {
+              replaceIdPrefix: 'fnotif-',
+            })
+          );
         }
       } catch {
         // ignore
@@ -823,23 +921,27 @@ export default function App() {
           const d = await r.json();
           if (!cancelled) {
             setRequests(d.requests);
-            setNotifications((prev) => [
-              ...prev.filter((n) => n.type !== 'solicitacao'),
-              ...d.notifications.map((n: any) => ({
-                id: 'queue:' + n.id,
-                type: 'solicitacao' as const,
-                dotColor: 'blue' as const,
-                title: n.title,
-                subtitle: 'Atualização no atendimento interno',
-                timeLabel: 'Solicitações',
-                read: n.read,
-                targetSection: 'solicitacoes' as const,
-                targetId: n.targetId,
-                recipientId: n.recipientId,
-                publicationId: 'queue:' + n.id,
-                createdAtIso: n.createdAtIso,
-              })),
-            ]);
+            const incomingQueue = Array.isArray(d.notifications)
+              ? d.notifications.map((n: any) => ({
+                  id: 'queue:' + n.id,
+                  type: 'solicitacao' as const,
+                  dotColor: 'blue' as const,
+                  title: n.title,
+                  subtitle: 'Atualização no atendimento interno',
+                  timeLabel: 'Solicitações',
+                  read: Boolean(n.read),
+                  targetSection: 'solicitacoes' as const,
+                  targetId: n.targetId,
+                  recipientId: n.recipientId,
+                  publicationId: 'queue:' + n.id,
+                  createdAtIso: n.createdAtIso,
+                }))
+              : [];
+            setNotifications((prev) =>
+              mergeIncomingNotifications(prev, incomingQueue, {
+                replaceIdPrefix: 'queue:',
+              })
+            );
           }
         }
       } catch {}
@@ -898,43 +1000,159 @@ export default function App() {
   };
 
   const handleMarkNotificationRead = async (notifId: string) => {
-    if(notifId.startsWith('agenda:')){const response=await fetch('/api/agenda/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:[notifId]})});if(!response.ok)return;}
-    if(notifId.startsWith('mural:')){const response=await fetch('/api/mural/notifications/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:[notifId]})});if(!response.ok)return;}
+    const uid = activeNotifUserIdRef.current || currentUser.id;
+    const targetItem = notifications.find((n) => n.id === notifId);
+    const matchingIds = new Set<string>([notifId]);
+    if (targetItem) {
+      for (const n of notifications) {
+        if (
+          n.type === targetItem.type &&
+          n.targetSection === targetItem.targetSection &&
+          (n.targetId || '') === (targetItem.targetId || '') &&
+          n.title.trim() === targetItem.title.trim() &&
+          n.subtitle.trim() === targetItem.subtitle.trim()
+        ) {
+          matchingIds.add(n.id);
+        }
+      }
+    }
+    matchingIds.forEach((id) => readNotifIdsRef.current.add(id));
+    persistNotifSets(uid);
+
+    // Optimistic sticky read update so viewed notifications never revert to unread
     setNotifications((prev) =>
-      prev.map((item) => (item.id === notifId ? { ...item, read: true } : item))
+      prev.map((item) => (matchingIds.has(item.id) ? { ...item, read: true } : item))
     );
+
+    if (notifId.startsWith('agenda:')) {
+      await fetch('/api/agenda/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: [notifId] }),
+      }).catch(() => {});
+    }
+    if (notifId.startsWith('mural:')) {
+      await fetch('/api/mural/notifications/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: [notifId] }),
+      }).catch(() => {});
+    }
     if (notifId.startsWith('queue:')) {
-      const notification=notifications.find(n=>n.id===notifId);
-      if(notification?.targetId) await fetch('/api/requests/'+notification.targetId+'/read',{method:'POST',headers:getAuthHeaders(),body:'{}'});
+      if (targetItem?.targetId) {
+        await fetch('/api/requests/' + targetItem.targetId + '/read', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: '{}',
+        }).catch(() => {});
+      }
     }
     if (notifId.startsWith('fnotif-')) {
-      void apiMarkFreightNotificationRead(notifId);
+      await apiMarkFreightNotificationRead(notifId).catch(() => {});
     }
   };
 
   const handleMarkAllNotificationsRead = async () => {
-    const agendaIds=notifications.filter(n=>n.id.startsWith('agenda:')&&!n.read).map(n=>n.id);if(agendaIds.length)await fetch('/api/agenda/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:agendaIds})});
-    const muralIds=notifications.filter(n=>n.id.startsWith('mural:')&&!n.read).map(n=>n.id);if(muralIds.length){const response=await fetch('/api/mural/notifications/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:muralIds})});if(!response.ok)return;}
-    await apiMarkAllFreightNotificationsRead();
-    await Promise.all(notifications.filter(n=>n.id.startsWith('fnotif-')&&!n.read).map(n=>apiMarkFreightNotificationRead(n.id)));
-    await Promise.all(notifications.filter(n=>n.id.startsWith('queue:') && !n.read && n.targetId).map(n=>fetch('/api/requests/'+n.targetId+'/read',{method:'POST',headers:getAuthHeaders(),body:'{}'})));
+    const uid = activeNotifUserIdRef.current || currentUser.id;
+    const unread = notifications.filter((n) => !n.read);
+    notifications.forEach((n) => readNotifIdsRef.current.add(n.id));
+    persistNotifSets(uid);
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+
+    const agendaIds = unread.filter((n) => n.id.startsWith('agenda:')).map((n) => n.id);
+    if (agendaIds.length) {
+      await fetch('/api/agenda/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: agendaIds }),
+      }).catch(() => {});
+    }
+    const muralIds = unread.filter((n) => n.id.startsWith('mural:')).map((n) => n.id);
+    if (muralIds.length) {
+      await fetch('/api/mural/notifications/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: muralIds }),
+      }).catch(() => {});
+    }
+    await apiMarkAllFreightNotificationsRead().catch(() => {});
+    await Promise.all(
+      unread
+        .filter((n) => n.id.startsWith('queue:') && n.targetId)
+        .map((n) =>
+          fetch('/api/requests/' + n.targetId + '/read', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: '{}',
+          }).catch(() => {})
+        )
+    );
   };
 
-  const handleAccessNotification = (n:CorporateNotification) => {
-    const url=notificationUrl(n,SECTION_TO_PATH);
-    if(!url || !hasPagePermission(currentUser,n.targetSection)){setNotificationNavigationError('Este aviso não possui um registro acessível vinculado.');return;}
+  const handleAccessNotification = (n: CorporateNotification) => {
+    const url = notificationUrl(n, SECTION_TO_PATH);
+    if (!url || !hasPagePermission(currentUser, n.targetSection)) {
+      const errMsg = 'Este aviso não possui um registro acessível vinculado.';
+      setNotificationNavigationError(errMsg);
+      emitPortalToast({ type: 'error', title: 'Aviso indisponível', message: errMsg });
+      return;
+    }
     setNotificationNavigationError('');
     void handleMarkNotificationRead(n.id);
-    window.history.pushState({section:n.targetSection},'',url);
-    if(n.targetSection.startsWith('fretes_'))setSelectedNotificationFreightId(notificationRecord(n)||null);
+    window.history.pushState({ section: n.targetSection }, '', url);
+    if (n.targetSection.startsWith('fretes_')) {
+      setSelectedNotificationFreightId(notificationRecord(n) || null);
+    }
     setActiveSection(n.targetSection);
     window.dispatchEvent(new Event('rodovar:record'));
-    setShowNotificationsPopover(false);setShowNotificationsCenterModal(false);
+    setShowNotificationsPopover(false);
+    setShowNotificationsCenterModal(false);
   };
+
   const handleDeleteNotification = async (notifId: string) => {
-    if(notifId.startsWith('mural:')){const response=await fetch('/api/mural/notifications/read',{method:'POST',headers:getAuthHeaders(),body:JSON.stringify({ids:[notifId],dismiss:true})});if(!response.ok)return;}
-    setNotifications((prev) => prev.filter((n) => n.id !== notifId));
+    const uid = activeNotifUserIdRef.current || currentUser.id;
+    const targetItem = notifications.find((n) => n.id === notifId);
+    const idsToDelete = new Set<string>([notifId]);
+    if (targetItem) {
+      for (const n of notifications) {
+        if (
+          n.type === targetItem.type &&
+          n.targetSection === targetItem.targetSection &&
+          (n.targetId || '') === (targetItem.targetId || '') &&
+          n.title.trim() === targetItem.title.trim() &&
+          n.subtitle.trim() === targetItem.subtitle.trim()
+        ) {
+          idsToDelete.add(n.id);
+        }
+      }
+    }
+    idsToDelete.forEach((id) => dismissedNotifIdsRef.current.add(id));
+    persistNotifSets(uid);
+
+    // Permanently remove from local state immediately
+    setNotifications((prev) => prev.filter((n) => !idsToDelete.has(n.id)));
+
+    if (notifId.startsWith('fnotif-')) {
+      await apiDeleteFreightNotification(notifId).catch(() => {});
+    } else if (notifId.startsWith('mural:')) {
+      await fetch('/api/mural/notifications/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: Array.from(idsToDelete), dismiss: true }),
+      }).catch(() => {});
+    } else if (notifId.startsWith('agenda:')) {
+      await fetch('/api/agenda/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ids: Array.from(idsToDelete), dismiss: true }),
+      }).catch(() => {});
+    } else if (notifId.startsWith('queue:') && targetItem?.targetId) {
+      await fetch('/api/requests/' + targetItem.targetId + '/read', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ dismiss: true, notificationId: notifId }),
+      }).catch(() => {});
+    }
   };
 
   // Server-Validated Credential Login Handler
@@ -1038,19 +1256,33 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    const logoutUserId = currentUser.id;
     try {
       clearPrivateFreightCache();
       await apiLogout();
       await clearSensitiveDataOnLogout();
       await clearSharedReceiptDraft();
-      clearOfflinePendingReceiptsForUser(currentUser.id);
+      if (logoutUserId) {
+        clearOfflinePendingReceiptsForUser(logoutUserId);
+      }
       setPendingSharedDraft(null);
     } catch (err) {
       console.debug('Session clear info:', err);
     }
     setIsAuthenticated(false);
+    setCurrentUserId('');
+    setEmployees([]);
+    setRequests([]);
+    setNotifications([]);
+    setPendingAccessRequestsCount(0);
+    setActiveSection('inicio');
     setShowProfileDropdown(false);
+    setShowNotificationsPopover(false);
     try {
+      localStorage.removeItem('rodovar_conecta_employees_v1');
+      localStorage.removeItem('rodovar_conecta_notifications_v1');
+      sessionStorage.removeItem('rodovar_intended_section_v1');
+      sessionStorage.removeItem('rodovar_restore_section_after_publish');
       if (typeof window !== 'undefined' && window.location.pathname !== '/') {
         window.history.replaceState({}, '', '/');
       }
@@ -1970,16 +2202,42 @@ export default function App() {
     return true;
   };
 
-  const handleToggleEmployeeActive = async (empId: string) => {
+  const handleToggleEmployeeActive = async (empId: string): Promise<{ ok: boolean; error?: string }> => {
     const target = employees.find((e) => e.id === empId);
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === empId ? { ...e, active: !e.active } : e))
-    );
-    if (target) {
+    if (!target) {
+      return { ok: false, error: 'Colaborador não encontrado.' };
+    }
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(empId)}`, {
+        method: 'PUT',
+        headers: getAuthHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({ active: !target.active }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = json?.error || 'Não foi possível atualizar o status do colaborador no servidor.';
+        setAuthSessionNotice(message);
+        return { ok: false, error: message };
+      }
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === empId
+            ? json.user
+              ? { ...e, ...json.user }
+              : { ...e, active: !e.active }
+            : e
+        )
+      );
       await recordAuditLog(
         target.active ? 'DESATIVACAO_CONTA' : 'REATIVACAO_CONTA',
         `${target.active ? 'Desativou' : 'Reativou'} o acesso de ${target.name} (${target.email})`
       );
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha de comunicação com o servidor.';
+      setAuthSessionNotice(message);
+      return { ok: false, error: message };
     }
   };
 
@@ -1994,7 +2252,7 @@ export default function App() {
     accessLevel: UserRole;
     phoneExt: string;
     permissoesPaginas?: string[];
-  }) => {
+  }): Promise<{ ok: boolean; error?: string }> => {
     try {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
@@ -2002,50 +2260,23 @@ export default function App() {
         credentials: 'include',
         body: JSON.stringify(data),
       });
-      const json = await res.json();
-      if (res.ok && json.user) {
-        setEmployees((prev) => [json.user, ...prev]);
-        await recordAuditLog(
-          'CRIACAO_LOGIN_ACESSO',
-          `Criou login de acesso para ${json.user.name} (${json.user.login} • ${json.user.accessLevel})`
-        );
-        return;
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.user) {
+        const message = json?.error || 'Não foi possível criar o colaborador no servidor.';
+        setAuthSessionNotice(message);
+        return { ok: false, error: message };
       }
+      setEmployees((prev) => [json.user, ...prev]);
+      await recordAuditLog(
+        'CRIACAO_LOGIN_ACESSO',
+        `Criou login de acesso para ${json.user.name} (${json.user.login} • ${json.user.accessLevel})`
+      );
+      return { ok: true };
     } catch (err) {
-      console.debug('Server user create fallback:', err);
+      const message = err instanceof Error ? err.message : 'Falha de comunicação ao criar colaborador.';
+      setAuthSessionNotice(message);
+      return { ok: false, error: message };
     }
-
-    const cleanName = data.name.trim().replace(/[<>]/g, '');
-    const cleanRole = data.roleTitle.trim().replace(/[<>]/g, '') || 'Colaborador Corporativo';
-    const newEmp: Employee = {
-      id: `emp-${Date.now()}`,
-      name: cleanName,
-      email: data.email.trim().toLowerCase(),
-      login: data.login.trim().toLowerCase(),
-      mustChangePassword: data.mustChangePassword,
-      roleTitle: cleanRole,
-      role: cleanRole,
-      department: data.department,
-      accessLevel: data.accessLevel,
-      avatar: '',
-      hasCustomAvatar: false,
-      approvalStatus: 'APROVADO',
-      phoneExt: data.phoneExt.trim() || '71 9 9920-2476',
-      phone: '71 9 9920-2476',
-      location: 'Unidade Rodovar',
-      joinedAt: new Date().toLocaleDateString('pt-BR'),
-      active: true,
-      permissoesPaginas:
-        data.permissoesPaginas && data.permissoesPaginas.length > 0
-          ? data.permissoesPaginas
-          : getDefaultPermissionsForDepartment(data.department, data.accessLevel),
-    };
-
-    setEmployees((prev) => [newEmp, ...prev]);
-    await recordAuditLog(
-      'CRIACAO_LOGIN_ACESSO',
-      `Criou login de acesso para ${newEmp.name} (${newEmp.login} • ${newEmp.accessLevel})`
-    );
   };
 
   const handleUpdateEmployeeAdmin = async (
@@ -2062,66 +2293,79 @@ export default function App() {
       phoneExt?: string;
       permissoesPaginas?: string[];
     }
-  ) => {
+  ): Promise<{ ok: boolean; error?: string }> => {
     try {
-      await fetch(`/api/admin/users/${encodeURIComponent(empId)}`, {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(empId)}`, {
         method: 'PUT',
         headers: getAuthHeaders(true),
         credentials: 'include',
         body: JSON.stringify(updates),
       });
-    } catch (err) {
-      console.debug('Admin user update server sync info:', err);
-    }
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = json?.error || 'Não foi possível salvar as alterações do colaborador.';
+        setAuthSessionNotice(message);
+        emitPortalToast({ type: 'error', title: 'Erro ao atualizar colaborador', message });
+        return { ok: false, error: message };
+      }
 
-    const target = employees.find((e) => e.id === empId);
-    setEmployees((prev) =>
-      prev.map((e) =>
-        e.id === empId
-          ? {
-              ...e,
-              name: updates.name?.trim() || e.name,
-              email: updates.email?.trim().toLowerCase() || e.email,
-              login: updates.login?.trim().toLowerCase() || e.login || e.email,
-              mustChangePassword:
-                typeof updates.mustChangePassword === 'boolean'
-                  ? updates.mustChangePassword
-                  : e.mustChangePassword,
-              roleTitle: updates.roleTitle,
-              role: updates.roleTitle,
-              department: updates.department,
-              accessLevel: updates.accessLevel,
-              phoneExt: updates.phoneExt ?? e.phoneExt,
-              permissoesPaginas: updates.permissoesPaginas ?? e.permissoesPaginas,
-            }
-          : e
-      )
-    );
-    if (target) {
-      await recordAuditLog(
-        'ALTERACAO_LOGIN_PERFIL_ADMIN',
-        `Atualizou login/credenciais de ${updates.name || target.name}: Login ${updates.login || target.email} • ${updates.roleTitle} (${updates.accessLevel})`
+      const target = employees.find((e) => e.id === empId);
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === empId
+            ? json.user
+              ? { ...e, ...json.user }
+              : {
+                  ...e,
+                  name: updates.name?.trim() || e.name,
+                  email: updates.email?.trim().toLowerCase() || e.email,
+                  login: updates.login?.trim().toLowerCase() || e.login || e.email,
+                  mustChangePassword:
+                    typeof updates.mustChangePassword === 'boolean'
+                      ? updates.mustChangePassword
+                      : e.mustChangePassword,
+                  roleTitle: updates.roleTitle,
+                  role: updates.roleTitle,
+                  department: updates.department,
+                  accessLevel: updates.accessLevel,
+                  phoneExt: updates.phoneExt ?? e.phoneExt,
+                  permissoesPaginas: updates.permissoesPaginas ?? e.permissoesPaginas,
+                }
+            : e
+        )
       );
+      if (target) {
+        await recordAuditLog(
+          'ALTERACAO_LOGIN_PERFIL_ADMIN',
+          `Atualizou login/credenciais de ${updates.name || target.name}: Login ${updates.login || target.email} • ${updates.roleTitle} (${updates.accessLevel})`
+        );
+      }
+      emitPortalToast({
+        type: 'success',
+        title: 'Colaborador atualizado',
+        message: `Alterações de ${updates.name || target?.name || 'colaborador'} salvas no Neon.`,
+      });
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha de comunicação ao atualizar colaborador.';
+      setAuthSessionNotice(message);
+      emitPortalToast({ type: 'error', title: 'Erro de conexão', message });
+      return { ok: false, error: message };
     }
   };
 
-  const handleUpdateMyProfile = async (updates: {
-    name: string;
-    phoneExt: string;
-    avatar: string;
-    hasCustomAvatar?: boolean;
-    email?: string;
-    login?: string;
-    password?: string;
-  }) => {
+  const handleUpdateMyProfile = async (updates: Partial<Employee>) => {
     setEmployees((prev) =>
       prev.map((e) => {
         if (e.id !== currentUser.id) return e;
         return {
           ...e,
-          name: updates.name,
-          phoneExt: updates.phoneExt,
-          avatar: typeof updates.hasCustomAvatar === 'boolean' ? updates.avatar : updates.avatar || e.avatar,
+          name: updates.name ?? e.name,
+          phoneExt: updates.phoneExt ?? e.phoneExt,
+          avatar:
+            typeof updates.hasCustomAvatar === 'boolean'
+              ? updates.avatar ?? e.avatar
+              : updates.avatar || e.avatar,
           hasCustomAvatar:
             typeof updates.hasCustomAvatar === 'boolean'
               ? updates.hasCustomAvatar
@@ -2135,48 +2379,8 @@ export default function App() {
 
     await recordAuditLog(
       'ALTERACAO_PROPRIO_PERFIL',
-      `Titular ${updates.name} atualizou seus dados/foto de perfil (${updates.login || currentUser.email}).`
+      `Titular ${updates.name || currentUser.name} atualizou seus dados/foto de perfil (${updates.login || currentUser.email}).`
     );
-  };
-
-  const handleCreateFirstAccessAccount = async (data: {
-    name: string;
-    email: string;
-    password: string;
-    department: Department;
-    roleTitle: string;
-  }): Promise<Employee> => {
-    const newEmp: Employee = {
-      id: `emp-${Date.now()}`,
-      name: data.name,
-      email: data.email.toLowerCase(),
-      login: data.email.toLowerCase(),
-      password: data.password,
-      mustChangePassword: false,
-      roleTitle: data.roleTitle,
-      role: data.roleTitle,
-      department: data.department,
-      accessLevel: 'FUNCIONARIO',
-      avatar: '/assets/avatar-joao.jpg',
-      phoneExt: '71 9 9920-2476',
-      phone: '71 9 9920-2476',
-      location: 'Unidade Rodovar',
-      joinedAt: new Date().toLocaleDateString('pt-BR'),
-      active: true,
-    };
-    setEmployees((prev) => [newEmp, ...prev]);
-    await recordAuditLog(
-      'CADASTRO_PRIMEIRO_ACESSO',
-      `Novo acesso configurado com senha para ${newEmp.name} (${newEmp.email}).`
-    );
-    return newEmp;
-  };
-
-  const handleSwitchUserRole = (role: UserRole) => {
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === currentUser.id ? { ...e, accessLevel: role } : e))
-    );
-    setShowProfileDropdown(false);
   };
 
   const handleStartDirectChat = async (_emp: Employee) => {
@@ -2301,14 +2505,20 @@ export default function App() {
 
   // If user is not authenticated in the portal session, render the Main Corporate Login Screen
   if (isAuthenticated && currentUser.mustChangePassword) {
-    return <FirstAccessPassword user={currentUser} onLogout={handleLogout} onComplete={user => {
-      setEmployees(prev => prev.map(emp => emp.id === user.id ? user : emp));
-      setActiveSection(permittedHome(user) as MenuSection);
-    }} />;
+    return (
+      <>
+        <FirstAccessPassword user={currentUser} onLogout={handleLogout} onComplete={user => {
+          setEmployees(prev => prev.map(emp => emp.id === user.id ? user : emp));
+          setActiveSection(permittedHome(user) as MenuSection);
+        }} />
+        <GlobalToastViewport />
+      </>
+    );
   }
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !resolvedCurrentUser) {
     return (
       <div className="min-h-screen flex flex-col bg-[#080B0D]">
+        <GlobalToastViewport />
         {!isOnline && (
           <div
             role="status"
@@ -2506,11 +2716,11 @@ export default function App() {
         <ModulesView
           onMuralHydrated={(records, notices) => {
             setAnnouncements(records);
-            setNotifications((prev) => {
-              const merged = new Map(prev.map((n) => [n.id, n]));
-              notices.forEach((n) => merged.set(n.id, n));
-              return [...merged.values()];
-            });
+            setNotifications((prev) =>
+              mergeIncomingNotifications(prev, notices as CorporateNotification[], {
+                replaceIdPrefix: 'mural:',
+              })
+            );
           }}
           economicMode={economicMode}
           activeSection={activeSection}
@@ -2569,6 +2779,8 @@ export default function App() {
           onNavigate={setActiveSection}
           initialOpenRequestModal={openRequestModalOnLoad}
           onClearInitialModal={() => setOpenRequestModalOnLoad(false)}
+          profileInitialTab={profileInitialTab}
+          profileTabRequestKey={profileTabRequestKey}
         />
       ) : (
         <HomePremium
@@ -2591,6 +2803,18 @@ export default function App() {
     </Suspense>
   );
 
+  const handleOpenProfilePage = () => {
+    setProfileInitialTab('social');
+    setProfileTabRequestKey((k) => k + 1);
+    setActiveSection('perfil');
+  };
+
+  const handleOpenPreferencesPage = () => {
+    setProfileInitialTab('settings');
+    setProfileTabRequestKey((k) => k + 1);
+    setActiveSection('perfil');
+  };
+
   return (
     <div className="min-h-screen bg-[#080B0D] text-[#15191D] flex flex-col">
       {isMobile ? (
@@ -2607,12 +2831,14 @@ export default function App() {
               unreadAnnouncementsCount={unreadAnnouncementsCount}
               openRequestsCount={openRequestsCount}
               unreadNotificationsCount={unreadNotificationsCount}
+              pendingAccessRequestsCount={pendingAccessRequestsCount}
               activeSection={activeSection}
               isEmbedded={false}
               currentUser={currentUser}
               systemConfig={systemConfig || undefined}
               onLogout={handleLogout}
-              onSwitchUserRole={handleSwitchUserRole}
+              onOpenProfile={handleOpenProfilePage}
+              onOpenPreferences={handleOpenPreferencesPage}
               onOpenSearch={() => {
                 setGlobalSearchQuery('');
                 setShowCommandPalette(true);
@@ -2636,7 +2862,11 @@ export default function App() {
         ===================================================================== */
         <div className="flex flex-col min-h-screen max-w-[1600px] w-full mx-auto relative">
         {/* 1. TOP PANORAMIC HEADER */}
-        <header className="relative h-[112px] w-full flex items-center justify-between px-6 select-none shrink-0 z-30">
+        <header
+          className={`relative h-[112px] w-full flex items-center justify-between px-4 lg:px-6 select-none shrink-0 ${
+            showProfileDropdown || showNotificationsPopover ? 'z-50' : 'z-30'
+          }`}
+        >
           {/* Panoramic Header Background from SystemConfig */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             <img
@@ -2667,7 +2897,7 @@ export default function App() {
           </div>
 
           {/* Left Zone: RODOVAR CONECTA Logo + 4 Institutional Pillars */}
-          <div className="relative z-10 flex items-center gap-7">
+          <div className="relative z-10 flex items-center gap-5 lg:gap-7 shrink-0">
             <RodovarLogo size="lg" onClick={() => setActiveSection('inicio')} />
 
             <div className="hidden lg:flex flex-col text-[11px] font-semibold text-white/90 tracking-[0.08em] leading-[1.45] uppercase border-l border-white/15 pl-5">
@@ -2678,8 +2908,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right Zone: Institutional Motto + Notification Bell + User Profile */}
-          <div className="relative z-10 flex items-center gap-6">
+          {/* Right Zone: Institutional Motto + Search + Notification Bell + User Profile */}
+          <div className="relative z-10 flex items-center gap-3 lg:gap-5">
             {/* Motto */}
             <div className="hidden xl:flex flex-col items-start leading-[1.15] mr-2">
               <span className="text-[13.5px] font-extrabold text-white tracking-wide uppercase">
@@ -2841,96 +3071,26 @@ export default function App() {
               )}
             </div>
 
-            {/* User Profile Pill */}
-            <div className="relative">
-              <button
-                onClick={() => {
-                  setShowProfileDropdown(!showProfileDropdown);
-                  setShowNotificationsPopover(false);
-                }}
-                className="flex items-center gap-3 pl-2 pr-1 py-1 rounded-xl hover:bg-white/5 transition-colors cursor-pointer"
-              >
-                <img
-                  src={resolveAvatarUrl(currentUser, systemConfig)}
-                  alt={currentUser.name}
-                  referrerPolicy="no-referrer"
-                  className="w-10 h-10 rounded-full object-cover aspect-square border-2 border-white shadow-sm shrink-0"
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).src = '/assets/default-avatar.png';
-                  }}
-                />
-                <div className="text-left">
-                  <p className="text-sm font-bold text-white leading-tight">{currentUser.name}</p>
-                  <p className="text-xs text-gray-300 leading-tight">{currentUser.department}</p>
-                </div>
-                <ChevronDown className="w-4 h-4 text-gray-300 ml-1" />
-              </button>
-
-              {showProfileDropdown && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40 bg-transparent"
-                    onClick={() => setShowProfileDropdown(false)}
-                  />
-                  <div className="absolute right-0 mt-2 w-68 bg-white rounded-xl shadow-2xl border border-gray-200 p-3 z-50 text-xs">
-                  <div className="pb-2.5 border-b border-gray-100">
-                    <div className="flex items-center justify-between">
-                      <p className="font-extrabold text-[#15191D]">{currentUser.name}</p>
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
-                        Online
-                      </span>
-                    </div>
-                    <p className="text-gray-500 truncate mt-0.5">{currentUser.email}</p>
-                    <span className="inline-block mt-1.5 text-[10px] font-extrabold bg-[#FFD400] text-[#080B0D] px-2 py-0.5 rounded">
-                      {currentUser.roleTitle} • {currentUser.accessLevel}
-                    </span>
-                  </div>
-
-                  <div className="py-2 border-b border-gray-100 space-y-1">
-                    <button
-                      onClick={() => {
-                        setActiveSection('perfil');
-                        setShowProfileDropdown(false);
-                      }}
-                      className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-gray-100 font-bold text-[#15191D] cursor-pointer"
-                    >
-                      Meu Perfil e Preferências
-                    </button>
-                  </div>
-
-                  <div className="py-2 border-b border-gray-100 space-y-1">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase px-2">
-                      Visualização de Acesso
-                    </p>
-                    {(['ADMINISTRADOR', 'DIRETORIA', 'FUNCIONARIO'] as UserRole[]).map((r) => (
-                      <button
-                        key={r}
-                        onClick={() => handleSwitchUserRole(r)}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-lg font-semibold flex items-center justify-between cursor-pointer ${
-                          currentUser.accessLevel === r
-                            ? 'bg-[#080B0D] text-[#FFD400]'
-                            : 'hover:bg-gray-100 text-gray-700'
-                        }`}
-                      >
-                        <span>{r}</span>
-                        {currentUser.accessLevel === r && <Check className="w-3.5 h-3.5" />}
-                      </button>
-                    ))}
-                  </div>
-
-                    <div className="pt-2">
-                      <button
-                        onClick={handleLogout}
-                        className="w-full flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 text-[#E5252A] font-bold py-2 rounded-lg cursor-pointer"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        <span>Sair da Conta</span>
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
+            {/* User Profile Premium Menu */}
+            <UserProfileMenu
+              variant="desktop"
+              currentUser={currentUser}
+              systemConfig={systemConfig}
+              unreadNotificationsCount={unreadNotificationsCount}
+              pendingAccessRequestsCount={pendingAccessRequestsCount}
+              canAccessAdmin={hasPagePermission(currentUser, 'administracao')}
+              isOpen={showProfileDropdown}
+              onToggle={() => {
+                setShowProfileDropdown((prev) => !prev);
+                setShowNotificationsPopover(false);
+              }}
+              onClose={() => setShowProfileDropdown(false)}
+              onOpenProfile={handleOpenProfilePage}
+              onOpenPreferences={handleOpenPreferencesPage}
+              onOpenNotifications={() => setShowNotificationsCenterModal(true)}
+              onOpenAdmin={() => setActiveSection('administracao')}
+              onLogout={handleLogout}
+            />
           </div>
         </header>
 
@@ -2956,7 +3116,13 @@ export default function App() {
                   return (
                     <button
                       key={item.id}
-                      onClick={() => setActiveSection(item.id)}
+                      onClick={() => {
+                        if (item.id === 'perfil') {
+                          handleOpenProfilePage();
+                        } else {
+                          setActiveSection(item.id);
+                        }
+                      }}
                       className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-[13.5px] transition-all cursor-pointer ${
                         isActive
                           ? 'bg-[#FFD400] text-[#080B0D] font-extrabold shadow-[0_4px_14px_rgba(255,212,0,0.28)]'
@@ -3675,6 +3841,8 @@ export default function App() {
           <span>Você está sem conexão. Algumas funções precisam de internet.</span>
         </div>
       )}
+
+      <GlobalToastViewport />
     </div>
   );
 }

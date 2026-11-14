@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Bell,
   Calendar,
-  Check,
   ChevronRight,
   Download,
   FileText,
@@ -32,10 +31,10 @@ import {
   Employee,
   MenuSection,
   SystemConfig,
-  UserRole,
 } from '../types';
 import { hasPagePermission } from '../lib/permissions';
 import { resolveAvatarUrl, withRevisionParam } from '../lib/serverApi';
+import { UserProfileMenu } from './UserProfileMenu';
 
 interface MobileSimulatorProps {
   onNavigate: (section: MenuSection) => void;
@@ -49,11 +48,13 @@ interface MobileSimulatorProps {
   currentUser?: Employee;
   systemConfig?: SystemConfig;
   onLogout?: () => void;
-  onSwitchUserRole?: (role: UserRole) => void;
   onOpenSearch?: () => void;
   onOpenNotificationsCenter?: () => void;
   onAccessNotification?: (n: CorporateNotification) => void;
   onOpenInstallModal?: () => void;
+  onOpenProfile?: () => void;
+  onOpenPreferences?: () => void;
+  pendingAccessRequestsCount?: number;
   isInstalled?: boolean;
   canPromptInstall?: boolean;
   onClose?: () => void;
@@ -90,11 +91,13 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
   currentUser,
   systemConfig,
   onLogout,
-  onSwitchUserRole,
   onOpenSearch,
   onOpenNotificationsCenter,
   onAccessNotification,
   onOpenInstallModal,
+  onOpenProfile,
+  onOpenPreferences,
+  pendingAccessRequestsCount = 0,
   isInstalled = false,
   canPromptInstall = false,
   onClose,
@@ -102,8 +105,9 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
   children,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileProfileOpen, setMobileProfileOpen] = useState(false);
 
-  const canAccessAdmin = !currentUser || hasPagePermission(currentUser, 'administracao');
+  const canAccessAdmin = Boolean(currentUser && hasPagePermission(currentUser, 'administracao'));
 
   const preferredFreightSection: MenuSection | null = hasPagePermission(
     currentUser,
@@ -192,9 +196,12 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
       )}
 
       {/* Mobile Top Header */}
-      <div className="bg-[#080B0D] px-3.5 py-2.5 flex items-center justify-between relative z-30 border-b border-white/10">
+      <div className="bg-[#080B0D] px-3.5 py-2.5 flex items-center justify-between relative z-50 border-b border-white/10">
         <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          onClick={() => {
+            setMobileProfileOpen(false);
+            setMobileMenuOpen(!mobileMenuOpen);
+          }}
           className="p-1.5 text-white/90 hover:text-[#FFD400] transition-colors rounded-lg cursor-pointer"
           aria-label="Abrir menu"
         >
@@ -205,15 +212,19 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
           size="sm"
           onClick={() => {
             setMobileMenuOpen(false);
+            setMobileProfileOpen(false);
             onNavigate('inicio');
           }}
         />
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           {!isInstalled && onOpenInstallModal && (
             <button
               type="button"
-              onClick={onOpenInstallModal}
+              onClick={() => {
+                setMobileProfileOpen(false);
+                onOpenInstallModal();
+              }}
               className="px-2 py-1 rounded-lg bg-[#FFD400] text-[#080B0D] text-[10px] font-extrabold inline-flex items-center gap-1 shadow-xs cursor-pointer"
               aria-label={canPromptInstall ? 'Instalar aplicativo' : 'Como instalar'}
             >
@@ -223,7 +234,10 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
           )}
           {onOpenSearch && (
             <button
-              onClick={onOpenSearch}
+              onClick={() => {
+                setMobileProfileOpen(false);
+                onOpenSearch();
+              }}
               className="p-1.5 text-white/90 hover:text-[#FFD400] transition-colors cursor-pointer"
               aria-label="Buscar no portal"
             >
@@ -233,6 +247,7 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
           <button
             onClick={() => {
               setMobileMenuOpen(false);
+              setMobileProfileOpen(false);
               if (onOpenNotificationsCenter) {
                 onOpenNotificationsCenter();
               } else {
@@ -249,6 +264,47 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
               </span>
             )}
           </button>
+          {currentUser && !isEmbedded && (
+            <UserProfileMenu
+              variant="mobile"
+              currentUser={currentUser}
+              systemConfig={systemConfig}
+              unreadNotificationsCount={unreadNotificationsCount}
+              pendingAccessRequestsCount={pendingAccessRequestsCount}
+              canAccessAdmin={canAccessAdmin}
+              isOpen={mobileProfileOpen}
+              onToggle={() => {
+                setMobileMenuOpen(false);
+                setMobileProfileOpen((prev) => !prev);
+              }}
+              onClose={() => setMobileProfileOpen(false)}
+              onOpenProfile={() => {
+                if (onOpenProfile) {
+                  onOpenProfile();
+                } else {
+                  onNavigate('perfil');
+                }
+              }}
+              onOpenPreferences={() => {
+                if (onOpenPreferences) {
+                  onOpenPreferences();
+                } else {
+                  onNavigate('perfil');
+                }
+              }}
+              onOpenNotifications={() => {
+                if (onOpenNotificationsCenter) {
+                  onOpenNotificationsCenter();
+                } else {
+                  onNavigate('comunicados');
+                }
+              }}
+              onOpenAdmin={() => onNavigate('administracao')}
+              onLogout={() => {
+                if (onLogout) return onLogout();
+              }}
+            />
+          )}
           {onClose && !isEmbedded && (
             <button onClick={onClose} className="p-1 text-white/70 hover:text-white">
               <X className="w-4 h-4" />
@@ -333,33 +389,6 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
                 ))}
             </div>
 
-            {/* Mobile RBAC Switcher */}
-            {currentUser && onSwitchUserRole && (
-              <div className="pt-2 border-t border-white/10 space-y-1.5">
-                <p className="text-[10px] font-extrabold uppercase tracking-wider text-gray-400 px-1">
-                  Alternar Perfil RBAC
-                </p>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(['ADMINISTRADOR', 'DIRETORIA', 'FUNCIONARIO'] as UserRole[]).map((role) => (
-                    <button
-                      key={role}
-                      onClick={() => {
-                        onSwitchUserRole(role);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-1 cursor-pointer ${
-                        currentUser.accessLevel === role
-                          ? 'bg-[#FFD400] text-[#080B0D]'
-                          : 'bg-white/5 text-gray-300 hover:bg-white/10'
-                      }`}
-                    >
-                      {currentUser.accessLevel === role && <Check className="w-3 h-3" />}
-                      <span className="truncate">{role}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
           <div className="pt-3 border-t border-white/10 space-y-2 mt-4">

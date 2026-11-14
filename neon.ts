@@ -530,11 +530,13 @@ export async function initializeNeonSchema(): Promise<void> {
         subtitle TEXT,
         time_label VARCHAR(64),
         read BOOLEAN DEFAULT FALSE,
+        dismissed BOOLEAN DEFAULT FALSE,
         target_section VARCHAR(64) NOT NULL,
         target_id VARCHAR(64) NOT NULL,
         dedupe_key VARCHAR(128),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE;
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_recipient ON rodovar_notifications(recipient_id);
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_dedupe ON rodovar_notifications(dedupe_key);
     `);
@@ -2233,19 +2235,32 @@ export function persistNotificationToNeon(notif: {
   return trackNeonWrite(
     (async () => {
       try {
+        const cleanTitle = String(notif.title || '').trim();
+        const cleanSubtitle = String(notif.subtitle || '').trim();
         if (notif.dedupeKey) {
           const check = await dbSql`
             SELECT id FROM rodovar_notifications WHERE recipient_id = ${notif.recipientId} AND dedupe_key = ${notif.dedupeKey} LIMIT 1
           `;
           if (check.length > 0) return false;
         }
+        const sameContent = await dbSql`
+          SELECT id FROM rodovar_notifications
+          WHERE recipient_id = ${notif.recipientId}
+            AND target_section = ${notif.targetSection}
+            AND COALESCE(target_id, '') = ${notif.targetId || ''}
+            AND TRIM(title) = ${cleanTitle}
+            AND COALESCE(TRIM(subtitle), '') = ${cleanSubtitle}
+          LIMIT 1
+        `;
+        if (sameContent.length > 0) return false;
+
         await dbSql`
           INSERT INTO rodovar_notifications (
-            id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
+            id, recipient_id, type, dot_color, title, subtitle, time_label, read, dismissed, target_section, target_id, dedupe_key, created_at
           ) VALUES (
-            ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || 'blue'}, ${notif.title},
-            ${notif.subtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)},
-            ${notif.targetSection}, ${notif.targetId || null}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
+            ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || 'blue'}, ${cleanTitle},
+            ${cleanSubtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)}, FALSE,
+            ${notif.targetSection}, ${notif.targetId || ''}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO NOTHING
         `;
@@ -2263,10 +2278,12 @@ export async function loadNotificationsFromNeon(recipientId: string, limit = 50)
   try {
     const rows = await sql`
       SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
-              time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
+              time_label AS "timeLabel", read, COALESCE(dismissed, FALSE) AS dismissed,
+              target_section AS "targetSection", target_id AS "targetId",
               dedupe_key AS "dedupeKey", created_at AS "createdAt"
        FROM rodovar_notifications
        WHERE recipient_id = ${recipientId}
+         AND COALESCE(dismissed, FALSE) = FALSE
        ORDER BY created_at DESC
        LIMIT ${limit}
     `;
@@ -2277,15 +2294,80 @@ export async function loadNotificationsFromNeon(recipientId: string, limit = 50)
   }
 }
 
+export async function loadDismissedNotificationIdsFromNeon(recipientId: string): Promise<{ ids: string[]; dedupeKeys: string[] }> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return { ids: [], dedupeKeys: [] };
+  try {
+    const rows = await sql`
+      SELECT id, dedupe_key AS "dedupeKey"
+       FROM rodovar_notifications
+       WHERE recipient_id = ${recipientId}
+         AND COALESCE(dismissed, FALSE) = TRUE
+    `;
+    const ids: string[] = [];
+    const dedupeKeys: string[] = [];
+    for (const r of rows as any[]) {
+      if (r.id) ids.push(String(r.id));
+      if (r.dedupeKey) dedupeKeys.push(String(r.dedupeKey));
+    }
+    return { ids, dedupeKeys };
+  } catch {
+    return { ids: [], dedupeKeys: [] };
+  }
+}
+
 export function markNotificationReadInNeon(notifId: string, recipientId: string): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId) return Promise.resolve();
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
-        await dbSql`UPDATE rodovar_notifications SET read = TRUE WHERE id = ${notifId} AND recipient_id = ${recipientId}`;
+        await dbSql`
+          UPDATE rodovar_notifications
+          SET read = TRUE
+          WHERE recipient_id = ${recipientId}
+            AND (
+              id = ${notifId}
+              OR (target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')) IN (
+                SELECT target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')
+                FROM rodovar_notifications
+                WHERE id = ${notifId} AND recipient_id = ${recipientId}
+              )
+            )
+        `;
       } catch (err) {
         console.warn('Neon markNotificationReadInNeon error:', (err as Error).message);
+      }
+    })()
+  );
+}
+
+export function dismissNotificationInNeon(notifId: string, recipientId: string): Promise<void> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId || !recipientId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          UPDATE rodovar_notifications
+          SET read = TRUE, dismissed = TRUE
+          WHERE recipient_id = ${recipientId}
+            AND (
+              id = ${notifId}
+              OR (
+                dedupe_key IS NOT NULL
+                AND dedupe_key IN (
+                  SELECT dedupe_key FROM rodovar_notifications WHERE id = ${notifId} AND recipient_id = ${recipientId} AND dedupe_key IS NOT NULL
+                )
+              )
+              OR (target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')) IN (
+                SELECT target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')
+                FROM rodovar_notifications
+                WHERE id = ${notifId} AND recipient_id = ${recipientId}
+              )
+            )
+        `;
+      } catch (err) {
+        console.warn('Neon dismissNotificationInNeon error:', (err as Error).message);
       }
     })()
   );

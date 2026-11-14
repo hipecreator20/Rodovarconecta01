@@ -8,12 +8,6 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     resolve: {
       dedupe: [
-        '@firebase/app',
-        '@firebase/component',
-        '@firebase/auth',
-        '@firebase/firestore',
-        '@firebase/util',
-        'firebase',
         'react',
         'react-dom',
       ],

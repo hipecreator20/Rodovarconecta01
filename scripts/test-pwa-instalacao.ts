@@ -191,7 +191,7 @@ async function runTests() {
     'App.tsx contém o aviso controlado de atualização ("Uma nova versão está disponível." + "Atualizar agora")'
   );
 
-  // 8. Verificar segurança de Login: conta pendente bloqueada e bloqueio de 120s após 5 tentativas inválidas
+  // 8. Verificar segurança de Login: auto-registro público bloqueado (403) e bloqueio de 120s após 5 tentativas inválidas
   const randomUser = `teste_pwa_${Date.now()}`;
   const reqAccessRes = await fetch(`${BASE_URL}/api/auth/request-access`, {
     method: 'POST',
@@ -203,9 +203,13 @@ async function runTests() {
       password: 'Password123!',
     }),
   });
-  await assert(reqAccessRes.status === 201, 'Solicitação de acesso cria conta como PENDENTE (201)');
+  const reqAccessBody = await reqAccessRes.json().catch(() => ({}));
+  await assert(
+    reqAccessRes.status === 403 && reqAccessBody.code === 'PUBLIC_REGISTRATION_DISABLED',
+    'Auto-cadastro público em /api/auth/request-access é bloqueado na origem (403 PUBLIC_REGISTRATION_DISABLED)'
+  );
 
-  const pendingLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+  const uncreatedLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -214,8 +218,8 @@ async function runTests() {
     }),
   });
   await assert(
-    pendingLoginRes.status === 403,
-    'Conta PENDENTE não pode autenticar nem emitir sessão antes da aprovação do administrador (403)'
+    uncreatedLoginRes.status === 401,
+    'Usuário não cadastrado não pode autenticar nem emitir sessão (401)'
   );
 
   // Testar 5 tentativas inválidas e bloqueio de 120s para um identificador isolado

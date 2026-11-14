@@ -26,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import { CorporateModal } from './ui/CorporateModal';
+import { emitPortalToast, inferToastTypeFromMessage } from './ui/GlobalToastViewport';
 import { hasPagePermission } from '../lib/permissions';
 import { getAuthHeaders } from '../lib/serverApi';
 import { newRequestKey } from '../lib/requestKey';
@@ -226,6 +227,10 @@ export const HelpCenterPremium: React.FC<HelpCenterPremiumProps> = ({
 
   const showToast = useCallback((message: string) => {
     setActionToast(message);
+    emitPortalToast({
+      type: inferToastTypeFromMessage(message),
+      message,
+    });
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setActionToast(null), 4000);
   }, []);

@@ -36,8 +36,11 @@ import {
   isIsolatedTestEnv,
   persistNotificationToNeon,
   loadNotificationsFromNeon,
+  loadDismissedNotificationIdsFromNeon,
   markNotificationReadInNeon,
+  dismissNotificationInNeon,
   markAllNotificationsReadInNeon,
+  flushPendingNeonWrites,
   persistFreightToNeon,
   persistStateSnapshotToNeon,
   persistSystemAssetToNeon,
@@ -130,6 +133,7 @@ export interface ServerNotificationRecord extends CorporateNotification {
   recipientId: string;
   createdAtIso: string;
   dedupeKey?: string;
+  dismissed?: boolean;
 }
 
 // In-memory index of individual freight documents for fast cursor queries and atomic locks
@@ -442,23 +446,37 @@ export function pushFreightNotification(params: {
   dedupeKey?: string;
 }): void {
   if (!params.recipientId) return;
+  const cleanTitle = String(params.title || '').trim();
+  const cleanSubtitle = String(params.subtitle || '').trim();
   if (params.dedupeKey) {
-    const exists = serverNotifications.some(
+    const existsKey = serverNotifications.some(
       (n) => n.recipientId === params.recipientId && n.dedupeKey === params.dedupeKey
     );
-    if (exists) return;
+    if (existsKey) return;
   }
+  // Rule: notify the exact same information only once (updates alter title/subtitle and are allowed)
+  const existsSameContent = serverNotifications.some(
+    (n) =>
+      n.recipientId === params.recipientId &&
+      n.targetSection === params.targetSection &&
+      (n.targetId || '') === (params.targetId || '') &&
+      String(n.title || '').trim() === cleanTitle &&
+      String(n.subtitle || '').trim() === cleanSubtitle
+  );
+  if (existsSameContent) return;
+
   const sp = formatSaoPauloDateTime();
   const notif: ServerNotificationRecord = {
     id: `fnotif-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
     recipientId: params.recipientId,
     type: 'prazo',
     dotColor: params.dotColor || 'blue',
-    title: params.title,
-    subtitle: params.subtitle,
+    title: cleanTitle,
+    subtitle: cleanSubtitle,
     timeLabel: sp.formatted,
     createdAtIso: sp.iso,
     read: false,
+    dismissed: false,
     targetSection: params.targetSection,
     targetId: params.targetId,
     dedupeKey: params.dedupeKey,
@@ -1391,7 +1409,7 @@ export function registerUnifiedFreightRoutes(
     }
 
     const allUsers = getAllServerUsers().filter(
-      (u) => u.approvalStatus === 'APROVADO' && u.active
+      (u) => u.approvalStatus === 'APROVADO' && u.active && u.accessLevel !== 'ADMINISTRADOR'
     );
     const comercialOperators = allUsers
       .filter((u) => canAccessComercialFreights(u))
@@ -1448,15 +1466,37 @@ export function registerUnifiedFreightRoutes(
   app.get('/api/meus-fretes/notifications', requireApprovedSession, async (req: any, res: Response) => {
     const user = req.sessionUser as Employee;
     const localNotifs = serverNotifications.filter((n) => n.recipientId === user.id);
-    const neonNotifs = await loadNotificationsFromNeon(user.id, 50).catch(() => []);
+    const [neonNotifs, dismissedNeon] = await Promise.all([
+      loadNotificationsFromNeon(user.id, 50).catch(() => []),
+      loadDismissedNotificationIdsFromNeon(user.id).catch(() => ({ ids: [], dedupeKeys: [] })),
+    ]);
 
-    const map = new Map<string, ServerNotificationRecord>();
+    const dismissedIds = new Set<string>(dismissedNeon.ids);
+    const dismissedKeys = new Set<string>(dismissedNeon.dedupeKeys);
     for (const n of localNotifs) {
-      map.set(n.id, n);
+      if (n.dismissed) {
+        dismissedIds.add(n.id);
+        if (n.dedupeKey) dismissedKeys.add(n.dedupeKey);
+      }
+    }
+
+    const byId = new Map<string, ServerNotificationRecord>();
+    for (const n of localNotifs) {
+      if (n.dismissed || dismissedIds.has(n.id) || (n.dedupeKey && dismissedKeys.has(n.dedupeKey))) {
+        continue;
+      }
+      byId.set(n.id, { ...n });
     }
     for (const n of neonNotifs) {
-      if (!map.has(n.id)) {
-        map.set(n.id, {
+      if (n.dismissed || dismissedIds.has(n.id) || (n.dedupeKey && dismissedKeys.has(n.dedupeKey))) {
+        continue;
+      }
+      const existing = byId.get(n.id);
+      if (existing) {
+        // Read is irreversible / sticky
+        existing.read = Boolean(existing.read || n.read);
+      } else {
+        byId.set(n.id, {
           id: n.id,
           recipientId: n.recipientId,
           type: n.type || 'prazo',
@@ -1473,9 +1513,22 @@ export function registerUnifiedFreightRoutes(
       }
     }
 
-    const myNotifs = Array.from(map.values())
-      .sort((a, b) => (b.createdAtIso || '').localeCompare(a.createdAtIso || ''))
-      .slice(0, 50);
+    // Collapse any historical duplicates with the exact same information, keeping sticky read
+    const sorted = Array.from(byId.values()).sort((a, b) =>
+      (b.createdAtIso || '').localeCompare(a.createdAtIso || '')
+    );
+    const semanticMap = new Map<string, ServerNotificationRecord>();
+    for (const item of sorted) {
+      const semanticKey = `${item.targetSection}|${item.targetId || ''}|${String(item.title || '').trim()}|${String(item.subtitle || '').trim()}`;
+      const existing = semanticMap.get(semanticKey);
+      if (!existing) {
+        semanticMap.set(semanticKey, item);
+      } else {
+        existing.read = Boolean(existing.read || item.read);
+      }
+    }
+
+    const myNotifs = Array.from(semanticMap.values()).slice(0, 50);
 
     res.json({
       notifications: myNotifs,
@@ -1486,7 +1539,7 @@ export function registerUnifiedFreightRoutes(
   app.post(
     '/api/meus-fretes/notifications/:notifId/read',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = req.sessionUser as Employee;
       const notifId = String(req.params.notifId || '');
       const target = serverNotifications.find(
@@ -1494,9 +1547,22 @@ export function registerUnifiedFreightRoutes(
       );
       if (target) {
         target.read = true;
+        // Mark any matching semantic duplicates in memory as read too
+        serverNotifications.forEach((n) => {
+          if (
+            n.recipientId === user.id &&
+            n.targetSection === target.targetSection &&
+            (n.targetId || '') === (target.targetId || '') &&
+            String(n.title || '').trim() === String(target.title || '').trim() &&
+            String(n.subtitle || '').trim() === String(target.subtitle || '').trim()
+          ) {
+            n.read = true;
+          }
+        });
         saveNotifications();
       }
-      void markNotificationReadInNeon(notifId, user.id);
+      await markNotificationReadInNeon(notifId, user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
@@ -1504,7 +1570,7 @@ export function registerUnifiedFreightRoutes(
   app.post(
     '/api/meus-fretes/notifications/read-all',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = req.sessionUser as Employee;
       let changed = false;
       serverNotifications.forEach((n) => {
@@ -1514,7 +1580,8 @@ export function registerUnifiedFreightRoutes(
         }
       });
       if (changed) saveNotifications();
-      void markAllNotificationsReadInNeon(user.id);
+      await markAllNotificationsReadInNeon(user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
@@ -1522,16 +1589,47 @@ export function registerUnifiedFreightRoutes(
   app.delete(
     '/api/meus-fretes/notifications/:notifId',
     requireApprovedSession,
-    (req: any, res: Response) => {
+    async (req: any, res: Response) => {
       const user = req.sessionUser as Employee;
       const notifId = String(req.params.notifId || '');
-      const idx = serverNotifications.findIndex(
+      const target = serverNotifications.find(
         (n) => n.id === notifId && n.recipientId === user.id
       );
-      if (idx !== -1) {
-        serverNotifications.splice(idx, 1);
-        saveNotifications();
+      if (target) {
+        target.dismissed = true;
+        target.read = true;
+        serverNotifications.forEach((n) => {
+          if (
+            n.recipientId === user.id &&
+            ((target.dedupeKey && n.dedupeKey === target.dedupeKey) ||
+              (n.targetSection === target.targetSection &&
+                (n.targetId || '') === (target.targetId || '') &&
+                String(n.title || '').trim() === String(target.title || '').trim() &&
+                String(n.subtitle || '').trim() === String(target.subtitle || '').trim()))
+          ) {
+            n.dismissed = true;
+            n.read = true;
+          }
+        });
+      } else {
+        serverNotifications.unshift({
+          id: notifId,
+          recipientId: user.id,
+          type: 'prazo',
+          dotColor: 'blue',
+          title: '',
+          subtitle: '',
+          timeLabel: '',
+          createdAtIso: new Date().toISOString(),
+          read: true,
+          dismissed: true,
+          targetSection: 'fretes_comercial',
+          targetId: '',
+        });
       }
+      saveNotifications();
+      await dismissNotificationInNeon(notifId, user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
@@ -1718,7 +1816,7 @@ export function registerUnifiedFreightRoutes(
       const neonResult = await queryMonitoringFreightsFromNeon({
         scope: scope === 'EQUIPE' ? 'EQUIPE' : 'MEUS',
         userId: user.id,
-        isTesteLogin: user.login === 'teste',
+        isTesteLogin: false,
         responsavelFilterId,
         viewMode,
         search,
@@ -1798,14 +1896,7 @@ export function registerUnifiedFreightRoutes(
           }
           return f.expedicaoResponsavelId !== null;
         }
-        return (
-          f.expedicaoResponsavelId === user.id ||
-          ((user.login === 'teste' || user.id === 'emp-teste-logistica') &&
-            (f.expedicaoResponsavelId === 'emp-teste-logistica' ||
-              f.expedicaoResponsavelId === 'emp-4' ||
-              f.expedicaoResponsavelId === 'emp-expedicao-2' ||
-              f.expedicaoResponsavelNome === 'teste'))
-        );
+        return f.expedicaoResponsavelId === user.id;
       } else {
         // MONITORAMENTO (Fretes Ativos)
         const isReleasedToMon =
@@ -1821,12 +1912,7 @@ export function registerUnifiedFreightRoutes(
           }
           return Boolean(f.monitoramentoResponsavelId);
         }
-        return (
-          f.monitoramentoResponsavelId === user.id ||
-          (user.login === 'teste' &&
-            (f.monitoramentoResponsavelId === 'emp-teste-logistica' ||
-              f.monitoramentoResponsavelId === 'emp-4'))
-        );
+        return f.monitoramentoResponsavelId === user.id;
       }
     });
 
@@ -2270,7 +2356,7 @@ export function registerUnifiedFreightRoutes(
     const enderecoColeta = String(body.enderecoColeta || '').trim().slice(0, 240);
     const enderecoEntrega = String(body.enderecoEntrega || '').trim().slice(0, 240);
     const tipoCarga = String(body.tipoCarga || '').trim().slice(0, 120);
-    const dataColetaIso = String(body.dataColetaIso || sp.dateOnlyIso).slice(0, 10);
+    const dataColetaIso = String(body.dataColetaIso ?? sp.dateOnlyIso).trim().slice(0, 10);
 
     // If confirming & sending immediately, validate minimum contracting data (never requiring driver or detailed delivery address if not yet informed)
     let assignedExpUser: Employee | undefined;
@@ -2296,7 +2382,11 @@ export function registerUnifiedFreightRoutes(
       const targetExpId = String(body.expedicaoResponsavelId || '').trim();
       if (targetExpId) {
         const candidate = getAllServerUsers().find(
-          (u) => u.id === targetExpId && u.approvalStatus === 'APROVADO' && u.active
+          (u) =>
+            u.id === targetExpId &&
+            u.approvalStatus === 'APROVADO' &&
+            u.active &&
+            u.accessLevel !== 'ADMINISTRADOR'
         );
         if (!candidate || !canAccessExpedicaoFreights(candidate)) {
           res.status(400).json({
@@ -2344,11 +2434,11 @@ export function registerUnifiedFreightRoutes(
       volumes: Math.max(0, Math.round(Number(body.volumes) || 0)),
       veiculoNecessario: String(body.veiculoNecessario || '').trim().slice(0, 100),
       dataColetaIso,
-      janelaColetaInicio: String(body.janelaColetaInicio || '08:00').slice(0, 5),
-      janelaColetaFim: String(body.janelaColetaFim || '12:00').slice(0, 5),
-      dataEntregaPrevistaIso: String(body.dataEntregaPrevistaIso || sp.dateOnlyIso).slice(0, 10),
-      janelaEntregaInicio: String(body.janelaEntregaInicio || '14:00').slice(0, 5),
-      janelaEntregaFim: String(body.janelaEntregaFim || '18:00').slice(0, 5),
+      janelaColetaInicio: String(body.janelaColetaInicio ?? '08:00').trim().slice(0, 5),
+      janelaColetaFim: String(body.janelaColetaFim ?? '12:00').trim().slice(0, 5),
+      dataEntregaPrevistaIso: String(body.dataEntregaPrevistaIso ?? sp.dateOnlyIso).trim().slice(0, 10),
+      janelaEntregaInicio: String(body.janelaEntregaInicio ?? '14:00').trim().slice(0, 5),
+      janelaEntregaFim: String(body.janelaEntregaFim ?? '18:00').trim().slice(0, 5),
       comercialResponsavelId: user.id,
       comercialResponsavelNome: user.name,
       expedicaoResponsavelId: confirmAndSendToExpedicao && assignedExpUser ? assignedExpUser.id : null,
@@ -2362,6 +2452,17 @@ export function registerUnifiedFreightRoutes(
       condicoesOperacionais: String(body.condicoesOperacionais || '').trim().slice(0, 1000),
       condicoesPagamento: String(body.condicoesPagamento || '').trim().slice(0, 600) || undefined,
       observacoes: String(body.observacoes || '').trim().slice(0, 1000) || undefined,
+      comercialScriptRef: String(body.comercialScriptRef || '').trim().slice(0, 120) || undefined,
+      motoristaNome: String(body.motoristaNome || '').trim().slice(0, 120) || undefined,
+      motoristaCpf: String(body.motoristaCpf || '').trim().slice(0, 20) || undefined,
+      motoristaTelefone: String(body.motoristaTelefone || '').trim().slice(0, 30) || undefined,
+      emergenciaNome: String(body.emergenciaNome || '').trim().slice(0, 120) || undefined,
+      emergenciaTelefone: String(body.emergenciaTelefone || '').trim().slice(0, 30) || undefined,
+      placaVeiculo: String(body.placaVeiculo || '').trim().toUpperCase().slice(0, 12) || undefined,
+      favorecidoPagamento: String(body.favorecidoPagamento || '').trim().slice(0, 140) || undefined,
+      tipoChavePix: String(body.tipoChavePix || '').trim().slice(0, 40) || undefined,
+      chavePix: String(body.chavePix || '').trim().slice(0, 140) || undefined,
+      bancoPagamento: String(body.bancoPagamento || '').trim().slice(0, 100) || undefined,
       devolvidoParaCorrecao: false,
       requerReconfirmacaoOperacional: false,
       comprovanteEntregaConferido: false,
@@ -2440,7 +2541,11 @@ export function registerUnifiedFreightRoutes(
           summary: 'Contratação confirmada e frete enviado para a fila compartilhada da Expedição.',
         });
         const expOperators = getAllServerUsers().filter(
-          (u) => u.approvalStatus === 'APROVADO' && u.active && canAccessExpedicaoFreights(u)
+          (u) =>
+            u.approvalStatus === 'APROVADO' &&
+            u.active &&
+            u.accessLevel !== 'ADMINISTRADOR' &&
+            canAccessExpedicaoFreights(u)
         );
         for (const op of expOperators) {
           pushFreightNotification({
@@ -2450,7 +2555,7 @@ export function registerUnifiedFreightRoutes(
             dotColor: 'blue',
             targetSection: 'fretes_expedicao',
             targetId: newFreight.id,
-            dedupeKey: `avail:${newFreight.id}:1:${op.id}`,
+            dedupeKey: `avail:${newFreight.id}:${op.id}`,
           });
         }
       }
@@ -2836,7 +2941,11 @@ export function registerUnifiedFreightRoutes(
 
         if (targetExpId) {
           const candidate = getAllServerUsers().find(
-            (u) => u.id === targetExpId && u.approvalStatus === 'APROVADO' && u.active
+            (u) =>
+              u.id === targetExpId &&
+              u.approvalStatus === 'APROVADO' &&
+              u.active &&
+              u.accessLevel !== 'ADMINISTRADOR'
           );
           if (!candidate || !canAccessExpedicaoFreights(candidate)) {
             res.status(400).json({
@@ -2899,7 +3008,11 @@ export function registerUnifiedFreightRoutes(
           });
 
           const expOperators = getAllServerUsers().filter(
-            (u) => u.approvalStatus === 'APROVADO' && u.active && canAccessExpedicaoFreights(u)
+            (u) =>
+              u.approvalStatus === 'APROVADO' &&
+              u.active &&
+              u.accessLevel !== 'ADMINISTRADOR' &&
+              canAccessExpedicaoFreights(u)
           );
           for (const op of expOperators) {
             pushFreightNotification({
@@ -2909,7 +3022,7 @@ export function registerUnifiedFreightRoutes(
               dotColor: 'blue',
               targetSection: 'fretes_expedicao',
               targetId: freight.id,
-              dedupeKey: `avail:${freight.id}:${freight.revision + 1}:${op.id}`,
+              dedupeKey: `avail:${freight.id}:${op.id}`,
             });
           }
         }
@@ -5225,7 +5338,7 @@ export function registerUnifiedFreightRoutes(
       const targetSector = String(sector || 'EXPEDICAO').toUpperCase();
 
       if (targetSector === 'COMERCIAL') {
-        if (!canAccessComercialFreights(targetUser)) {
+        if (!canAccessComercialFreights(targetUser) || targetUser.accessLevel === 'ADMINISTRADOR') {
           res.status(400).json({
             error: 'O funcionário selecionado não possui permissão para o módulo Comercial.',
           });
@@ -5293,7 +5406,7 @@ export function registerUnifiedFreightRoutes(
           dedupeKey: `xfer:mon:${freight.id}:${freight.revision}`,
         });
       } else {
-        if (!canAccessExpedicaoFreights(targetUser)) {
+        if (!canAccessExpedicaoFreights(targetUser) || targetUser.accessLevel === 'ADMINISTRADOR') {
           res.status(400).json({
             error: 'O funcionário selecionado não possui permissão para o módulo Expedição.',
           });

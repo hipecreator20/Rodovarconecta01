@@ -55,9 +55,11 @@ import {
   apiTransferFreightResponsibility,
   apiUploadFreightAttachment,
   apiVerifyFreightAttachment,
+  filterVisibleFreightOperators,
   formatCentavosToBrl,
   sanitizeApiErrorMessage,
 } from '../lib/serverApi';
+import { emitPortalToast, PortalToastType } from './ui/GlobalToastViewport';
 import {
   appQueryClient,
   FREIGHT_CACHE_TIMES,
@@ -421,7 +423,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   onSwitchToComercial,
 }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [orderModalFreight, setOrderModalFreight] = useState<UnifiedFreightRecord | null>(null);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const canImportComercialScript = useMemo(() => canAccessComercialFreights(currentUser), [currentUser]);
@@ -500,7 +501,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     refetchOnWindowFocus: false,
   });
 
-  const monitoramentoOperators = operatorsQuery.data?.monitoramentoOperators || [];
+  const monitoramentoOperators = useMemo(
+    () => filterVisibleFreightOperators(operatorsQuery.data?.monitoramentoOperators),
+    [operatorsQuery.data?.monitoramentoOperators]
+  );
   const canViewTeam = operatorsQuery.data?.permissions
     ? Boolean(operatorsQuery.data.permissions.canViewTeam)
     : canViewFreightTeam(currentUser);
@@ -655,11 +659,25 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     );
   }, [selectedFreight, currentUser]);
 
-  const showToast = (msg: string) => {
-    setToastMsg(msg);
-    setTimeout(() => {
-      setToastMsg((prev) => (prev === msg ? null : prev));
-    }, 4000);
+  const showToast = (
+    msg: string,
+    options?: { type?: PortalToastType; title?: string; durationMs?: number }
+  ) => {
+    emitPortalToast({
+      type: options?.type,
+      title: options?.title,
+      message: msg,
+      durationMs: options?.durationMs,
+    });
+  };
+
+  const reportError = (msg: string) => {
+    setErrorMsg(msg);
+    emitPortalToast({
+      type: 'error',
+      title: 'Erro / Pendência',
+      message: msg,
+    });
   };
 
   const syncMonitoringFormFromRecord = useCallback((f: UnifiedFreightRecord) => {
@@ -840,7 +858,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao avançar etapa do monitoramento.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao avançar etapa do monitoramento.'));
         return;
       }
 
@@ -850,7 +868,8 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       showToast(
         `Frete ${updated.protocol} atualizado para "${formatSituacaoMonitoramentoLabel(
           updated.situacaoMonitoramento
-        )}"!`
+        )}"!`,
+        { type: 'success', title: 'Concluído' }
       );
       if (
         panelMode === 'ATIVOS' &&
@@ -860,7 +879,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         closeDetailModal();
       }
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao avançar etapa do monitoramento.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao avançar etapa do monitoramento.'));
     } finally {
       setActionBusy(false);
     }
@@ -883,16 +902,19 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao registrar localização/orientação.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao registrar localização/orientação.'));
         return;
       }
 
       const updated = res.freight;
       await syncAfterFreightMutation(updated, { historico: res.historico });
       syncMonitoringFormFromRecord(updated);
-      showToast(`Localização informada e orientações salvas no frete ${updated.protocol}.`);
+      showToast(`Localização informada e orientações salvas no frete ${updated.protocol}.`, {
+        type: 'success',
+        title: 'Concluído',
+      });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao registrar localização/orientação.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao registrar localização/orientação.'));
     } finally {
       setActionBusy(false);
     }
@@ -902,7 +924,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     e.preventDefault();
     if (!selectedFreight) return;
     if (!returnExpedicaoReason.trim()) {
-      setErrorMsg('Informe o motivo obrigatório para devolver o frete à Expedição.');
+      reportError('Informe o motivo obrigatório para devolver o frete à Expedição.');
       return;
     }
     setActionBusy(true);
@@ -914,7 +936,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         baseRevision: selectedFreight.revision,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao devolver à Expedição.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao devolver à Expedição.'));
         return;
       }
       const updated = res.freight;
@@ -922,9 +944,12 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       closeDetailModal();
       setShowReturnExpedicaoModal(false);
       setReturnExpedicaoReason('');
-      showToast(`Frete ${updated.protocol} devolvido à Expedição para correção.`);
+      showToast(`Frete ${updated.protocol} devolvido à Expedição para correção.`, {
+        type: 'transfer',
+        title: 'Devolvido à Expedição',
+      });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao devolver à Expedição.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao devolver à Expedição.'));
     } finally {
       setActionBusy(false);
     }
@@ -934,7 +959,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     e.preventDefault();
     if (!selectedFreight) return;
     if (reopenReason.trim().length < 5) {
-      setErrorMsg('Informe o motivo obrigatório para reabrir o frete (mínimo 5 caracteres).');
+      reportError('Informe o motivo obrigatório para reabrir o frete (mínimo 5 caracteres).');
       return;
     }
     setActionBusy(true);
@@ -949,7 +974,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         baseRevision: selectedFreight.revision,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao reabrir frete.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao reabrir frete.'));
         return;
       }
       const updated = res.freight;
@@ -960,13 +985,14 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       showToast(
         `Frete ${updated.protocol} reaberto para "${formatSituacaoMonitoramentoLabel(
           updated.situacaoMonitoramento
-        )}".`
+        )}".`,
+        { type: 'success', title: 'Concluído' }
       );
       if (updated.situacaoMonitoramento !== 'ENTREGUE' && panelMode === 'FINALIZADOS') {
         setPanelMode('ATIVOS');
       }
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao reabrir frete.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao reabrir frete.'));
     } finally {
       setActionBusy(false);
     }
@@ -983,7 +1009,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         severity: occSeveridade,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao registrar ocorrência.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao registrar ocorrência.'));
         return;
       }
       const updated = res.freight;
@@ -993,9 +1019,12 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
       setOccTitulo('');
       setOccDescricao('');
-      showToast('Ocorrência de monitoramento registrada.');
+      showToast('Ocorrência de monitoramento registrada.', {
+        type: 'success',
+        title: 'Concluído',
+      });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao registrar ocorrência.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao registrar ocorrência.'));
     } finally {
       setOccBusy(false);
     }
@@ -1007,7 +1036,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     try {
       const res = await apiResolveFreightOccurrence(selectedFreight.id, occId);
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao resolver ocorrência.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao resolver ocorrência.'));
         return;
       }
       const updated = res.freight;
@@ -1015,9 +1044,9 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         ocorrencias: res.ocorrencias,
         historico: res.historico,
       });
-      showToast('Ocorrência marcada como resolvida.');
+      showToast('Ocorrência marcada como resolvida.', { type: 'success', title: 'Concluído' });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao resolver ocorrência.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao resolver ocorrência.'));
     } finally {
       setOccBusy(false);
     }
@@ -1027,7 +1056,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     const file = e.target.files?.[0];
     if (!file || !selectedFreight) return;
     if (file.size > 10 * 1024 * 1024) {
-      setErrorMsg('O arquivo excede o limite de 10 MB.');
+      reportError('O arquivo excede o limite de 10 MB.');
       return;
     }
     setAttBusy(true);
@@ -1048,7 +1077,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       });
 
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao enviar anexo.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao enviar anexo.'));
         return;
       }
 
@@ -1057,9 +1086,12 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         anexos: res.anexos,
         historico: res.historico,
       });
-      showToast(`Comprovante/anexo "${file.name}" enviado.`);
+      showToast(`Comprovante/anexo "${file.name}" enviado.`, {
+        type: 'success',
+        title: 'Concluído',
+      });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao enviar anexo.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao enviar anexo.'));
     } finally {
       setAttBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1072,7 +1104,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     try {
       const res = await apiVerifyFreightAttachment(selectedFreight.id, attId, true);
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao conferir comprovante.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao conferir comprovante.'));
         return;
       }
       const updated = res.freight;
@@ -1080,9 +1112,9 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         anexos: res.anexos,
         historico: res.historico,
       });
-      showToast('Comprovante conferido e validado.');
+      showToast('Comprovante conferido e validado.', { type: 'success', title: 'Concluído' });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao conferir comprovante.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao conferir comprovante.'));
     } finally {
       setAttBusy(false);
     }
@@ -1100,16 +1132,19 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         baseRevision: selectedFreight.revision,
       });
       if (!res.ok || !res.freight) {
-        setErrorMsg(sanitizeApiErrorMessage(res.error, 'Erro ao transferir responsabilidade.'));
+        reportError(sanitizeApiErrorMessage(res.error, 'Erro ao transferir responsabilidade.'));
         return;
       }
       const updated = res.freight;
       await syncAfterFreightMutation(updated, { historico: res.historico });
       setTransferTargetId('');
       setTransferMotivo('');
-      showToast('Responsabilidade de monitoramento transferida.');
+      showToast('Responsabilidade de monitoramento transferida.', {
+        type: 'transfer',
+        title: 'Transferido',
+      });
     } catch (err) {
-      setErrorMsg(sanitizeApiErrorMessage(err, 'Erro ao transferir responsabilidade.'));
+      reportError(sanitizeApiErrorMessage(err, 'Erro ao transferir responsabilidade.'));
     } finally {
       setTransferBusy(false);
     }
@@ -1122,13 +1157,6 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
 
   return (
     <div className="fa-surface space-y-4">
-      {/* Toast Notification */}
-      {toastMsg && (
-        <div className="fixed bottom-5 right-5 z-50 bg-[#080B0D] text-white border-l-4 border-[#FFD400] px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold max-w-md">
-          <CheckCircle2 className="w-4 h-4 text-[#FFD400] shrink-0" />
-          <span>{toastMsg}</span>
-        </div>
-      )}
 
       {/* 1. HEADER */}
       {/* 1. HEADER BANNER */}
@@ -2689,10 +2717,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
             throw new Error(res.error || 'Não foi possível importar o frete pelo script.');
           }
           await appQueryClient.invalidateQueries({ queryKey: freightQueryKeys.userRoot(currentUser.id) });
-          setToastMsg(
-            `Frete ${res.freight.protocol} importado para Meus Fretes — Comercial!`
+          showToast(
+            `Frete ${res.freight.protocol} importado para Meus Fretes — Comercial!`,
+            { type: 'transfer', title: 'Importado' }
           );
-          setTimeout(() => setToastMsg(null), 5000);
           if (onSwitchToComercial) {
             onSwitchToComercial();
           }

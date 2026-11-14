@@ -60,6 +60,7 @@ import {
 } from '../lib/pwaShareTarget';
 import { ReceberComprovanteModal } from './ReceberComprovanteModal';
 import { BankCombobox } from './BankCombobox';
+import { emitPortalToast, inferToastTypeFromMessage } from './ui/GlobalToastViewport';
 import { isValidBank } from '../data/brazilianBanks';
 import {
   CARRIER_BRANDS,
@@ -151,13 +152,14 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
   // Filter Tabs
   const [activeFilter, setActiveFilter] = useState<FilterTab>('Todos');
 
-  // Toast Notification
-  const [toastMsg, setToastMsg] = useState<{ title: string; subtitle?: string } | null>(null);
+  // Toast Notification (Global Portal z-[9999] — sempre acima de modais)
   const triggerToast = (title: string, subtitle?: string) => {
-    setToastMsg({ title, subtitle });
-    setTimeout(() => {
-      setToastMsg((prev) => (prev?.title === title ? null : prev));
-    }, 4000);
+    const combined = subtitle ? `${title} ${subtitle}` : title;
+    emitPortalToast({
+      type: inferToastTypeFromMessage(combined),
+      title,
+      message: subtitle || title,
+    });
   };
 
   // =========================================================================
@@ -711,11 +713,10 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     const mode = paymentStepMode;
 
     if (file.size > 10 * 1024 * 1024) {
+      const msg = 'O arquivo excede o tamanho máximo permitido de 10 MB.';
       setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
-      setUploadErrorByInstallment((prev) => ({
-        ...prev,
-        [mode]: 'O arquivo excede o tamanho máximo permitido de 10 MB.',
-      }));
+      setUploadErrorByInstallment((prev) => ({ ...prev, [mode]: msg }));
+      emitPortalToast({ type: 'error', title: 'Arquivo muito grande', message: msg });
       return;
     }
 
@@ -730,11 +731,10 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       lower.endsWith('.png');
 
     if (!isAllowed) {
+      const msg = 'Formato inválido. Selecione apenas arquivos PDF, JPEG ou PNG.';
       setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
-      setUploadErrorByInstallment((prev) => ({
-        ...prev,
-        [mode]: 'Formato inválido. Selecione apenas arquivos PDF, JPEG ou PNG.',
-      }));
+      setUploadErrorByInstallment((prev) => ({ ...prev, [mode]: msg }));
+      emitPortalToast({ type: 'error', title: 'Formato não permitido', message: msg });
       return;
     }
 
@@ -811,10 +811,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const msg = data.error || 'Não foi possível preparar a intenção de pagamento no servidor.';
         setUploadErrorByInstallment((prev) => ({
           ...prev,
-          [paymentStepMode]: data.error || 'Não foi possível preparar a intenção de pagamento no servidor.',
+          [paymentStepMode]: msg,
         }));
+        emitPortalToast({ type: 'error', title: 'Erro ao preparar pagamento', message: msg });
         return;
       }
 
@@ -892,10 +894,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     );
 
     if (!currentDraft) {
+      const msg = `Anexe o arquivo PDF ou imagem do ${mode === 'ADIANTAMENTO' ? 'Comprovante de Adiantamento' : 'Comprovante de Saldo'} antes de salvar no servidor.`;
       setUploadErrorByInstallment((prev) => ({
         ...prev,
-        [mode]: `Anexe o arquivo PDF ou imagem do ${mode === 'ADIANTAMENTO' ? 'Comprovante de Adiantamento' : 'Comprovante de Saldo'} antes de salvar no servidor.`,
+        [mode]: msg,
       }));
+      emitPortalToast({ type: 'error', title: 'Comprovante obrigatório', message: msg });
       return;
     }
 
@@ -960,13 +964,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const msg =
+          data.error ||
+          'Falha ao enviar o comprovante para o servidor. Toque em Tentar reenviar.';
         setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
         setUploadErrorByInstallment((prev) => ({
           ...prev,
-          [mode]:
-            data.error ||
-            'Falha ao enviar o comprovante para o servidor. Toque em Tentar reenviar.',
+          [mode]: msg,
         }));
+        emitPortalToast({ type: 'error', title: 'Falha ao enviar comprovante', message: msg });
         return;
       }
 
@@ -1039,10 +1045,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const msg = data.error || 'Não foi possível confirmar a liquidação do pagamento.';
         setUploadErrorByInstallment((prev) => ({
           ...prev,
-          [mode]: data.error || 'Não foi possível confirmar a liquidação do pagamento.',
+          [mode]: msg,
         }));
+        emitPortalToast({ type: 'error', title: 'Erro ao confirmar pagamento', message: msg });
         return;
       }
 
@@ -1222,27 +1230,6 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
 
   return (
     <div className={`rv-finance space-y-4 relative rv-finance-mode-${financialLayout}`}>
-      {/* Toast Notification */}
-      {toastMsg && (
-        <div className="fixed bottom-5 right-5 z-[90] bg-[#0B0E14] text-white border-2 border-[#FACC15] rounded-2xl px-4 py-3 shadow-2xl flex items-start gap-3 max-w-md animate-in fade-in slide-in-from-bottom-4">
-          <div className="w-8 h-8 rounded-xl bg-[#FACC15] text-[#080B0D] flex items-center justify-center shrink-0 mt-0.5">
-            <Check className="w-5 h-5 stroke-[2.8]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-extrabold text-[#FACC15]">{toastMsg.title}</p>
-            {toastMsg.subtitle && (
-              <p className="text-[11px] text-gray-300 mt-0.5 leading-snug">{toastMsg.subtitle}</p>
-            )}
-          </div>
-          <button
-            onClick={() => setToastMsg(null)}
-            className="text-gray-400 hover:text-white p-1 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
       {/* =====================================================================
           1. BANNER ESCURO SUPERIOR (DESKTOP & MOBILE)
       ===================================================================== */}

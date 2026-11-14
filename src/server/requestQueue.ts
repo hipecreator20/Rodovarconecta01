@@ -10,7 +10,7 @@ import { persistStateSnapshotToNeon, persistRequestToNeon, persistSystemAssetToN
 const DESTINATIONS = ['Recursos Humanos', 'Administrativo', 'Financeiro'];
 const STATUSES: RequestStatus[] = ['Aberta', 'Em análise', 'Em andamento', 'Aguardando funcionário', 'Concluída', 'Cancelada'];
 const terminal = (r: InternalRequest) => ['Concluída', 'Cancelada'].includes(r.status);
-interface QueueNotification { id: string; recipientId: string; targetId: string; title: string; read: boolean; createdAtIso: string }
+interface QueueNotification { id: string; recipientId: string; targetId: string; title: string; read: boolean; dismissed?: boolean; createdAtIso: string }
 interface QueueState { requests: InternalRequest[]; notifications: QueueNotification[]; keys: Record<string, string> }
 
 let activeQueueState: QueueState | null = null;
@@ -90,7 +90,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     if (!hasPagePermission(u, 'solicitacoes')) return fail(res, 'Sem acesso à fila.', 403);
     res.setHeader('Cache-Control', 'no-store');
     const activeUsers = users().filter(person => person.active && person.approvalStatus === 'APROVADO');
-    res.json({ handlers: activeUsers.filter(person => person.accessProfile === 'RH').map(person => ({id:person.id,name:person.name})), requests: state.requests.filter(r => visible(u, r)), notifications: state.notifications.filter(n => n.recipientId === u.id), routing: {
+    res.json({ handlers: activeUsers.filter(person => person.accessProfile === 'RH').map(person => ({id:person.id,name:person.name})), requests: state.requests.filter(r => visible(u, r)), notifications: state.notifications.filter(n => n.recipientId === u.id && !n.dismissed), routing: {
       rhActive: activeUsers.filter(person => person.accessProfile === 'RH').length,
       financeActive: activeUsers.filter(person => person.accessProfile === 'FINANCEIRO').length,
     } });
@@ -145,7 +145,13 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     const composite = [u.id, r.id, action, actionKey].join(':');
     if (actionKey && state.keys[composite]) return res.json({ request: r });
     if (action === 'read') {
-      for (const n of state.notifications) if (n.targetId === r.id && n.recipientId === u.id) n.read = true;
+      const targetNotifId = typeof req.body?.notificationId === 'string' ? req.body.notificationId.replace(/^queue:/, '') : '';
+      for (const n of state.notifications) {
+        if (n.targetId === r.id && n.recipientId === u.id && (!targetNotifId || n.id === targetNotifId)) {
+          n.read = true;
+          if (req.body?.dismiss) n.dismissed = true;
+        }
+      }
       save(); await flushPendingNeonWrites(); return res.json({ request: r });
     }
     if (terminal(r)) return fail(res, 'Protocolo encerrado. O histórico permanece disponível.', 409);

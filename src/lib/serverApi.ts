@@ -98,10 +98,18 @@ export function withRevisionParam(url: string | undefined, revision: number = 1)
 }
 
 export function resolveAvatarUrl(
-  _emp?: Partial<Employee> | null,
+  emp?: Partial<Employee> | null,
   systemConfig?: SystemConfig | null
 ): string {
   const rev = systemConfig?.revision || 1;
+  if (
+    emp?.hasCustomAvatar &&
+    emp?.avatar &&
+    emp.avatar.trim() !== '' &&
+    !emp.avatar.includes('default-avatar.png')
+  ) {
+    return emp.avatar.trim();
+  }
   const defaultAvatarBase = systemConfig?.defaultAvatar?.imageUrl || DEFAULT_NEUTRAL_AVATAR_URL;
   return withRevisionParam(defaultAvatarBase, rev);
 }
@@ -255,32 +263,6 @@ export async function apiLogin(
   } finally {
     clear();
   }
-}
-
-export async function apiRequestAccess(payload: {
-  name: string;
-  username: string;
-  department: Department;
-  password: string;
-}): Promise<{
-  ok: boolean;
-  status: number;
-  message?: string;
-  error?: string;
-}> {
-  const res = await fetch('/api/auth/request-access', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await safeParseJson(res);
-  return {
-    ok: Boolean(res.ok && data.ok),
-    status: res.status,
-    message: data.message,
-    error: data.error,
-  };
 }
 
 export async function apiLogout(): Promise<void> {
@@ -467,6 +449,27 @@ export async function apiDeleteUser(userId: string): Promise<{ok: boolean; error
   return {ok: response.ok && data.ok === true, error: data.error};
 }
 
+export async function apiAdminChangeUserPassword(
+  userId: string,
+  payload: { password: string; mustChangePassword?: boolean }
+): Promise<{ ok: boolean; user?: Employee; error?: string }> {
+  const response = await fetch(
+    `/api/admin/users/${encodeURIComponent(userId)}/password`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    }
+  );
+  const data = await safeParseJson(response);
+  return {
+    ok: Boolean(response.ok && data.ok),
+    user: data.user,
+    error: data.error,
+  };
+}
+
 export async function apiFetchSystemConfig(): Promise<{
   systemConfig: SystemConfig;
   defaults: SystemConfig;
@@ -583,6 +586,25 @@ export interface FreightOperatorOption {
   roleTitle: string;
   department: string;
   avatar: string;
+  accessLevel?: string;
+}
+
+export function isHiddenAdministratorOperator(op: Partial<FreightOperatorOption> | null | undefined): boolean {
+  if (!op) return true;
+  if (op.id === 'emp-admin-master') return true;
+  if (op.accessLevel === 'ADMINISTRADOR') return true;
+  const cleanName = String(op.name || '').trim();
+  const cleanRole = String(op.roleTitle || '').trim();
+  if (/^administrador\b/i.test(cleanName)) return true;
+  if (/administrador\s+geral/i.test(cleanRole)) return true;
+  return false;
+}
+
+export function filterVisibleFreightOperators(
+  list: FreightOperatorOption[] | undefined | null
+): FreightOperatorOption[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter((op) => !isHiddenAdministratorOperator(op));
 }
 
 export async function apiFetchFreightOperators(): Promise<{
@@ -609,9 +631,9 @@ export async function apiFetchFreightOperators(): Promise<{
     const data = await res.json().catch(() => ({}));
     return {
       ok: res.ok,
-      comercialOperators: data.comercialOperators || [],
-      expedicaoOperators: data.expedicaoOperators || [],
-      monitoramentoOperators: data.monitoramentoOperators || [],
+      comercialOperators: filterVisibleFreightOperators(data.comercialOperators),
+      expedicaoOperators: filterVisibleFreightOperators(data.expedicaoOperators),
+      monitoramentoOperators: filterVisibleFreightOperators(data.monitoramentoOperators),
       permissions: data.permissions,
       error: data.error,
     };
@@ -1508,8 +1530,9 @@ export async function apiFetchFreightNotifications(): Promise<{
     subtitle: string;
     timeLabel: string;
     read: boolean;
-    targetSection: 'fretes_comercial' | 'fretes_expedicao' | 'fretes_ativos';
+    targetSection: 'fretes_comercial' | 'fretes_expedicao' | 'fretes_ativos' | 'financeiro';
     targetId: string;
+    createdAtIso?: string;
   }>;
   unreadCount: number;
 }> {
@@ -1526,15 +1549,29 @@ export async function apiFetchFreightNotifications(): Promise<{
   }
 }
 
-export async function apiMarkFreightNotificationRead(notifId: string): Promise<void> {
+export async function apiMarkFreightNotificationRead(notifId: string): Promise<boolean> {
   try {
-    await fetch(`/api/meus-fretes/notifications/${encodeURIComponent(notifId)}/read`, {
+    const res = await fetch(`/api/meus-fretes/notifications/${encodeURIComponent(notifId)}/read`, {
       method: 'POST',
       credentials: 'include',
       headers: getAuthHeaders(),
     });
+    return res.ok;
   } catch {
-    // ignore
+    return false;
+  }
+}
+
+export async function apiDeleteFreightNotification(notifId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/meus-fretes/notifications/${encodeURIComponent(notifId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

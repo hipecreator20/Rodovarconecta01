@@ -125,149 +125,214 @@ async function runTests() {
   const { res: icon192Res } = await manifestClient.request('/icons/icon-192x192.png');
   assert(icon192Res.status === 200, 'Ícone PNG 192x192 existe e é servido corretamente');
 
-  // 2. Autenticar usuários de diferentes perfis
+  // 2. Autenticar usuários de diferentes perfis (elenco ativo do servidor)
   console.log('\n--- 2. Autenticando Perfis para Testes de Permissão e Alçada ---');
-  const lucasFinanceiro = new SessionClient(); // Analista Financeiro (financeiro=true, financeiro_confirmar=false)
-  const petronioCoord = new SessionClient();   // Coordenador Financeiro (financeiro=true, financeiro_confirmar=true)
-  const fernandaSeg = new SessionClient();     // Segurança (sem permissão financeiro)
-  const anonClient = new SessionClient();      // Não autenticado
+  const vitorDiretoria = new SessionClient(); // Diretoria (financeiro=true, financeiro_confirmar=false)
+  const petronioCoord = new SessionClient();  // Coordenador Financeiro (financeiro=true, financeiro_confirmar=true)
+  const julianeRh = new SessionClient();      // RH (sem permissão financeiro)
+  const anonClient = new SessionClient();     // Não autenticado
 
-  const lucasLogin = await lucasFinanceiro.login('lucas.pereira@rodovar.com.br', 'rodovar2027#@');
-  assert(lucasLogin.res.status === 200, 'Lucas Pereira (Analista Financeiro - emp-6) autenticado');
+  const vitorLogin = await vitorDiretoria.login('vitor@rodovar.com.br', 'rodovar2027#@');
+  assert(vitorLogin.res.status === 200, 'Vitor (Diretoria - emp-2, financeiro sem confirmação) autenticado');
 
   const petronioLogin = await petronioCoord.login('petronio.santos@rodovar.com.br', 'rodovar2027#@');
-  assert(petronioLogin.res.status === 200, 'Petrônio Santos (Coordenador Financeiro - emp-7) autenticado');
+  assert(petronioLogin.res.status === 200, 'Petrônio Santos (Financeiro - emp-7, com confirmação) autenticado');
 
-  const fernandaLogin = await fernandaSeg.login('fernanda.oliveira@rodovar.com.br', 'rodovar2027#@');
-  assert(fernandaLogin.res.status === 200, 'Fernanda Oliveira (Segurança - emp-5, sem permissão financeiro) autenticada');
+  const julianeLogin = await julianeRh.login('juliane.aquino@rodovar.com.br', 'rodovar2027#@');
+  assert(julianeLogin.res.status === 200, 'Juliane Aquino (RH - emp-3, sem permissão financeiro) autenticada');
+
+  // Criar dois fretes isolados para esta execução para não alterar registros reais nem depender de saldos já pagos
+  const ts = Date.now();
+  const freightAId = `frete-e2e-pag-a-${ts}`;
+  const freightBId = `frete-e2e-pag-b-${ts}`;
+
+  const createARes = await petronioCoord.request('/api/pagamentos/fretes', {
+    method: 'POST',
+    body: JSON.stringify({
+      freight: {
+        id: freightAId,
+        code: `#E2E-A-${String(ts).slice(-4)}`,
+        cliente: 'CLIENTE TESTE PAGAMENTO A',
+        origem: 'Simões Filho - BA',
+        destino: 'Aracaju - SE',
+        valorTotal: 8500,
+        valorAdiantamento: 5950,
+        valorSaldo: 2550,
+        regraTipo: 'PADRAO_70_30',
+        percentualAdiantamento: 70,
+        percentualSaldo: 30,
+        adiantamentoPago: false,
+        saldoPago: false,
+        status: 'Pendente Adiantamento',
+        motorista: 'Motorista Teste A',
+        favorecido: 'Motorista Teste A',
+        chavePix: '71999990001',
+        banco: 'Banco do Brasil',
+        placa: 'RDV1A01',
+        entregaConfirmada: false,
+        docs: { cte: true, mdfe: true, coleta: true, entrega: false },
+      },
+    }),
+  });
+  assert(createARes.res.status === 201, 'Frete isolado A criado para testes de adiantamento (R$ 5.950,00)');
+
+  const createBRes = await petronioCoord.request('/api/pagamentos/fretes', {
+    method: 'POST',
+    body: JSON.stringify({
+      freight: {
+        id: freightBId,
+        code: `#E2E-B-${String(ts).slice(-4)}`,
+        cliente: 'CLIENTE TESTE PAGAMENTO B',
+        origem: 'Camaçari - BA',
+        destino: 'Salvador - BA',
+        valorTotal: 6000,
+        valorAdiantamento: 4200,
+        valorSaldo: 1800,
+        regraTipo: 'PADRAO_70_30',
+        percentualAdiantamento: 70,
+        percentualSaldo: 30,
+        adiantamentoPago: false,
+        saldoPago: false,
+        status: 'Pendente Adiantamento',
+        motorista: 'Motorista Teste B',
+        favorecido: 'Motorista Teste B',
+        chavePix: '71999990002',
+        banco: 'Itaú',
+        placa: 'RDV2B02',
+        entregaConfirmada: true,
+        docs: { cte: true, mdfe: true, coleta: true, entrega: true },
+      },
+    }),
+  });
+  assert(createBRes.res.status === 201, 'Frete isolado B criado para testes de saldo (R$ 1.800,00)');
 
   // 3. Teste de bloqueio de usuário sem autenticação ou sem permissão
   console.log('\n--- 3. Bloqueio de Usuário Sem Autenticação ou Sem Permissão ---');
   const anonRes = await anonClient.request('/api/pagamentos/intencoes');
   assert(anonRes.res.status === 401, 'Usuário não autenticado recebe 401 ao consultar intenções de pagamento');
 
-  const fernandaIntentRes = await fernandaSeg.request('/api/pagamentos/intencoes', {
+  const julianeIntentRes = await julianeRh.request('/api/pagamentos/intencoes', {
     method: 'POST',
-    body: JSON.stringify({ freightId: 'frete-0842', installmentType: 'ADIANTAMENTO' }),
+    body: JSON.stringify({ freightId: freightBId, installmentType: 'ADIANTAMENTO' }),
   });
   assert(
-    fernandaIntentRes.res.status === 403 && fernandaIntentRes.data?.code === 'FORBIDDEN_FINANCEIRO',
-    'Usuária sem permissão financeiro (Fernanda) recebe 403 FORBIDDEN_FINANCEIRO ao preparar pagamento'
+    julianeIntentRes.res.status === 403 && julianeIntentRes.data?.code === 'FORBIDDEN_FINANCEIRO',
+    'Usuária sem permissão financeiro (Juliane) recebe 403 FORBIDDEN_FINANCEIRO ao preparar pagamento'
   );
 
-  const fernandaUploadRes = await fernandaSeg.request('/api/pagamentos/comprovantes', {
+  const julianeUploadRes = await julianeRh.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
       fileName: 'comprovante.pdf',
-      fileBase64: createValidPdfBuffer('FERNANDA').toString('base64'),
+      fileBase64: createValidPdfBuffer('JULIANE').toString('base64'),
     }),
   });
   assert(
-    fernandaUploadRes.res.status === 403 && fernandaUploadRes.data?.code === 'FORBIDDEN_FINANCEIRO',
-    'Usuária sem permissão financeiro (Fernanda) recebe 403 ao tentar enviar comprovante'
+    julianeUploadRes.res.status === 403 && julianeUploadRes.data?.code === 'FORBIDDEN_FINANCEIRO',
+    'Usuária sem permissão financeiro (Juliane) recebe 403 ao tentar enviar comprovante'
   );
 
   // 4. Seleção de parcela Adiantamento vs Saldo e coerência de valores/títulos
   console.log('\n--- 4. Coerência entre Adiantamento e Saldo (Valor, Título, Identificador e Resumo) ---');
-  const fretesListRes = await lucasFinanceiro.request('/api/pagamentos/fretes');
+  const fretesListRes = await vitorDiretoria.request('/api/pagamentos/fretes');
   assert(fretesListRes.res.status === 200 && Array.isArray(fretesListRes.data?.freights), 'Consulta de fretes do Financeiro bem-sucedida');
 
-  // Preparar intenção para ADIANTAMENTO no Frete #0841 (Adiantamento = R$ 5.950,00 | Saldo = R$ 2.550,00)
-  const intentAdiantamento0841 = await lucasFinanceiro.request('/api/pagamentos/intencoes', {
+  // Preparar intenção para ADIANTAMENTO no Frete A (Adiantamento = R$ 5.950,00 | Saldo = R$ 2.550,00)
+  const intentAdiantamentoA = await vitorDiretoria.request('/api/pagamentos/intencoes', {
     method: 'POST',
-    body: JSON.stringify({ freightId: 'frete-0841', installmentType: 'ADIANTAMENTO' }),
+    body: JSON.stringify({ freightId: freightAId, installmentType: 'ADIANTAMENTO' }),
   });
-  assert(intentAdiantamento0841.res.status === 201, 'Intenção de pagamento criada para ADIANTAMENTO do Frete #0841');
+  assert(intentAdiantamentoA.res.status === 201, 'Intenção de pagamento criada para ADIANTAMENTO do Frete A');
   assert(
-    intentAdiantamento0841.data?.intent?.installmentType === 'ADIANTAMENTO' &&
-      intentAdiantamento0841.data?.intent?.installmentId === 'frete-0841:ADIANTAMENTO' &&
-      intentAdiantamento0841.data?.intent?.expectedAmountBRL === 5950 &&
-      intentAdiantamento0841.data?.intent?.status === 'AGUARDANDO_COMPROVANTE',
-    'Intenção de Adiantamento traz installmentId="frete-0841:ADIANTAMENTO", valor exato R$ 5.950,00 e estado AGUARDANDO_COMPROVANTE'
+    intentAdiantamentoA.data?.intent?.installmentType === 'ADIANTAMENTO' &&
+      intentAdiantamentoA.data?.intent?.installmentId === `${freightAId}:ADIANTAMENTO` &&
+      intentAdiantamentoA.data?.intent?.expectedAmountBRL === 5950 &&
+      intentAdiantamentoA.data?.intent?.status === 'AGUARDANDO_COMPROVANTE',
+    `Intenção de Adiantamento traz installmentId="${freightAId}:ADIANTAMENTO", valor exato R$ 5.950,00 e estado AGUARDANDO_COMPROVANTE`
   );
   assert(
-    intentAdiantamento0841.data?.guidance ===
+    intentAdiantamentoA.data?.guidance ===
       'Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta.',
     'Retorna orientação exata: "Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta."'
   );
 
-  // Cancelar a intenção de #0841 (e quaisquer intenções residuais de execuções anteriores) para testar fluxo de 0, 1 e >1 intenções
-  const preExistingIntents = await lucasFinanceiro.request('/api/pagamentos/intencoes');
+  // Cancelar intenções residuais para testar fluxo de 0, 1 e >1 intenções
+  const preExistingIntents = await vitorDiretoria.request('/api/pagamentos/intencoes');
   for (const oldIntent of preExistingIntents.data?.eligibleIntents || []) {
-    await lucasFinanceiro.request(`/api/pagamentos/intencoes/${oldIntent.id}/cancel`, {
+    await vitorDiretoria.request(`/api/pagamentos/intencoes/${oldIntent.id}/cancel`, {
       method: 'POST',
     });
   }
 
   // 5. Associação correta com 0, 1 e >1 intenções ativas + Expiração de intenção
   console.log('\n--- 5. Associação Automática com 0, 1 e >1 Intenções Ativas + Expiração ---');
-  const zeroIntents = await lucasFinanceiro.request('/api/pagamentos/intencoes');
+  const zeroIntents = await vitorDiretoria.request('/api/pagamentos/intencoes');
   assert(
     zeroIntents.data?.associationMode === 'MANUAL_SELECT' && zeroIntents.data?.eligibleCount === 0,
     'Sem intenção ativa (0 elegíveis): modo MANUAL_SELECT permite escolher frete e parcela autorizados'
   );
 
-  // Criar 1 intenção ativa para SALDO do Frete #0842 (Saldo = R$ 1.800,00)
-  const singleIntentRes = await lucasFinanceiro.request('/api/pagamentos/intencoes', {
+  // Criar 1 intenção ativa para SALDO do Frete B (Saldo = R$ 1.800,00)
+  const singleIntentRes = await vitorDiretoria.request('/api/pagamentos/intencoes', {
     method: 'POST',
-    body: JSON.stringify({ freightId: 'frete-0842', installmentType: 'SALDO' }),
+    body: JSON.stringify({ freightId: freightBId, installmentType: 'SALDO' }),
   });
-  const intentSaldo0842Id = singleIntentRes.data?.intent?.id;
+  const intentSaldoBId = singleIntentRes.data?.intent?.id;
   assert(
     singleIntentRes.res.status === 201 &&
-      singleIntentRes.data?.intent?.installmentId === 'frete-0842:SALDO' &&
+      singleIntentRes.data?.intent?.installmentId === `${freightBId}:SALDO` &&
       singleIntentRes.data?.intent?.expectedAmountBRL === 1800,
-    'Criada 1 intenção ativa para SALDO do Frete #0842 com valor R$ 1.800,00 e ID frete-0842:SALDO'
+    `Criada 1 intenção ativa para SALDO do Frete B com valor R$ 1.800,00 e ID ${freightBId}:SALDO`
   );
 
-  const oneIntentCheck = await lucasFinanceiro.request('/api/pagamentos/intencoes');
+  const oneIntentCheck = await vitorDiretoria.request('/api/pagamentos/intencoes');
   assert(
     oneIntentCheck.data?.associationMode === 'SINGLE_PREFILL' &&
       oneIntentCheck.data?.eligibleCount === 1 &&
-      oneIntentCheck.data?.eligibleIntents?.[0]?.id === intentSaldo0842Id,
-    'Com 1 intenção ativa: modo SINGLE_PREFILL pré-preenche automaticamente o frete #0842 e a parcela SALDO'
+      oneIntentCheck.data?.eligibleIntents?.[0]?.id === intentSaldoBId,
+    'Com 1 intenção ativa: modo SINGLE_PREFILL pré-preenche automaticamente o Frete B e a parcela SALDO'
   );
 
-  // Criar 2ª intenção ativa para ADIANTAMENTO do Frete #0841
-  const secondIntentRes = await lucasFinanceiro.request('/api/pagamentos/intencoes', {
+  // Criar 2ª intenção ativa para ADIANTAMENTO do Frete A
+  const secondIntentRes = await vitorDiretoria.request('/api/pagamentos/intencoes', {
     method: 'POST',
-    body: JSON.stringify({ freightId: 'frete-0841', installmentType: 'ADIANTAMENTO' }),
+    body: JSON.stringify({ freightId: freightAId, installmentType: 'ADIANTAMENTO' }),
   });
   const secondIntentId = secondIntentRes.data?.intent?.id;
 
-  const multiIntentCheck = await lucasFinanceiro.request('/api/pagamentos/intencoes');
+  const multiIntentCheck = await vitorDiretoria.request('/api/pagamentos/intencoes');
   assert(
     multiIntentCheck.data?.associationMode === 'MULTIPLE_CHOOSE' && multiIntentCheck.data?.eligibleCount === 2,
     'Com >1 intenções ativas (2 elegíveis): modo MULTIPLE_CHOOSE pede ao usuário escolher qual intenção vincular'
   );
 
   // Encerrar a 2ª intenção e testar expiração automática de uma intenção vencida
-  await lucasFinanceiro.request(`/api/pagamentos/intencoes/${secondIntentId}/cancel`, { method: 'POST' });
+  await vitorDiretoria.request(`/api/pagamentos/intencoes/${secondIntentId}/cancel`, { method: 'POST' });
 
-  const expiredIntentCreate = await lucasFinanceiro.request('/api/pagamentos/intencoes', {
+  const expiredIntentCreate = await vitorDiretoria.request('/api/pagamentos/intencoes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0841',
+      freightId: freightAId,
       installmentType: 'SALDO',
       validitySeconds: -5, // já nasce expirada para teste
     }),
   });
   const expiredIntentId = expiredIntentCreate.data?.intent?.id;
 
-  const afterExpirationCheck = await lucasFinanceiro.request('/api/pagamentos/intencoes');
+  const afterExpirationCheck = await vitorDiretoria.request('/api/pagamentos/intencoes');
   assert(
     afterExpirationCheck.data?.eligibleCount === 1 &&
-      afterExpirationCheck.data?.eligibleIntents?.[0]?.id === intentSaldo0842Id,
+      afterExpirationCheck.data?.eligibleIntents?.[0]?.id === intentSaldoBId,
     'Intenção expirada encerra apenas a associação automática, mantendo apenas a intenção válida'
   );
 
   // Tentar enviar comprovante referenciando a intenção expirada
-  const uploadWithExpiredIntent = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const uploadWithExpiredIntent = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0841',
+      freightId: freightAId,
       installmentType: 'SALDO',
       intentId: expiredIntentId,
       fileName: 'expirado.pdf',
@@ -284,9 +349,9 @@ async function runTests() {
   const crossUserAttempt = await petronioCoord.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
-      intentId: intentSaldo0842Id, // Pertence a Lucas Pereira (emp-6), não a Petrônio (emp-7)
+      intentId: intentSaldoBId, // Pertence a Vitor (emp-2), não a Petrônio (emp-7)
       fileName: 'comprovante_cruzado.pdf',
       fileBase64: createValidPdfBuffer('CRUZADO').toString('base64'),
     }),
@@ -303,7 +368,7 @@ async function runTests() {
   textOnlyForm.append('text', 'Pagamento realizado R$ 1.260,00');
   textOnlyForm.append('url', 'https://banco.exemplo.com/comprovante/123');
 
-  const shareTextOnlyRes = await lucasFinanceiro.request('/receber-comprovante', {
+  const shareTextOnlyRes = await vitorDiretoria.request('/receber-comprovante', {
     method: 'POST',
     body: textOnlyForm,
   });
@@ -314,7 +379,7 @@ async function runTests() {
   );
 
   const textShareId = new URL(textRedirectLoc, BASE_URL).searchParams.get('serverShareId');
-  const stagedTextRes = await lucasFinanceiro.request(`/api/pagamentos/shared-staging/${textShareId}`);
+  const stagedTextRes = await vitorDiretoria.request(`/api/pagamentos/shared-staging/${textShareId}`);
   assert(
     stagedTextRes.res.status === 200 &&
       stagedTextRes.data?.stagedShare?.textOnly === true &&
@@ -327,10 +392,10 @@ async function runTests() {
   const pdfBlob = new Blob([new Uint8Array(createValidPdfBuffer('SHARE-TARGET-PDF'))], {
     type: 'application/pdf',
   });
-  pdfForm.append('comprovante', pdfBlob, 'pix_banco_0842.pdf');
+  pdfForm.append('comprovante', pdfBlob, 'pix_banco_e2e.pdf');
   pdfForm.append('title', 'Comprovante PIX');
 
-  const sharePdfRes = await lucasFinanceiro.request('/receber-comprovante', {
+  const sharePdfRes = await vitorDiretoria.request('/receber-comprovante', {
     method: 'POST',
     body: pdfForm,
   });
@@ -341,11 +406,11 @@ async function runTests() {
   );
 
   const pdfShareId = new URL(pdfRedirectLoc, BASE_URL).searchParams.get('serverShareId');
-  const stagedPdfRes = await lucasFinanceiro.request(`/api/pagamentos/shared-staging/${pdfShareId}`);
+  const stagedPdfRes = await vitorDiretoria.request(`/api/pagamentos/shared-staging/${pdfShareId}`);
   assert(
     stagedPdfRes.res.status === 200 &&
       stagedPdfRes.data?.stagedShare?.textOnly === false &&
-      stagedPdfRes.data?.stagedShare?.fileName === 'pix_banco_0842.pdf' &&
+      stagedPdfRes.data?.stagedShare?.fileName === 'pix_banco_e2e.pdf' &&
       stagedPdfRes.data?.stagedShare?.mimeType === 'application/pdf' &&
       typeof stagedPdfRes.data?.stagedShare?.fileBase64 === 'string',
     'Arquivo PDF recebido pelo Share Target fica disponível para pré-visualização e confirmação no app'
@@ -354,10 +419,10 @@ async function runTests() {
   // 8. Rejeição de arquivos inválidos (SVG, EXE, cabeçalho falso) e > 10 MB
   console.log('\n--- 8. Rejeição de Tipo Inválido (SVG/EXE/Cabeçalho Falso) e Arquivo > 10 MB ---');
   const fakeSvgBuffer = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', 'utf-8');
-  const invalidTypeRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const invalidTypeRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
       fileName: 'malicioso.svg',
       fileBase64: fakeSvgBuffer.toString('base64'),
@@ -371,10 +436,10 @@ async function runTests() {
   // Arquivo maior que 10 MB (10.5 MB)
   const over10MbBuffer = Buffer.alloc(10 * 1024 * 1024 + 512 * 1024, 0x41);
   Buffer.from('%PDF-1.4\n').copy(over10MbBuffer, 0);
-  const largeFileRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const largeFileRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
       fileName: 'gigante.pdf',
       fileBase64: over10MbBuffer.toString('base64'),
@@ -387,18 +452,18 @@ async function runTests() {
 
   // 9. Salvar comprovante (PDF, JPEG, PNG), Idempotência, Hash Duplicado e Histórico de Substituição
   console.log('\n--- 9. Salvamento no Servidor, Idempotência, Hash Duplicado e Substituição sem Apagar Histórico ---');
-  const idempotencyKey = `idem-test-${Date.now()}`;
-  const pdfBuffer0842 = createValidPdfBuffer(`SALDO-0842-${Date.now()}`);
+  const idempotencyKey = `idem-test-${ts}`;
+  const pdfBufferB = createValidPdfBuffer(`SALDO-B-${ts}`);
 
-  const savePdfRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const savePdfRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     headers: { 'X-Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
-      intentId: intentSaldo0842Id,
-      fileName: 'comprovante_saldo_0842.pdf',
-      fileBase64: pdfBuffer0842.toString('base64'),
+      intentId: intentSaldoBId,
+      fileName: 'comprovante_saldo_b.pdf',
+      fileBase64: pdfBufferB.toString('base64'),
       origin: 'COMPARTILHAMENTO',
       isScheduledProof: false,
     }),
@@ -408,9 +473,9 @@ async function runTests() {
       savePdfRes.data?.receipt?.verificationStatus === 'AGUARDANDO_CONFERENCIA' &&
       savePdfRes.data?.receipt?.uploadStatus === 'SALVO_NO_SERVIDOR' &&
       savePdfRes.data?.receipt?.installmentType === 'SALDO' &&
-      savePdfRes.data?.receipt?.installmentId === 'frete-0842:SALDO' &&
+      savePdfRes.data?.receipt?.installmentId === `${freightBId}:SALDO` &&
       savePdfRes.data?.receipt?.title === 'Comprovante de Saldo',
-    'Comprovante PDF salvo vincula à parcela SALDO (frete-0842:SALDO) com estado AGUARDANDO_CONFERENCIA (não marca como Pago automaticamente)'
+    `Comprovante PDF salvo vincula à parcela SALDO (${freightBId}:SALDO) com estado AGUARDANDO_CONFERENCIA (não marca como Pago automaticamente)`
   );
 
   // Verificar que o frete NÃO foi marcado como saldoPago automaticamente após o envio do comprovante
@@ -421,14 +486,14 @@ async function runTests() {
   );
 
   // Testar idempotência com a mesma chave X-Idempotency-Key
-  const retryIdempotentRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const retryIdempotentRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     headers: { 'X-Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
-      fileName: 'comprovante_saldo_0842.pdf',
-      fileBase64: pdfBuffer0842.toString('base64'),
+      fileName: 'comprovante_saldo_b.pdf',
+      fileBase64: pdfBufferB.toString('base64'),
     }),
   });
   assert(
@@ -439,11 +504,11 @@ async function runTests() {
   );
 
   // Testar envio de JPEG válido e substituição de comprovante mantendo histórico
-  const jpegBuffer = createValidJpegBuffer(`SALDO-0842-JPEG-${Date.now()}`);
-  const saveJpegReplacementRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const jpegBuffer = createValidJpegBuffer(`SALDO-B-JPEG-${ts}`);
+  const saveJpegReplacementRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0842',
+      freightId: freightBId,
       installmentType: 'SALDO',
       fileName: 'comprovante_substituto.jpg',
       fileBase64: jpegBuffer.toString('base64'),
@@ -457,11 +522,11 @@ async function runTests() {
   );
 
   // Testar envio de PNG válido com mesmo hash (alerta de hash duplicado) e flag de agendamento
-  const pngBuffer = createValidPngBuffer(`ADIANTAMENTO-0841-PNG-${Date.now()}`);
-  const savePngRes1 = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const pngBuffer = createValidPngBuffer(`ADIANTAMENTO-A-PNG-${ts}`);
+  const savePngRes1 = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0841',
+      freightId: freightAId,
       installmentType: 'ADIANTAMENTO',
       fileName: 'comprovante_adiantamento.png',
       fileBase64: pngBuffer.toString('base64'),
@@ -475,10 +540,10 @@ async function runTests() {
     'Comprovante PNG de agendamento bancário é salvo como AGUARDANDO_CONFERENCIA sem dar baixa automática'
   );
 
-  const savePngDuplicateHashRes = await lucasFinanceiro.request('/api/pagamentos/comprovantes', {
+  const savePngDuplicateHashRes = await vitorDiretoria.request('/api/pagamentos/comprovantes', {
     method: 'POST',
     body: JSON.stringify({
-      freightId: 'frete-0841',
+      freightId: freightAId,
       installmentType: 'ADIANTAMENTO',
       fileName: 'comprovante_adiantamento_copia.png',
       fileBase64: pngBuffer.toString('base64'),
@@ -494,7 +559,7 @@ async function runTests() {
   console.log('\n--- 10. Separação entre Recebimento de Comprovante e Confirmação de Baixa Bancária ---');
   const receiptToConfirmId = saveJpegReplacementRes.data.receipt.id;
 
-  const lucasTryConfirm = await lucasFinanceiro.request(
+  const vitorTryConfirm = await vitorDiretoria.request(
     `/api/pagamentos/comprovantes/${receiptToConfirmId}/confirmar`,
     {
       method: 'POST',
@@ -504,8 +569,8 @@ async function runTests() {
     }
   );
   assert(
-    lucasTryConfirm.res.status === 403 && lucasTryConfirm.data?.code === 'FORBIDDEN_CONFIRM_PAYMENT',
-    'Analista sem permissão financeiro_confirmar (Lucas) pode anexar comprovante, mas recebe 403 ao tentar confirmar baixa'
+    vitorTryConfirm.res.status === 403 && vitorTryConfirm.data?.code === 'FORBIDDEN_CONFIRM_PAYMENT',
+    'Perfil com financeiro mas sem financeiro_confirmar (Vitor - Diretoria) pode anexar comprovante, mas recebe 403 ao tentar confirmar baixa'
   );
 
   // Tentar confirmar comprovante de agendamento sem acknowledgeScheduledProof
@@ -523,7 +588,7 @@ async function runTests() {
     'Comprovante de agendamento exige ateste explícito de compensação bancária antes da confirmação'
   );
 
-  // Coordenador Financeiro (Petrônio Santos - emp-7) confirma a baixa após conferência
+  // Financeiro (Petrônio Santos - emp-7) confirma a baixa após conferência
   const petronioConfirmRes = await petronioCoord.request(
     `/api/pagamentos/comprovantes/${receiptToConfirmId}/confirmar`,
     {
@@ -539,7 +604,7 @@ async function runTests() {
       petronioConfirmRes.data?.receipt?.verifiedByUserId === 'emp-7' &&
       petronioConfirmRes.data?.freight?.saldoPago === true &&
       petronioConfirmRes.data?.freight?.status === 'Pago',
-    'Usuário autorizado (Petrônio - Coordenador Financeiro) confirma o pagamento -> PAGAMENTO_CONFIRMADO e saldoPago=true'
+    'Usuário autorizado (Petrônio - Financeiro) confirma o pagamento -> PAGAMENTO_CONFIRMADO e saldoPago=true'
   );
 
   // 11. Reabrir o frete em outra sessão/dispositivo e verificar persistência + download protegido
@@ -547,7 +612,7 @@ async function runTests() {
   const secondDeviceSession = new SessionClient();
   await secondDeviceSession.login('administrador@rodovar.com.br', 'rodovar2027#@');
 
-  const reopenHistory = await secondDeviceSession.request('/api/pagamentos/fretes/frete-0842/historico');
+  const reopenHistory = await secondDeviceSession.request(`/api/pagamentos/fretes/${freightBId}/historico`);
   assert(
     reopenHistory.res.status === 200 &&
       Array.isArray(reopenHistory.data?.receipts) &&

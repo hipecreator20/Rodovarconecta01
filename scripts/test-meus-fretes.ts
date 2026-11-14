@@ -48,21 +48,45 @@ async function runAllTests() {
   console.log('RODOVAR CONECTA — BATERIA DE 14 TESTES OBRIGATÓRIOS (MEUS FRETES)');
   console.log('================================================================\n');
 
+  const storeDir = path.join(process.cwd(), 'data', 'freights-store');
+  const attDir = path.join(process.cwd(), 'data', 'freight-attachments');
+  const seqFile = path.join(storeDir, '_sequence.json');
+  const initialStoreFiles = new Set(fs.existsSync(storeDir) ? fs.readdirSync(storeDir) : []);
+  const initialAttFiles = new Set(fs.existsSync(attDir) ? fs.readdirSync(attDir) : []);
+  const initialSeqRaw = fs.existsSync(seqFile) ? fs.readFileSync(seqFile, 'utf8') : null;
+
   const createdTestFreightIds: string[] = [];
 
-  // Authenticate test actors
-  const jeise = await loginAs('jeise.santana@rodovar.com.br', 'rodovar2027#@');
-  const cesar = await loginAs('cesar.augusto@rodovar.com.br', 'rodovar2027#@');
-  const carlos = await loginAs('carlos.mendes@rodovar.com.br', 'rodovar2027#@');
-  const marcos = await loginAs('marcos.silva@rodovar.com.br', 'rodovar2027#@');
-  const fernandaSeg = await loginAs('fernanda.oliveira@rodovar.com.br', 'rodovar2027#@');
-  const lucasFin = await loginAs('lucas.pereira@rodovar.com.br', 'rodovar2027#@');
+  // Authenticate active test actors
+  const jeise = await loginAs('jeise.souza@rodovar.com.br', 'rodovar2027#@');
+  const marival = await loginAs('marival.chagas@rodovar.com.br', 'rodovar2027#@');
+  const priscila = await loginAs('priscila.santos@rodovar.com.br', 'rodovar2027#@');
+  const augusto = await loginAs('augusto.cruz@rodovar.com.br', 'rodovar2027#@');
+  const jairoMon = await loginAs('jairo.bahia@rodovar.com.br', 'rodovar2027#@');
+  const julianeRh = await loginAs('juliane.aquino@rodovar.com.br', 'rodovar2027#@');
+  const petronioFin = await loginAs('petronio.santos@rodovar.com.br', 'rodovar2027#@');
   const admin = await loginAs('administrador@rodovar.com.br', 'rodovar2027#@');
 
   // --------------------------------------------------------------------------
   // TEST 1: Dois funcionários do Comercial (Isolamento de carteira)
   // --------------------------------------------------------------------------
   {
+    const marivalCreate = await fetch(`${BASE_URL}/api/meus-fretes`, {
+      method: 'POST',
+      headers: authHeaders(marival, { 'X-Idempotency-Key': `e2e-marival-${Date.now()}` }),
+      body: JSON.stringify({
+        cliente: 'CLIENTE ISOLAMENTO COMERCIAL',
+        origemCidadeUf: 'Camaçari - BA',
+        destinoCidadeUf: 'Salvador - BA',
+        valorCobradoClienteCentavos: 450000,
+        valorContratadoCentavos: 310000,
+      }),
+    });
+    const marivalCreatedData = await marivalCreate.json();
+    assert.strictEqual(marivalCreate.status, 201);
+    const marivalFreightId = marivalCreatedData.freight.id;
+    createdTestFreightIds.push(marivalFreightId);
+
     const resJeise = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL&scope=MEUS`, {
       headers: authHeaders(jeise),
     });
@@ -73,53 +97,77 @@ async function runAllTests() {
       'Jeise deve ver apenas fretes sob sua responsabilidade comercial'
     );
 
-    const resCesar = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL&scope=MEUS`, {
-      headers: authHeaders(cesar),
+    const resMarival = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL&scope=MEUS`, {
+      headers: authHeaders(marival),
     });
-    const dataCesar = await resCesar.json();
-    assert.strictEqual(resCesar.status, 200);
+    const dataMarival = await resMarival.json();
+    assert.strictEqual(resMarival.status, 200);
     assert(
-      dataCesar.items.every((f: any) => f.comercialResponsavelId === cesar.userId),
-      'César deve ver apenas fretes sob sua responsabilidade comercial'
+      dataMarival.items.every((f: any) => f.comercialResponsavelId === marival.userId),
+      'Marival deve ver apenas fretes sob sua responsabilidade comercial'
     );
 
-    // Jeise tenta acessar detalhe do frete #0841 (de César) -> 403
-    const crossDetail = await fetch(`${BASE_URL}/api/meus-fretes/frete-0841`, {
+    // Jeise tenta acessar detalhe do frete de Marival -> 403
+    const crossDetail = await fetch(`${BASE_URL}/api/meus-fretes/${marivalFreightId}`, {
       headers: authHeaders(jeise),
     });
-    assert.strictEqual(crossDetail.status, 403, 'Jeise não pode ler detalhe de frete de César');
+    assert.strictEqual(crossDetail.status, 403, 'Jeise não pode ler detalhe de frete de Marival');
     console.log('✅ TESTE 01 PASSOU: Dois funcionários do Comercial isolados com sucesso (HTTP 200 próprios / HTTP 403 cruzado).');
   }
 
   // --------------------------------------------------------------------------
   // TEST 2: Dois funcionários da Expedição (Isolamento de fila individual)
   // --------------------------------------------------------------------------
+  let augustoFreightId = '';
   {
-    const resCarlos = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO&scope=MEUS`, {
-      headers: authHeaders(carlos),
+    const createForAugusto = await fetch(`${BASE_URL}/api/meus-fretes`, {
+      method: 'POST',
+      headers: authHeaders(jeise, { 'X-Idempotency-Key': `e2e-augusto-${Date.now()}` }),
+      body: JSON.stringify({
+        cliente: 'CLIENTE ISOLAMENTO EXPEDICAO',
+        origemCidadeUf: 'Simões Filho - BA',
+        enderecoColeta: 'Via Centro, 100 — Simões Filho/BA',
+        destinoCidadeUf: 'Feira de Santana - BA',
+        tipoCarga: 'Bobinas de Papel',
+        pesoKg: 14000,
+        veiculoNecessario: 'Truck',
+        dataColetaIso: '2027-10-28',
+        valorCobradoClienteCentavos: 520000,
+        valorContratadoCentavos: 340000,
+        confirmAndSendToExpedicao: true,
+        expedicaoResponsavelId: augusto.userId,
+      }),
     });
-    const dataCarlos = await resCarlos.json();
-    assert.strictEqual(resCarlos.status, 200);
+    const augustoData = await createForAugusto.json();
+    assert.strictEqual(createForAugusto.status, 201);
+    augustoFreightId = augustoData.freight.id;
+    createdTestFreightIds.push(augustoFreightId);
+
+    const resPriscila = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO&scope=MEUS`, {
+      headers: authHeaders(priscila),
+    });
+    const dataPriscila = await resPriscila.json();
+    assert.strictEqual(resPriscila.status, 200);
     assert(
-      dataCarlos.items.every((f: any) => f.expedicaoResponsavelId === carlos.userId),
-      'Carlos deve ver apenas sua própria fila na Expedição'
+      dataPriscila.items.every((f: any) => f.expedicaoResponsavelId === priscila.userId),
+      'Priscila deve ver apenas sua própria fila na Expedição'
     );
 
-    const resMarcos = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO&scope=MEUS`, {
-      headers: authHeaders(marcos),
+    const resAugusto = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO&scope=MEUS`, {
+      headers: authHeaders(augusto),
     });
-    const dataMarcos = await resMarcos.json();
-    assert.strictEqual(resMarcos.status, 200);
+    const dataAugusto = await resAugusto.json();
+    assert.strictEqual(resAugusto.status, 200);
     assert(
-      dataMarcos.items.every((f: any) => f.expedicaoResponsavelId === marcos.userId),
-      'Marcos deve ver apenas sua própria fila na Expedição'
+      dataAugusto.items.every((f: any) => f.expedicaoResponsavelId === augusto.userId),
+      'Augusto deve ver apenas sua própria fila na Expedição'
     );
 
-    // Carlos tenta abrir detalhe do frete #0842 (atribuído a Marcos) -> 403
-    const crossExp = await fetch(`${BASE_URL}/api/meus-fretes/frete-0842`, {
-      headers: authHeaders(carlos),
+    // Priscila tenta abrir detalhe do frete atribuído a Augusto -> 403
+    const crossExp = await fetch(`${BASE_URL}/api/meus-fretes/${augustoFreightId}`, {
+      headers: authHeaders(priscila),
     });
-    assert.strictEqual(crossExp.status, 403, 'Carlos não pode abrir frete atribuído a Marcos');
+    assert.strictEqual(crossExp.status, 403, 'Priscila não pode abrir frete atribuído a Augusto');
     console.log('✅ TESTE 02 PASSOU: Dois funcionários da Expedição isolados com sucesso (HTTP 200 próprios / HTTP 403 cruzado).');
   }
 
@@ -128,13 +176,13 @@ async function runAllTests() {
   // --------------------------------------------------------------------------
   {
     const tamper1 = await fetch(
-      `${BASE_URL}/api/meus-fretes?area=COMERCIAL&responsavelId=${cesar.userId}`,
+      `${BASE_URL}/api/meus-fretes?area=COMERCIAL&responsavelId=${marival.userId}`,
       { headers: authHeaders(jeise) }
     );
     assert.strictEqual(tamper1.status, 403, 'Manipulação de responsavelId na URL deve retornar 403');
 
     const tamper2 = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO&scope=EQUIPE`, {
-      headers: authHeaders(carlos),
+      headers: authHeaders(priscila),
     });
     assert.strictEqual(tamper2.status, 403, 'Manipulação de scope=EQUIPE sem permissão deve retornar 403');
     console.log('✅ TESTE 03 PASSOU: Manipulação de URL / parâmetros de outro usuário bloqueada no servidor (HTTP 403).');
@@ -227,7 +275,7 @@ async function runAllTests() {
     const dataEnviar = await resEnviar.json();
     assert.strictEqual(resEnviar.status, 200);
     assert.strictEqual(dataEnviar.freight.id, sharedQueueFreightId, 'O ID do registro único deve permanecer idêntico');
-    assert.strictEqual(dataEnviar.freight.situacaoComercial, 'NA_EXPEDICAO');
+    assert.strictEqual(dataEnviar.freight.situacaoComercial, 'AGUARDANDO_EXPEDICAO');
     assert.strictEqual(dataEnviar.freight.situacaoOperacional, 'DISPONIVEL_FILA');
     sharedQueueFreightRev = dataEnviar.freight.revision;
 
@@ -239,28 +287,28 @@ async function runAllTests() {
   // TEST 5: Dois operadores da Expedição clicando simultaneamente em "Assumir atendimento"
   // --------------------------------------------------------------------------
   {
-    const [claimCarlos, claimMarcos] = await Promise.all([
+    const [claimPriscila, claimAugusto] = await Promise.all([
       fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/claim`, {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(priscila),
         body: JSON.stringify({}),
       }),
       fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/claim`, {
         method: 'POST',
-        headers: authHeaders(marcos),
+        headers: authHeaders(augusto),
         body: JSON.stringify({}),
       }),
     ]);
 
-    const statuses = [claimCarlos.status, claimMarcos.status].sort();
+    const statuses = [claimPriscila.status, claimAugusto.status].sort();
     assert.deepStrictEqual(
       statuses,
       [200, 409],
       `Exatamente um operador deve vencer (200) e o outro receber conflito (409). Obtido: ${statuses}`
     );
 
-    const winnerClient = claimCarlos.status === 200 ? carlos : marcos;
-    const loserClient = claimCarlos.status === 200 ? marcos : carlos;
+    const winnerClient = claimPriscila.status === 200 ? priscila : augusto;
+    const loserClient = claimPriscila.status === 200 ? augusto : priscila;
 
     // Verificar que o perdedor não tem mais acesso ao frete
     const loserCheck = await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}`, {
@@ -268,88 +316,104 @@ async function runAllTests() {
     });
     assert.strictEqual(loserCheck.status, 403, 'Operador que perdeu a disputa não pode acessar o frete assumido por outro');
 
-    // Transferir para Carlos caso Marcos tenha vencido, para seguirmos os testes com Carlos
-    if (winnerClient.userId !== carlos.userId) {
+    // Transferir para Priscila via Admin caso Augusto tenha vencido, para seguirmos os testes com Priscila
+    if (winnerClient.userId !== priscila.userId) {
       const winnerDetail = await (
         await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}`, {
           headers: authHeaders(winnerClient),
         })
       ).json();
-      await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/transfer`, {
+      const transferRes = await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/transfer`, {
         method: 'POST',
-        headers: authHeaders(winnerClient),
+        headers: authHeaders(admin),
         body: JSON.stringify({
           baseRevision: winnerDetail.freight.revision,
           sector: 'EXPEDICAO',
-          newResponsibleId: carlos.userId,
+          newResponsibleId: priscila.userId,
           reason: 'Alinhamento de turno para bateria de testes automatizados.',
         }),
       });
+      assert.strictEqual(transferRes.status, 200, 'Transferência administrativa de Expedição deve funcionar');
     }
     console.log('✅ TESTE 05 PASSOU: Disputa simultânea em "Assumir atendimento" garantida por trava atômica (1x HTTP 200, 1x HTTP 409).');
   }
 
   // --------------------------------------------------------------------------
-  // TEST 6: Usuário pendente, recusado, suspenso ou de outro setor bloqueado
+  // TEST 6: Usuário sem sessão ou de outro setor bloqueado
   // --------------------------------------------------------------------------
   {
-    // Funcionária de Segurança (Fernanda) e Financeiro (Lucas) tentam acessar Comercial e Expedição -> 403
-    const segCom = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL`, {
-      headers: authHeaders(fernandaSeg),
+    const rhCom = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL`, {
+      headers: authHeaders(julianeRh),
     });
-    const segExp = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO`, {
-      headers: authHeaders(fernandaSeg),
+    const rhExp = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO`, {
+      headers: authHeaders(julianeRh),
     });
     const finCom = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL`, {
-      headers: authHeaders(lucasFin),
+      headers: authHeaders(petronioFin),
     });
     const finExp = await fetch(`${BASE_URL}/api/meus-fretes?area=EXPEDICAO`, {
-      headers: authHeaders(lucasFin),
+      headers: authHeaders(petronioFin),
     });
-    assert.strictEqual(segCom.status, 403);
-    assert.strictEqual(segExp.status, 403);
+    assert.strictEqual(rhCom.status, 403);
+    assert.strictEqual(rhExp.status, 403);
     assert.strictEqual(finCom.status, 403);
     assert.strictEqual(finExp.status, 403);
 
-    // Requisição sem sessão autenticada -> 401
     const unauthRes = await fetch(`${BASE_URL}/api/meus-fretes?area=COMERCIAL`);
     assert.strictEqual(unauthRes.status, 401);
-    console.log('✅ TESTE 06 PASSOU: Contas sem sessão, pendentes ou de outros setores (Segurança/Financeiro) bloqueadas na origem (HTTP 401/403).');
+    console.log('✅ TESTE 06 PASSOU: Contas sem sessão ou de outros setores (RH/Financeiro) bloqueadas na origem (HTTP 401/403).');
   }
 
   // --------------------------------------------------------------------------
-  // TEST 7: Fechamento operacional incompleto bloqueado
+  // TEST 13 (executado enquanto frete está na Expedição): valorCobradoClienteCentavos omitido para Expedição
   // --------------------------------------------------------------------------
   {
-    const detailRes = await (
-      await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}`, {
-        headers: authHeaders(carlos),
-      })
-    ).json();
-    const rev = detailRes.freight.revision;
+    const expDetailRes = await fetch(`${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}`, {
+      headers: authHeaders(priscila),
+    });
+    assert.strictEqual(expDetailRes.status, 200);
+    const expDetail = await expDetailRes.json();
+    assert.strictEqual(
+      expDetail.freight.valorCobradoClienteCentavos,
+      undefined,
+      'valorCobradoClienteCentavos deve ser omitido para operador exclusivo da Expedição'
+    );
+    assert.strictEqual(
+      typeof expDetail.freight.valorContratadoCentavos,
+      'number',
+      'valorContratadoCentavos deve estar visível para a Expedição'
+    );
+    sharedQueueFreightRev = expDetail.freight.revision;
+    console.log('✅ TESTE 13 PASSOU: Operador da Expedição sem permissão comercial não recebe valorCobradoClienteCentavos na resposta da API.');
+  }
 
-    // Tenta confirmar fechamento sem motorista/placa/checklist -> 400
-    const badClose = await fetch(
+  // --------------------------------------------------------------------------
+  // TEST 7: Liberação operacional incompleta bloqueada + Liberação para Monitoramento
+  // --------------------------------------------------------------------------
+  {
+    // Tenta liberar sem motorista/placa/checklist/videochamada/ordem -> 400
+    const badRelease = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(priscila),
         body: JSON.stringify({
-          baseRevision: rev,
-          action: 'CONFIRMAR_FECHAMENTO',
+          baseRevision: sharedQueueFreightRev,
+          action: 'LIBERAR_PARA_MONITORAMENTO',
+          monitoramentoResponsavelId: jairoMon.userId,
         }),
       }
     );
-    assert.strictEqual(badClose.status, 400, 'Fechamento incompleto deve retornar HTTP 400');
+    assert.strictEqual(badRelease.status, 400, 'Liberação incompleta deve retornar HTTP 400');
 
-    // Agora preenche todos os dados operacionais + 4 itens do checklist e confirma fechamento
+    // Preenche dados operacionais + 4 itens do checklist + condição pagamento
     const updateOp = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/operational`,
       {
         method: 'PUT',
-        headers: authHeaders(carlos),
+        headers: authHeaders(priscila),
         body: JSON.stringify({
-          baseRevision: rev,
+          baseRevision: sharedQueueFreightRev,
           transportadorNome: 'Expresso Nordeste Cargas Ltda',
           motoristaNome: 'Roberto Almeida Santana',
           motoristaCpf: '512.890.114-22',
@@ -357,6 +421,8 @@ async function runAllTests() {
           placaVeiculo: 'RDO8H11',
           placaCarreta: 'RDO8H12',
           valorContratadoCentavos: 680000,
+          condicoesOperacionais: 'Carregamento com EPI completo e amarração.',
+          condicoesPagamento: '70/30',
           checklistFechamento: {
             motoristaConfirmado: true,
             veiculoConfirmado: true,
@@ -369,22 +435,70 @@ async function runAllTests() {
     const updateOpData = await updateOp.json();
     assert.strictEqual(updateOp.status, 200);
 
-    const goodClose = await fetch(
+    // Registrar videochamada obrigatória
+    const videoRes = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(priscila),
         body: JSON.stringify({
           baseRevision: updateOpData.freight.revision,
-          action: 'CONFIRMAR_FECHAMENTO',
+          action: 'REGISTRAR_VIDEOCHAMADA',
+          videochamadaObservacoes: 'Motorista e documentação validados em chamada.',
         }),
       }
     );
-    const goodCloseData = await goodClose.json();
-    assert.strictEqual(goodClose.status, 200);
-    assert.strictEqual(goodCloseData.freight.situacaoOperacional, 'FECHADO');
-    sharedQueueFreightRev = goodCloseData.freight.revision;
-    console.log('✅ TESTE 07 PASSOU: Fechamento operacional incompleto bloqueado (HTTP 400) e liberado somente com dados + 4 itens do checklist.');
+    const videoData = await videoRes.json();
+    assert.strictEqual(videoRes.status, 200);
+
+    // Emitir Ordem de Coleta ou adiar (aqui emitimos + confirmamos envio ao motorista)
+    const orderRes = await fetch(
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      {
+        method: 'POST',
+        headers: authHeaders(priscila),
+        body: JSON.stringify({
+          baseRevision: videoData.freight.revision,
+          action: 'EMITIR_ORDEM',
+        }),
+      }
+    );
+    const orderData = await orderRes.json();
+    assert.strictEqual(orderRes.status, 200);
+
+    const sendOrderRes = await fetch(
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      {
+        method: 'POST',
+        headers: authHeaders(priscila),
+        body: JSON.stringify({
+          baseRevision: orderData.freight.revision,
+          action: 'CONFIRMAR_ENVIO_ORDEM_MOTORISTA',
+        }),
+      }
+    );
+    const sendOrderData = await sendOrderRes.json();
+    assert.strictEqual(sendOrderRes.status, 200);
+
+    // Liberar para Monitoramento (atribuído a Jairo)
+    const releaseRes = await fetch(
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      {
+        method: 'POST',
+        headers: authHeaders(priscila),
+        body: JSON.stringify({
+          baseRevision: sendOrderData.freight.revision,
+          action: 'LIBERAR_PARA_MONITORAMENTO',
+          monitoramentoResponsavelId: jairoMon.userId,
+        }),
+      }
+    );
+    const releaseData = await releaseRes.json();
+    assert.strictEqual(releaseRes.status, 200);
+    assert.strictEqual(releaseData.freight.situacaoOperacional, 'LIBERADO_MONITORAMENTO');
+    assert.strictEqual(releaseData.freight.situacaoMonitoramento, 'NOVO_PARA_CARREGAR');
+    sharedQueueFreightRev = releaseData.freight.revision;
+    console.log('✅ TESTE 07 PASSOU: Liberação operacional incompleta bloqueada (HTTP 400) e liberada somente com dados, checklist, videochamada e ordem.');
   }
 
   // --------------------------------------------------------------------------
@@ -395,7 +509,7 @@ async function runAllTests() {
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/operational`,
       {
         method: 'PUT',
-        headers: authHeaders(carlos),
+        headers: authHeaders(priscila),
         body: JSON.stringify({
           baseRevision: 1, // Stale revision!
           observacoes: 'Tentativa com revisão antiga',
@@ -407,40 +521,49 @@ async function runAllTests() {
   }
 
   // --------------------------------------------------------------------------
-  // TEST 8 & TEST 12: Upload/Download de anexos + Conclusão sem comprovante conferido bloqueada
+  // TEST 8 & TEST 12: Monitoramento + Upload/Download de anexos + Finalização sem comprovante conferido bloqueada
   // --------------------------------------------------------------------------
   {
-    // Confirmar coleta primeiro para colocar em EM_TRANSPORTE
-    const collectRes = await fetch(
-      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
-      {
-        method: 'POST',
-        headers: authHeaders(carlos),
-        body: JSON.stringify({
-          baseRevision: sharedQueueFreightRev,
-          action: 'CONFIRMAR_COLETA',
-        }),
-      }
-    );
-    const collectData = await collectRes.json();
-    assert.strictEqual(collectRes.status, 200);
-    assert.strictEqual(collectData.freight.situacaoComercial, 'EM_TRANSPORTE');
-    assert.strictEqual(collectData.freight.situacaoOperacional, 'EM_TRANSPORTE');
-    sharedQueueFreightRev = collectData.freight.revision;
+    const stages = [
+      'EM_DESLOCAMENTO_COLETA',
+      'NO_LOCAL_COLETA',
+      'CARREGADO_EM_TRANSPORTE',
+      'NO_LOCAL_ENTREGA',
+      'ENTREGUE',
+    ];
+    for (const targetStage of stages) {
+      const stageRes = await fetch(
+        `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/monitoramento-action`,
+        {
+          method: 'POST',
+          headers: authHeaders(jairoMon),
+          body: JSON.stringify({
+            baseRevision: sharedQueueFreightRev,
+            action: 'AVANCAR_ETAPA',
+            targetStage,
+            horarioRealEvento: '28/10/2027 14:00',
+          }),
+        }
+      );
+      const stageData = await stageRes.json();
+      assert.strictEqual(stageRes.status, 200, `Etapa ${targetStage} deve avançar com sucesso`);
+      sharedQueueFreightRev = stageData.freight.revision;
+    }
 
-    // Tentar concluir operação SEM comprovante de entrega -> 400
+    // Tentar finalizar monitoramento SEM comprovante de entrega -> 400
     const prematureComplete = await fetch(
-      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/monitoramento-action`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({
           baseRevision: sharedQueueFreightRev,
-          action: 'CONCLUIR_OPERACAO',
+          action: 'AVANCAR_ETAPA',
+          targetStage: 'FINALIZADO',
         }),
       }
     );
-    assert.strictEqual(prematureComplete.status, 400, 'Conclusão sem comprovante deve retornar 400');
+    assert.strictEqual(prematureComplete.status, 400, 'Finalização sem comprovante deve retornar 400');
 
     // Teste 12a: Tentar fazer upload de arquivo SVG malicioso -> 400
     const svgBase64 = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>').toString('base64');
@@ -448,7 +571,7 @@ async function runAllTests() {
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/attachments`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({
           fileName: 'exploit.svg',
           category: 'COMPROVANTE_ENTREGA',
@@ -465,7 +588,7 @@ async function runAllTests() {
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/attachments`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({
           fileName: 'canhoto-assinado-gerdau.pdf',
           label: 'Canhoto NF-e Assinado',
@@ -480,40 +603,41 @@ async function runAllTests() {
     const attachmentId = goodUploadData.attachment.id;
     sharedQueueFreightRev = goodUploadData.freight.revision;
 
-    // Teste 12c: Usuário sem permissão para este frete (César ou Marcos) tenta baixar o anexo -> 403
+    // Teste 12c: Operador da Expedição sem vínculo com este frete (Augusto) tenta baixar o anexo -> 403
     const unauthDownload = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/attachments/${attachmentId}/download`,
-      { headers: authHeaders(marcos) }
+      { headers: authHeaders(augusto) }
     );
     assert.strictEqual(unauthDownload.status, 403, 'Download de anexo por usuário não vinculado deve retornar 403');
 
-    // Download autorizado por Carlos -> 200
+    // Download autorizado por Priscila/Jairo -> 200
     const authDownload = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/attachments/${attachmentId}/download`,
-      { headers: authHeaders(carlos) }
+      { headers: authHeaders(jairoMon) }
     );
     assert.strictEqual(authDownload.status, 200);
 
-    // Tentar concluir operação com comprovante AINDA NÃO CONFERIDO -> 400
+    // Tentar finalizar monitoramento com comprovante AINDA NÃO CONFERIDO -> 400
     const unverifiedComplete = await fetch(
-      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/monitoramento-action`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({
           baseRevision: sharedQueueFreightRev,
-          action: 'CONCLUIR_OPERACAO',
+          action: 'AVANCAR_ETAPA',
+          targetStage: 'FINALIZADO',
         }),
       }
     );
-    assert.strictEqual(unverifiedComplete.status, 400, 'Comprovante não conferido deve bloquear conclusão');
+    assert.strictEqual(unverifiedComplete.status, 400, 'Comprovante não conferido deve bloquear finalização');
 
     // Conferir explicitamente o comprovante
     const verifyRes = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/attachments/${attachmentId}/verify`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({ conferido: true }),
       }
     );
@@ -521,25 +645,27 @@ async function runAllTests() {
     assert.strictEqual(verifyRes.status, 200);
     sharedQueueFreightRev = verifyData.freight.revision;
 
-    // Agora concluir a operação!
+    // Agora finalizar o monitoramento!
     const finalComplete = await fetch(
-      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/expedicao-action`,
+      `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}/monitoramento-action`,
       {
         method: 'POST',
-        headers: authHeaders(carlos),
+        headers: authHeaders(jairoMon),
         body: JSON.stringify({
           baseRevision: sharedQueueFreightRev,
-          action: 'CONCLUIR_OPERACAO',
+          action: 'AVANCAR_ETAPA',
+          targetStage: 'FINALIZADO',
         }),
       }
     );
     const finalData = await finalComplete.json();
     assert.strictEqual(finalComplete.status, 200);
+    assert.strictEqual(finalData.freight.situacaoMonitoramento, 'FINALIZADO');
     assert.strictEqual(finalData.freight.situacaoOperacional, 'CONCLUIDO');
     assert.strictEqual(finalData.freight.situacaoComercial, 'FINALIZADO');
     assert.notStrictEqual(finalData.freight.situacaoFinanceira, 'PAGO', 'Não deve marcar pagamento financeiro como PAGO');
 
-    console.log('✅ TESTE 08 PASSOU: Conclusão bloqueada sem comprovante conferido e liberada após conferência, movendo Comercial para Finalizados.');
+    console.log('✅ TESTE 08 PASSOU: Finalização bloqueada sem comprovante conferido e liberada após conferência, movendo Comercial para Finalizados.');
     console.log('✅ TESTE 12 PASSOU: Upload e download de anexos validam magic bytes, limite de 5 MB e permissões por usuário.');
   }
 
@@ -547,7 +673,7 @@ async function runAllTests() {
   // TEST 9: Persistência após recarregar / sair e entrar novamente
   // --------------------------------------------------------------------------
   {
-    const freshJeise = await loginAs('jeise.santana@rodovar.com.br', 'rodovar2027#@');
+    const freshJeise = await loginAs('jeise.souza@rodovar.com.br', 'rodovar2027#@');
     const detailAfterRelogin = await fetch(
       `${BASE_URL}/api/meus-fretes/${sharedQueueFreightId}`,
       { headers: authHeaders(freshJeise) }
@@ -560,39 +686,17 @@ async function runAllTests() {
   }
 
   // --------------------------------------------------------------------------
-  // TEST 13: Funcionário da Expedição sem permissão comercial não recebe valor cobrado do cliente
-  // --------------------------------------------------------------------------
-  {
-    const expDetail = await (
-      await fetch(`${BASE_URL}/api/meus-fretes/frete-0841`, {
-        headers: authHeaders(carlos),
-      })
-    ).json();
-    assert.strictEqual(
-      expDetail.freight.valorCobradoClienteCentavos,
-      undefined,
-      'valorCobradoClienteCentavos deve ser omitido para operador exclusivo da Expedição'
-    );
-    assert.strictEqual(
-      typeof expDetail.freight.valorContratadoCentavos,
-      'number',
-      'valorContratadoCentavos deve estar visível para a Expedição'
-    );
-    console.log('✅ TESTE 13 PASSOU: Operador da Expedição sem permissão comercial não recebe valorCobradoClienteCentavos na resposta da API.');
-  }
-
-  // --------------------------------------------------------------------------
   // TEST 14: Teste de carga e concorrência com 45 acessos simultâneos
   // --------------------------------------------------------------------------
   {
     const startMs = Date.now();
-    const concurrentClients = [jeise, cesar, carlos, marcos, admin];
+    const concurrentClients = [jeise, marival, priscila, augusto, admin];
     const requests: Promise<Response>[] = [];
 
     for (let i = 0; i < 45; i++) {
       const client = concurrentClients[i % concurrentClients.length];
       const area =
-        client.userId === carlos.userId || client.userId === marcos.userId
+        client.userId === priscila.userId || client.userId === augusto.userId
           ? 'EXPEDICAO'
           : 'COMERCIAL';
       requests.push(
@@ -618,33 +722,24 @@ async function runAllTests() {
     );
   }
 
-  // Clean up temporary test freight files so production database keeps only the 3 real freights (#0842, #0841, #0840)
-  const storeDir = path.join(process.cwd(), 'data', 'freights-store');
-  const keepFiles = new Set([
-    '_notifications.json',
-    '_sequence.json',
-    'frete-0840.json',
-    'frete-0840.sub.json',
-    'frete-0841.json',
-    'frete-0841.sub.json',
-    'frete-0842.json',
-    'frete-0842.sub.json',
-  ]);
-  for (const file of fs.readdirSync(storeDir)) {
-    if (!keepFiles.has(file)) {
-      fs.unlinkSync(path.join(storeDir, file));
+  // Limpar apenas os arquivos criados durante esta execução de teste (preservando os fretes reais pré-existentes)
+  if (fs.existsSync(storeDir)) {
+    for (const file of fs.readdirSync(storeDir)) {
+      if (!initialStoreFiles.has(file)) {
+        fs.unlinkSync(path.join(storeDir, file));
+      }
     }
   }
-  const attDir = path.join(process.cwd(), 'data', 'freight-attachments');
   if (fs.existsSync(attDir)) {
     for (const file of fs.readdirSync(attDir)) {
-      if (file.includes('frete-0843') || file.includes('frete-0844') || file.includes('frete-0845')) {
+      if (!initialAttFiles.has(file)) {
         fs.unlinkSync(path.join(attDir, file));
       }
     }
   }
-  const seqFile = path.join(storeDir, '_sequence.json');
-  fs.writeFileSync(seqFile, JSON.stringify({ nextProtocolNumber: 843 }, null, 2));
+  if (initialSeqRaw !== null) {
+    fs.writeFileSync(seqFile, initialSeqRaw);
+  }
 
   console.log('\n================================================================');
   console.log('TODOS OS 14 TESTES OBRIGATÓRIOS PASSARAM COM 100% DE SUCESSO!');

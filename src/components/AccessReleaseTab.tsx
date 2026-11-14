@@ -4,6 +4,9 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  Eye,
+  EyeOff,
+  KeyRound,
   RefreshCw,
   Search,
   Shield,
@@ -30,12 +33,14 @@ import {
 } from '../lib/permissions';
 import { resolveEmployeeSectorLabel } from '../lib/adminMetrics';
 import {
+  apiAdminChangeUserPassword,
   apiFetchAdminAccessRequests,
   apiSubmitAdminDecision,
   resolveAvatarUrl,
   apiDeleteUser,
 } from '../lib/serverApi';
 import { CorporateModal } from './ui/CorporateModal';
+import { emitPortalToast } from './ui/GlobalToastViewport';
 
 interface AccessReleaseTabProps {
   currentUser: Employee;
@@ -101,6 +106,69 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+
+  // Modal state for admin changing any collaborator's password (persisted in Neon)
+  const [passwordModalTarget, setPasswordModalTarget] = useState<Employee | null>(null);
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [requireChangeOnNextLogin, setRequireChangeOnNextLogin] = useState(true);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [passwordModalError, setPasswordModalError] = useState('');
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+
+  const openPasswordModal = (acc: Employee) => {
+    setPasswordModalTarget(acc);
+    setNewPasswordInput('');
+    setConfirmPasswordInput('');
+    setRequireChangeOnNextLogin(acc.id !== currentUser.id);
+    setShowNewPassword(false);
+    setPasswordModalError('');
+  };
+
+  const handleSaveUserPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passwordModalTarget || isSavingPassword) return;
+    if (newPasswordInput.length < 8) {
+      const msg = 'A nova senha deve ter no mínimo 8 caracteres.';
+      setPasswordModalError(msg);
+      emitPortalToast({ type: 'error', title: 'Senha inválida', message: msg });
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      const msg = 'A confirmação de senha não confere com a nova senha.';
+      setPasswordModalError(msg);
+      emitPortalToast({ type: 'error', title: 'Senha não confere', message: msg });
+      return;
+    }
+
+    setIsSavingPassword(true);
+    setPasswordModalError('');
+    try {
+      const res = await apiAdminChangeUserPassword(passwordModalTarget.id, {
+        password: newPasswordInput,
+        mustChangePassword: requireChangeOnNextLogin,
+      });
+      if (!res.ok) {
+        const err = res.error || 'Não foi possível alterar a senha no banco de dados.';
+        setPasswordModalError(err);
+        emitPortalToast({ type: 'error', title: 'Erro ao alterar senha', message: err });
+        return;
+      }
+
+      const targetName = passwordModalTarget.name;
+      setPasswordModalTarget(null);
+      const okMsg = `Senha de ${targetName} alterada e salva no Neon com sucesso.`;
+      setFeedbackBanner({ type: 'success', message: okMsg });
+      emitPortalToast({ type: 'success', title: 'Senha alterada', message: okMsg });
+      await loadData();
+    } catch {
+      const err = 'Falha de comunicação com o servidor ao salvar a nova senha.';
+      setPasswordModalError(err);
+      emitPortalToast({ type: 'error', title: 'Erro de comunicação', message: err });
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -178,24 +246,30 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
       });
 
       if (!res.ok) {
+        const msg = res.error || 'O servidor recusou a operação administrativa.';
         setFeedbackBanner({
           type: 'error',
-          message: res.error || 'O servidor recusou a operação administrativa.',
+          message: msg,
         });
+        emitPortalToast({ type: 'error', message: msg });
         return;
       }
 
+      const okMsg = `Decisão (${decisionModal.action}) efetivada no servidor para ${decisionModal.target.name}.`;
       setFeedbackBanner({
         type: 'success',
-        message: `Decisão (${decisionModal.action}) efetivada no servidor para ${decisionModal.target.name}.`,
+        message: okMsg,
       });
+      emitPortalToast({ type: 'success', message: okMsg });
       setDecisionModal(null);
       await loadData();
     } catch {
+      const err = 'Erro de comunicação ao efetivar decisão no servidor.';
       setFeedbackBanner({
         type: 'error',
-        message: 'Erro de comunicação ao efetivar decisão no servidor.',
+        message: err,
       });
+      emitPortalToast({ type: 'error', message: err });
     } finally {
       setIsSubmittingDecision(false);
     }
@@ -545,6 +619,17 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                             </button>
                           )}
 
+                          {/* Alterar senha (vinculado ao Neon para qualquer colaborador) */}
+                          <button
+                            type="button"
+                            aria-label={`Alterar senha de ${acc.name}`}
+                            onClick={() => openPasswordModal(acc)}
+                            className="px-2.5 py-1.5 rounded-lg bg-[#FFFBEB] hover:bg-[#FFD400]/40 text-[#080B0D] border border-[#FFD400]/60 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>Alterar senha</span>
+                          </button>
+
                           {/* Configurar Permissões (para contas já aprovadas) */}
                           {status === 'APROVADO' && (
                             <button
@@ -611,11 +696,132 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
         </div>
       </div>
 
+      {/* Modal: Alterar Senha de Qualquer Colaborador (Neon) */}
+      <CorporateModal
+        isOpen={!!passwordModalTarget}
+        onClose={() => {
+          if (!isSavingPassword) setPasswordModalTarget(null);
+        }}
+        title="Alterar Senha do Colaborador"
+        subtitle={
+          passwordModalTarget
+            ? `${passwordModalTarget.name} (${passwordModalTarget.login || passwordModalTarget.email})`
+            : ''
+        }
+        icon={<KeyRound className="w-5 h-5" />}
+        maxWidth="md"
+        isLoading={isSavingPassword}
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={isSavingPassword}
+              onClick={() => setPasswordModalTarget(null)}
+              className="rounded-lg border border-gray-200 px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100 cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              form="admin-change-password-form"
+              disabled={isSavingPassword}
+              className="rounded-lg bg-[#FFD400] hover:bg-[#ffdf33] px-4 py-2 text-xs font-extrabold text-[#080B0D] disabled:opacity-50 cursor-pointer shadow-xs"
+            >
+              {isSavingPassword ? 'Salvando no Neon...' : 'Salvar Nova Senha'}
+            </button>
+          </>
+        }
+      >
+        <form
+          id="admin-change-password-form"
+          onSubmit={handleSaveUserPassword}
+          className="space-y-4 text-xs"
+        >
+          <div className="p-3 rounded-xl bg-[#F8FAFC] border border-gray-200">
+            <p className="font-bold text-[#080B0D]">{passwordModalTarget?.name}</p>
+            <p className="text-gray-500 mt-0.5">
+              Setor: <strong>{passwordModalTarget ? resolveEmployeeSectorLabel(passwordModalTarget) : ''}</strong> • Acesso: <strong>{passwordModalTarget?.accessLevel}</strong>
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="admin-new-password" className="block font-bold text-gray-700 mb-1">
+              Nova senha *
+            </label>
+            <div className="relative">
+              <input
+                id="admin-new-password"
+                type={showNewPassword ? 'text' : 'password'}
+                required
+                minLength={8}
+                maxLength={128}
+                value={newPasswordInput}
+                onChange={(e) => {
+                  setNewPasswordInput(e.target.value);
+                  if (passwordModalError) setPasswordModalError('');
+                }}
+                placeholder="Mínimo de 8 caracteres"
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setShowNewPassword((prev) => !prev)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-[#080B0D] cursor-pointer"
+                aria-label={showNewPassword ? 'Ocultar senha' : 'Visualizar senha'}
+              >
+                {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1">
+              Use pelo menos 8 caracteres (sem repetir o mesmo caractere ou senhas comuns).
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="admin-confirm-password" className="block font-bold text-gray-700 mb-1">
+              Confirmar nova senha *
+            </label>
+            <input
+              id="admin-confirm-password"
+              type={showNewPassword ? 'text' : 'password'}
+              required
+              minLength={8}
+              maxLength={128}
+              value={confirmPasswordInput}
+              onChange={(e) => {
+                setConfirmPasswordInput(e.target.value);
+                if (passwordModalError) setPasswordModalError('');
+              }}
+              placeholder="Repita a nova senha"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
+            />
+          </div>
+
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={requireChangeOnNextLogin}
+              onChange={(e) => setRequireChangeOnNextLogin(e.target.checked)}
+              className="mt-0.5 rounded accent-[#080B0D]"
+            />
+            <span className="text-gray-700 font-medium leading-snug">
+              Exigir que este colaborador defina uma nova senha pessoal no próximo acesso.
+            </span>
+          </label>
+
+          {passwordModalError && (
+            <p role="alert" className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs font-bold text-red-700">
+              {passwordModalError}
+            </p>
+          )}
+        </form>
+      </CorporateModal>
+
       {/* Audit History of Access Release Decisions */}
       <CorporateModal isOpen={!!deleteTarget} onClose={() => {if(!isDeleting)setDeleteTarget(null);}} title="Excluir cadastro" subtitle="Exclusão do acesso com preservação do histórico" maxWidth="md" footer={<><button type="button" disabled={isDeleting} onClick={() => setDeleteTarget(null)} className="rounded-lg border border-gray-200 px-4 py-2 text-xs font-bold">Cancelar</button><button type="button" disabled={isDeleting} className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={async () => {
         if(!deleteTarget || isDeleting)return;setIsDeleting(true);setDeleteError('');
-        try {const result=await apiDeleteUser(deleteTarget.id);if(!result.ok)throw Error(result.error || 'Não foi possível excluir o cadastro.');setDeleteTarget(null);setFeedbackBanner({type:'success',message:'Cadastro excluído. Sessões revogadas e histórico preservado.'});await loadData();}
-        catch(e){setDeleteError((e as Error).message);}finally{setIsDeleting(false);}
+        try {const result=await apiDeleteUser(deleteTarget.id);if(!result.ok)throw Error(result.error || 'Não foi possível excluir o cadastro.');setDeleteTarget(null);const okMsg='Cadastro excluído. Sessões revogadas e histórico preservado.';setFeedbackBanner({type:'success',message:okMsg});emitPortalToast({type:'success',message:okMsg});await loadData();}
+        catch(e){const err=(e as Error).message;setDeleteError(err);emitPortalToast({type:'error',message:err});}finally{setIsDeleting(false);}
       }}>{isDeleting?'Excluindo...':'Excluir cadastro'}</button></>}>
         <p className="text-sm text-gray-700">Excluir o cadastro de <strong>{deleteTarget?.name}</strong> ({deleteTarget?.login || deleteTarget?.email})?</p><p className="mt-3 text-sm text-gray-500">O usuário será removido da lista e não poderá entrar. Suas sessões serão encerradas; documentos, fretes e históricos anteriores serão preservados.</p>{deleteError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{deleteError}</p>}
       </CorporateModal>

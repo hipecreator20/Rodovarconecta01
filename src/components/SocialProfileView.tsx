@@ -32,9 +32,12 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import type { Employee, SystemConfig, UserSocialProfile, SocialPost, SocialComment } from '../types';
+import { emitPortalToast, inferToastTypeFromMessage } from './ui/GlobalToastViewport';
 import {
   apiFetchSocialProfile,
   apiUpdateSocialProfile,
+  apiUpdateProfile,
+  apiRestoreDefaultAvatar,
   apiUploadCoverPhoto,
   apiUploadProfileAvatar,
   apiFetchSocialPosts,
@@ -48,10 +51,13 @@ import {
 } from '../lib/serverApi';
 import { ProfileSecurity } from './ProfileSecurity';
 import { CorporateModal } from './ui/CorporateModal';
+import { resolveAccessProfileLabel } from './UserProfileMenu';
 
 interface SocialProfileViewProps {
   currentUser: Employee;
   systemConfig?: SystemConfig;
+  initialTab?: 'social' | 'posts' | 'photos' | 'likes' | 'settings';
+  tabRequestKey?: number;
   onUpdateMyProfile?: (updated: Partial<Employee>) => void;
   announcements?: any[];
   events?: any[];
@@ -62,6 +68,8 @@ interface SocialProfileViewProps {
 export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   currentUser,
   systemConfig,
+  initialTab = 'social',
+  tabRequestKey = 0,
   onUpdateMyProfile,
   announcements = [],
   events = [],
@@ -69,14 +77,75 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   onDownloadFunctionalSheet,
 }) => {
   // Navigation tabs: 'social' | 'posts' | 'photos' | 'likes' | 'settings'
-  const [activeTab, setActiveTab] = useState<'social' | 'posts' | 'photos' | 'likes' | 'settings'>('social');
+  const [activeTab, setActiveTab] = useState<'social' | 'posts' | 'photos' | 'likes' | 'settings'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab, tabRequestKey]);
+
+  // Authorized personal data + real notification preferences (synced with Neon & localStorage)
+  const [accountForm, setAccountForm] = useState({
+    name: currentUser.name,
+    phoneExt: currentUser.phoneExt || '',
+  });
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+
+  const [notifPrefs, setNotifPrefs] = useState(() => {
+    const defaults = {
+      urgentAnnouncements: true,
+      requestUpdates: true,
+      slaWarnings: true,
+      calendarReminders: true,
+    };
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null'
+      );
+      if (saved) {
+        for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
+          if (typeof saved[key] === 'boolean') defaults[key] = saved[key];
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return defaults;
+  });
+
+  useEffect(() => {
+    setAccountForm({
+      name: currentUser.name,
+      phoneExt: currentUser.phoneExt || '',
+    });
+  }, [currentUser.id, currentUser.name, currentUser.phoneExt]);
+
+  useEffect(() => {
+    const defaults = {
+      urgentAnnouncements: true,
+      requestUpdates: true,
+      slaWarnings: true,
+      calendarReminders: true,
+    };
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null'
+      );
+      if (saved) {
+        for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
+          if (typeof saved[key] === 'boolean') defaults[key] = saved[key];
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setNotifPrefs(defaults);
+  }, [currentUser.id]);
 
   // Profile data
   const [profile, setProfile] = useState<UserSocialProfile | null>(null);
   const [posts, setPosts] = useState<SocialPost[]>([]);
   const [photos, setPhotos] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Post composer state
@@ -121,8 +190,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   const [showCredencialModal, setShowCredencialModal] = useState<boolean>(false);
 
   const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+    emitPortalToast({
+      type: inferToastTypeFromMessage(msg),
+      message: msg,
+    });
   };
 
   // Load profile and posts from API
@@ -381,42 +452,108 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     }
   };
 
-  // Save profile edits
+  // Save profile edits (syncs both social store and Neon user record)
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanName = editForm.customDisplayName.trim();
+    if (cleanName.length < 3) {
+      setErrorMessage('Informe um nome completo com pelo menos 3 caracteres.');
+      return;
+    }
     setIsSavingProfile(true);
     setErrorMessage(null);
     try {
-      const res = await apiUpdateSocialProfile({
-        customDisplayName: editForm.customDisplayName,
-        phone: editForm.phone,
-        location: editForm.location,
-        bio: editForm.bio,
-        socialLinks: {
-          instagram: editForm.instagram,
-          linkedin: editForm.linkedin,
-          facebook: editForm.facebook,
-          youtube: editForm.youtube,
-          tiktok: editForm.tiktok,
-          website: editForm.website,
-        },
-      });
-
-      if (res.ok && res.profile) {
-        setProfile(res.profile);
-        setIsEditProfileOpen(false);
-        showToast('Perfil atualizado com sucesso!');
-        onUpdateMyProfile?.({
-          name: editForm.customDisplayName,
+      const [socialRes, profileRes] = await Promise.all([
+        apiUpdateSocialProfile({
+          customDisplayName: cleanName,
+          phone: editForm.phone,
+          location: editForm.location,
+          bio: editForm.bio,
+          socialLinks: {
+            instagram: editForm.instagram,
+            linkedin: editForm.linkedin,
+            facebook: editForm.facebook,
+            youtube: editForm.youtube,
+            tiktok: editForm.tiktok,
+            website: editForm.website,
+          },
+        }),
+        apiUpdateProfile({
+          name: cleanName,
           phoneExt: editForm.phone,
+        }),
+      ]);
+
+      if (socialRes.ok && socialRes.profile && profileRes.ok) {
+        setProfile(socialRes.profile);
+        setIsEditProfileOpen(false);
+        showToast('Perfil atualizado e salvo com sucesso!');
+        onUpdateMyProfile?.({
+          ...(profileRes.user || {}),
+          name: profileRes.user?.name || cleanName,
+          phoneExt: profileRes.user?.phoneExt ?? editForm.phone,
         });
       } else {
-        setErrorMessage(res.error || 'Não foi possível atualizar o perfil.');
+        setErrorMessage(
+          socialRes.error || profileRes.error || 'Não foi possível atualizar o perfil.'
+        );
       }
     } catch {
       setErrorMessage('Erro ao salvar alterações no servidor.');
     } finally {
       setIsSavingProfile(false);
+    }
+  };
+
+  // Save authorized account fields (Neon PUT /api/profile) and notification preferences (localStorage)
+  const handleSaveAccountAndPrefs = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = accountForm.name.trim();
+    if (cleanName.length < 3) {
+      setErrorMessage('Informe um nome de exibição com pelo menos 3 caracteres.');
+      return;
+    }
+    setIsSavingAccount(true);
+    setErrorMessage(null);
+    try {
+      const res = await apiUpdateProfile({
+        name: cleanName,
+        phoneExt: accountForm.phoneExt.trim(),
+      });
+      if (!res.ok || !res.user) {
+        setErrorMessage(res.error || 'Erro ao salvar dados no servidor.');
+        return;
+      }
+      // Keep social display name/phone synced as well
+      void apiUpdateSocialProfile({
+        customDisplayName: res.user.name,
+        phone: res.user.phoneExt,
+      }).then((sr) => {
+        if (sr.ok && sr.profile) setProfile(sr.profile);
+      });
+      onUpdateMyProfile?.({
+        name: res.user.name,
+        phoneExt: res.user.phoneExt,
+        avatar: res.user.avatar,
+        email: res.user.email,
+        login: res.user.login,
+      });
+      try {
+        localStorage.setItem(
+          'rodovar-profile-preferences:' + currentUser.id,
+          JSON.stringify(notifPrefs)
+        );
+      } catch {
+        setErrorMessage(
+          'Dados salvos no servidor, mas não foi possível guardar as preferências locais neste navegador.'
+        );
+        return;
+      }
+      showToast('Dados e preferências salvos com sucesso!');
+    } catch {
+      setErrorMessage('Falha de comunicação ao salvar alterações no servidor.');
+    } finally {
+      setIsSavingAccount(false);
     }
   };
 
@@ -447,16 +584,6 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-12">
-      {/* Toast Banner */}
-      {toastMessage && (
-        <div
-          role="status"
-          className="fixed bottom-6 right-6 z-50 bg-[#080B0D] text-[#FFD400] border border-[#FFD400]/40 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-bottom-3"
-        >
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
 
       {/* Error Message */}
       {errorMessage && (
@@ -570,8 +697,8 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   {currentUser.roleTitle || 'Comercial'} • RODOVAR Transportes
                 </p>
                 <div className="flex items-center justify-center sm:justify-start gap-2 mt-1.5 text-xs font-semibold text-emerald-600">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
-                  <span>Online</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                  <span>Sessão ativa</span>
                 </div>
               </div>
             </div>
@@ -609,7 +736,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
               { id: 'posts', label: 'Publicações', icon: FileText },
               { id: 'photos', label: 'Fotos', icon: ImageIcon },
               { id: 'likes', label: 'Curtidas', icon: ThumbsUp },
-              { id: 'settings', label: 'Configurações', icon: Settings },
+              { id: 'settings', label: 'Preferências e Conta', icon: Settings },
             ].map(({ id, label, icon: Icon }) => {
               const active = activeTab === id;
               return (
@@ -1341,9 +1468,171 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
         </div>
       )}
 
-      {/* TAB C: Configurações (Credencial, Senha, Conformidade) */}
+      {/* TAB C: Preferências e Conta (Dados Autorizados, Preferências de Notificação, Credencial, Segurança) */}
       {activeTab === 'settings' && (
         <div className="space-y-6">
+          {/* Dados da Conta & Preferências Reais */}
+          <form
+            onSubmit={handleSaveAccountAndPrefs}
+            className="bg-white rounded-3xl p-6 border border-gray-200/90 shadow-sm space-y-5"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-extrabold text-[#080B0D]">
+                  Dados da Conta e Preferências
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Atualize os campos pessoais autorizados (persistidos no servidor) e suas preferências de notificação.
+                </p>
+              </div>
+              {currentUser.hasCustomAvatar && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = await apiRestoreDefaultAvatar();
+                    if (res.ok && res.user) {
+                      onUpdateMyProfile?.({
+                        avatar: res.user.avatar,
+                        hasCustomAvatar: false,
+                      });
+                      showToast('Foto personalizada removida; iniciais restauradas.');
+                    } else {
+                      setErrorMessage(res.error || 'Não foi possível remover a foto personalizada.');
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-xl border border-gray-200 hover:bg-gray-100 text-xs font-bold text-gray-700 cursor-pointer self-start sm:self-auto"
+                >
+                  Remover foto personalizada
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+              <div>
+                <label htmlFor="pref-display-name" className="block font-bold text-gray-700 mb-1">
+                  Nome Completo / Exibição
+                </label>
+                <input
+                  id="pref-display-name"
+                  type="text"
+                  minLength={3}
+                  maxLength={120}
+                  required
+                  value={accountForm.name}
+                  onChange={(e) => setAccountForm((prev) => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="pref-phone-ext" className="block font-bold text-gray-700 mb-1">
+                  Telefone Corporativo / Ramal
+                </label>
+                <input
+                  id="pref-phone-ext"
+                  type="text"
+                  maxLength={40}
+                  value={accountForm.phoneExt}
+                  onChange={(e) => setAccountForm((prev) => ({ ...prev, phoneExt: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="pref-login-readonly" className="block font-bold text-gray-700 mb-1">
+                  Login / E-mail Corporativo
+                </label>
+                <input
+                  id="pref-login-readonly"
+                  type="text"
+                  value={currentUser.email}
+                  readOnly
+                  aria-readonly="true"
+                  className="w-full px-3 py-2 border border-gray-200 bg-gray-50 text-gray-500 rounded-xl font-medium"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
+              <div className="p-3 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
+                <span className="text-gray-400 font-semibold block text-[11px]">Setor</span>
+                <span className="font-bold text-[#080B0D]">{currentUser.department}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
+                <span className="text-gray-400 font-semibold block text-[11px]">Cargo / Função</span>
+                <span className="font-bold text-[#080B0D]">{currentUser.roleTitle}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
+                <span className="text-gray-400 font-semibold block text-[11px]">Perfil de Acesso</span>
+                <span className="font-bold text-[#080B0D]">{resolveAccessProfileLabel(currentUser)}</span>
+              </div>
+            </div>
+
+            {/* Notification Preferences */}
+            <div className="pt-3 border-t border-gray-100 space-y-2.5">
+              <h3 className="text-sm font-extrabold text-[#080B0D]">
+                Preferências de Notificações
+              </h3>
+              <div className="space-y-2 text-xs">
+                {[
+                  {
+                    key: 'urgentAnnouncements',
+                    label: 'Alertas imediatos para Comunicados Obrigatórios e Urgentes',
+                  },
+                  {
+                    key: 'requestUpdates',
+                    label: 'Atualizações de status nas Minhas Solicitações',
+                  },
+                  {
+                    key: 'slaWarnings',
+                    label: 'Aviso preventivo de vencimento do prazo de 48 horas',
+                  },
+                  {
+                    key: 'calendarReminders',
+                    label: 'Lembretes de treinamentos e reuniões da Agenda Corporativa',
+                  },
+                ].map((item) => {
+                  const checked = notifPrefs[item.key as keyof typeof notifPrefs];
+                  return (
+                    <label
+                      key={item.key}
+                      className="flex items-center justify-between gap-4 p-3 rounded-xl bg-[#F8FAFC] border border-gray-200/70 cursor-pointer hover:bg-gray-50 transition-colors"
+                    >
+                      <span className="font-semibold text-[#15191D]">{item.label}</span>
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-checked={checked}
+                        checked={checked}
+                        onChange={(e) =>
+                          setNotifPrefs((prev) => ({
+                            ...prev,
+                            [item.key]: e.target.checked,
+                          }))
+                        }
+                        className="w-4 h-4 accent-[#080B0D] rounded cursor-pointer shrink-0"
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                Alterações de cargo, setor e permissões dependem exclusivamente do Administrador.
+              </span>
+              <button
+                type="submit"
+                disabled={isSavingAccount}
+                className="bg-[#FFD400] hover:bg-[#ffdc26] disabled:opacity-60 text-[#080B0D] text-xs font-extrabold px-5 py-2.5 rounded-xl cursor-pointer shadow-xs shrink-0"
+              >
+                {isSavingAccount ? 'Salvando...' : 'Salvar Dados e Preferências'}
+              </button>
+            </div>
+          </form>
+
           {/* Identificação Funcional e Credencial Corporativa */}
           <div className="bg-white rounded-3xl p-6 border border-gray-200/90 shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">

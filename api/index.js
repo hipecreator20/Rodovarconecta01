@@ -853,11 +853,13 @@ async function initializeNeonSchema() {
         subtitle TEXT,
         time_label VARCHAR(64),
         read BOOLEAN DEFAULT FALSE,
+        dismissed BOOLEAN DEFAULT FALSE,
         target_section VARCHAR(64) NOT NULL,
         target_id VARCHAR(64) NOT NULL,
         dedupe_key VARCHAR(128),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE;
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_recipient ON rodovar_notifications(recipient_id);
       CREATE INDEX IF NOT EXISTS idx_rodovar_notif_dedupe ON rodovar_notifications(dedupe_key);
     `);
@@ -2345,19 +2347,31 @@ function persistNotificationToNeon(notif) {
   return trackNeonWrite(
     (async () => {
       try {
+        const cleanTitle = String(notif.title || "").trim();
+        const cleanSubtitle = String(notif.subtitle || "").trim();
         if (notif.dedupeKey) {
           const check = await dbSql`
             SELECT id FROM rodovar_notifications WHERE recipient_id = ${notif.recipientId} AND dedupe_key = ${notif.dedupeKey} LIMIT 1
           `;
           if (check.length > 0) return false;
         }
+        const sameContent = await dbSql`
+          SELECT id FROM rodovar_notifications
+          WHERE recipient_id = ${notif.recipientId}
+            AND target_section = ${notif.targetSection}
+            AND COALESCE(target_id, '') = ${notif.targetId || ""}
+            AND TRIM(title) = ${cleanTitle}
+            AND COALESCE(TRIM(subtitle), '') = ${cleanSubtitle}
+          LIMIT 1
+        `;
+        if (sameContent.length > 0) return false;
         await dbSql`
           INSERT INTO rodovar_notifications (
-            id, recipient_id, type, dot_color, title, subtitle, time_label, read, target_section, target_id, dedupe_key, created_at
+            id, recipient_id, type, dot_color, title, subtitle, time_label, read, dismissed, target_section, target_id, dedupe_key, created_at
           ) VALUES (
-            ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || "blue"}, ${notif.title},
-            ${notif.subtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)},
-            ${notif.targetSection}, ${notif.targetId || null}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
+            ${notif.id}, ${notif.recipientId}, ${notif.type}, ${notif.dotColor || "blue"}, ${cleanTitle},
+            ${cleanSubtitle || null}, ${notif.timeLabel || null}, ${Boolean(notif.read)}, FALSE,
+            ${notif.targetSection}, ${notif.targetId || ""}, ${notif.dedupeKey || null}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO NOTHING
         `;
@@ -2374,10 +2388,12 @@ async function loadNotificationsFromNeon(recipientId, limit = 50) {
   try {
     const rows = await sql`
       SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
-              time_label AS "timeLabel", read, target_section AS "targetSection", target_id AS "targetId",
+              time_label AS "timeLabel", read, COALESCE(dismissed, FALSE) AS dismissed,
+              target_section AS "targetSection", target_id AS "targetId",
               dedupe_key AS "dedupeKey", created_at AS "createdAt"
        FROM rodovar_notifications
        WHERE recipient_id = ${recipientId}
+         AND COALESCE(dismissed, FALSE) = FALSE
        ORDER BY created_at DESC
        LIMIT ${limit}
     `;
@@ -2387,15 +2403,78 @@ async function loadNotificationsFromNeon(recipientId, limit = 50) {
     return [];
   }
 }
+async function loadDismissedNotificationIdsFromNeon(recipientId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return { ids: [], dedupeKeys: [] };
+  try {
+    const rows = await sql`
+      SELECT id, dedupe_key AS "dedupeKey"
+       FROM rodovar_notifications
+       WHERE recipient_id = ${recipientId}
+         AND COALESCE(dismissed, FALSE) = TRUE
+    `;
+    const ids = [];
+    const dedupeKeys = [];
+    for (const r of rows) {
+      if (r.id) ids.push(String(r.id));
+      if (r.dedupeKey) dedupeKeys.push(String(r.dedupeKey));
+    }
+    return { ids, dedupeKeys };
+  } catch {
+    return { ids: [], dedupeKeys: [] };
+  }
+}
 function markNotificationReadInNeon(notifId, recipientId) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId) return Promise.resolve();
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
-        await dbSql`UPDATE rodovar_notifications SET read = TRUE WHERE id = ${notifId} AND recipient_id = ${recipientId}`;
+        await dbSql`
+          UPDATE rodovar_notifications
+          SET read = TRUE
+          WHERE recipient_id = ${recipientId}
+            AND (
+              id = ${notifId}
+              OR (target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')) IN (
+                SELECT target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')
+                FROM rodovar_notifications
+                WHERE id = ${notifId} AND recipient_id = ${recipientId}
+              )
+            )
+        `;
       } catch (err) {
         console.warn("Neon markNotificationReadInNeon error:", err.message);
+      }
+    })()
+  );
+}
+function dismissNotificationInNeon(notifId, recipientId) {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !notifId || !recipientId) return Promise.resolve();
+  const dbSql = sql;
+  return trackNeonWrite(
+    (async () => {
+      try {
+        await dbSql`
+          UPDATE rodovar_notifications
+          SET read = TRUE, dismissed = TRUE
+          WHERE recipient_id = ${recipientId}
+            AND (
+              id = ${notifId}
+              OR (
+                dedupe_key IS NOT NULL
+                AND dedupe_key IN (
+                  SELECT dedupe_key FROM rodovar_notifications WHERE id = ${notifId} AND recipient_id = ${recipientId} AND dedupe_key IS NOT NULL
+                )
+              )
+              OR (target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')) IN (
+                SELECT target_section, COALESCE(target_id, ''), TRIM(title), COALESCE(TRIM(subtitle), '')
+                FROM rodovar_notifications
+                WHERE id = ${notifId} AND recipient_id = ${recipientId}
+              )
+            )
+        `;
+      } catch (err) {
+        console.warn("Neon dismissNotificationInNeon error:", err.message);
       }
     })()
   );
@@ -2505,7 +2584,7 @@ function registerAgenda(app, guard, users) {
     }
     if (changed) save();
     res.setHeader("Cache-Control", "no-store");
-    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id) });
+    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed) });
   });
   app.post("/api/agenda/import", guard, (req, res) => {
     if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return res.status(403).json({ error: "Importa\xE7\xE3o n\xE3o autorizada." });
@@ -2519,7 +2598,10 @@ function registerAgenda(app, guard, users) {
     res.json({ ok: true });
   });
   app.post("/api/agenda/read", guard, (req, res) => {
-    for (const n of state.notifications) if (n.recipientId === req.sessionUser.id && req.body.ids?.includes(n.id)) n.read = true;
+    for (const n of state.notifications) if (n.recipientId === req.sessionUser.id && req.body.ids?.includes(n.id)) {
+      n.read = true;
+      if (req.body.dismiss) n.dismissed = true;
+    }
     save();
     res.json({ ok: true });
   });
@@ -3313,13 +3395,29 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     } = req.body || {};
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
     if (typeof bio === "string") profile.bio = bio.trim().slice(0, 1e3);
+    let syncedUserRecord = null;
     if (typeof customDisplayName === "string" && customDisplayName.trim()) {
       profile.customDisplayName = customDisplayName.trim().slice(0, 150);
       const u = dbState2.users.find((user) => user.id === sessionUser.id);
-      if (u) u.name = profile.customDisplayName;
+      if (u) {
+        u.name = profile.customDisplayName;
+        syncedUserRecord = u;
+      }
     }
-    if (typeof phone === "string") profile.phone = phone.trim().slice(0, 50);
+    if (typeof phone === "string") {
+      profile.phone = phone.trim().slice(0, 50);
+      const u = dbState2.users.find((user) => user.id === sessionUser.id);
+      if (u) {
+        u.phoneExt = profile.phone;
+        u.phone = profile.phone;
+        syncedUserRecord = u;
+      }
+    }
     if (typeof location === "string") profile.location = location.trim().slice(0, 100);
+    if (syncedUserRecord) {
+      void persistUserToNeon(syncedUserRecord).catch(() => {
+      });
+    }
     if (typeof coverUrl === "string" && coverUrl.trim()) profile.coverUrl = coverUrl.trim();
     if (socialLinks && typeof socialLinks === "object") {
       const cleanUrl = (val) => {
@@ -3347,39 +3445,75 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       profile
     });
   });
+  function validateSocialImageBuffer(buf) {
+    if (!buf || buf.length < 12) {
+      return { valid: false, error: "Arquivo de imagem vazio ou corrompido." };
+    }
+    if (buf.length > 5 * 1024 * 1024) {
+      return { valid: false, error: "A imagem excede o limite de 5 MB." };
+    }
+    const headAscii = buf.subarray(0, Math.min(buf.length, 256)).toString("utf8").toLowerCase();
+    if (headAscii.includes("<svg") || headAscii.includes("<?xml") || headAscii.includes("<script") || headAscii.includes("<html")) {
+      return { valid: false, error: "Imagens SVG ou conte\xFAdo ativo n\xE3o s\xE3o permitidos." };
+    }
+    if (buf[0] === 137 && buf[1] === 80 && buf[2] === 78 && buf[3] === 71) {
+      return { valid: true, mimeType: "image/png", ext: "png" };
+    }
+    if (buf[0] === 255 && buf[1] === 216 && buf[2] === 255) {
+      return { valid: true, mimeType: "image/jpeg", ext: "jpg" };
+    }
+    if (buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") {
+      return { valid: true, mimeType: "image/webp", ext: "webp" };
+    }
+    const gifSig = buf.subarray(0, 6).toString("ascii");
+    if (gifSig === "GIF87a" || gifSig === "GIF89a") {
+      return { valid: true, mimeType: "image/gif", ext: "gif" };
+    }
+    if (buf[0] === 66 && buf[1] === 77 && buf.length >= 26) {
+      return { valid: true, mimeType: "image/bmp", ext: "bmp" };
+    }
+    if (buf.subarray(4, 8).toString("ascii") === "ftyp") {
+      const brand = buf.subarray(8, 12).toString("ascii");
+      if (brand.includes("avi") || brand.includes("mif") || brand.includes("heic") || brand.includes("msf")) {
+        return { valid: true, mimeType: "image/avif", ext: "avif" };
+      }
+    }
+    if (buf[0] === 0 && buf[1] === 0 && buf[2] === 1 && buf[3] === 0) {
+      return { valid: true, mimeType: "image/x-icon", ext: "ico" };
+    }
+    return { valid: false, error: "Formato de imagem inv\xE1lido. Envie PNG, JPG, WebP, GIF, BMP, AVIF ou ICO." };
+  }
   app.post("/api/profile/cover", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { dataUrl, imageUrl } = req.body || {};
-    let targetCoverUrl = imageUrl;
-    if (dataUrl && typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+    let targetCoverUrl = typeof imageUrl === "string" && (imageUrl.startsWith("/uploads/") || imageUrl.startsWith("/assets/")) ? imageUrl : void 0;
+    if (dataUrl && typeof dataUrl === "string") {
+      const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (!matches) {
+        return res.status(400).json({ error: "Formato de imagem inv\xE1lido." });
+      }
+      const buffer = Buffer.from(matches[2], "base64");
+      const check = validateSocialImageBuffer(buffer);
+      if (!check.valid || !check.mimeType || !check.ext) {
+        return res.status(400).json({ error: check.error || "Imagem inv\xE1lida." });
+      }
+      const fileName = `cover-${sessionUser.id}-${Date.now()}.${check.ext}`;
+      const filePath = path7.join(uploadsDir, fileName);
       try {
         fs7.mkdirSync(uploadsDir, { recursive: true });
-        const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
-        if (!matches) {
-          return res.status(400).json({ error: "Formato de imagem inv\xE1lido." });
-        }
-        const mimeType = `image/${matches[1]}`;
-        const ext = matches[1] === "jpeg" ? "jpg" : matches[1].replace(/[^a-z0-9]/gi, "");
-        const buffer = Buffer.from(matches[2], "base64");
-        if (buffer.length > 5 * 1024 * 1024) {
-          return res.status(400).json({ error: "A foto de capa excede o limite de 5 MB." });
-        }
-        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext || "jpg"}`;
-        const filePath = path7.join(uploadsDir, fileName);
         fs7.writeFileSync(filePath, buffer);
-        await persistSystemAssetToNeon({
-          id: fileName,
-          slot: "social-cover",
-          mimeType,
-          dataBase64: matches[2]
-        });
-        targetCoverUrl = `/uploads/${fileName}`;
       } catch {
-        targetCoverUrl = dataUrl;
       }
+      await persistSystemAssetToNeon({
+        id: fileName,
+        slot: "social-cover",
+        mimeType: check.mimeType,
+        dataBase64: buffer.toString("base64")
+      });
+      targetCoverUrl = `/uploads/${fileName}`;
     }
     if (!targetCoverUrl) {
-      return res.status(400).json({ error: "Nenhuma imagem enviada." });
+      return res.status(400).json({ error: "Nenhuma imagem v\xE1lida enviada." });
     }
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
     profile.coverUrl = targetCoverUrl;
@@ -3416,29 +3550,32 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     if (Array.isArray(images)) {
       for (const img of images.slice(0, 10)) {
         if (typeof img === "string") {
-          if (img.startsWith("data:image/")) {
+          if (img.startsWith("data:")) {
+            const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+            if (!matches) {
+              return res.status(400).json({ error: "Uma das imagens enviadas possui formato inv\xE1lido." });
+            }
+            const buffer = Buffer.from(matches[2], "base64");
+            const check = validateSocialImageBuffer(buffer);
+            if (!check.valid || !check.mimeType || !check.ext) {
+              return res.status(400).json({ error: check.error || "Imagem inv\xE1lida." });
+            }
+            const fileName = `post-img-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}.${check.ext}`;
             try {
               fs7.mkdirSync(uploadsDir, { recursive: true });
-              const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
-              if (matches) {
-                const mimeType = `image/${matches[1]}`;
-                const ext = matches[1] === "jpeg" ? "jpg" : matches[1].replace(/[^a-z0-9]/gi, "");
-                const buffer = Buffer.from(matches[2], "base64");
-                const fileName = `post-img-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}.${ext || "jpg"}`;
-                fs7.writeFileSync(path7.join(uploadsDir, fileName), buffer);
-                await persistSystemAssetToNeon({
-                  id: fileName,
-                  slot: "social-post",
-                  mimeType,
-                  dataBase64: matches[2]
-                });
-                validImages.push(`/uploads/${fileName}`);
-                continue;
-              }
+              fs7.writeFileSync(path7.join(uploadsDir, fileName), buffer);
             } catch {
             }
+            await persistSystemAssetToNeon({
+              id: fileName,
+              slot: "social-post",
+              mimeType: check.mimeType,
+              dataBase64: buffer.toString("base64")
+            });
+            validImages.push(`/uploads/${fileName}`);
+          } else if (img.startsWith("/uploads/") || img.startsWith("/assets/")) {
+            validImages.push(img);
           }
-          validImages.push(img);
         }
       }
     }
@@ -3601,10 +3738,135 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
   });
 }
 
-// src/server/requestQueue.ts
+// src/server/chats.ts
+import crypto8 from "node:crypto";
 import fs8 from "node:fs";
 import path8 from "node:path";
-import crypto8 from "node:crypto";
+var chatsState = {
+  threads: [],
+  keys: {}
+};
+function hydrateChatsFromPayload(payload) {
+  if (payload && typeof payload === "object") {
+    if (Array.isArray(payload.threads)) {
+      chatsState.threads = payload.threads;
+    }
+    if (payload.keys && typeof payload.keys === "object") {
+      chatsState.keys = payload.keys;
+    }
+  }
+}
+function registerChats(app, guard, dbState2) {
+  const dataDir = path8.join(resolveDataRoot(), "data");
+  const chatFile = path8.join(dataDir, "chats-store.json");
+  if (fs8.existsSync(chatFile)) {
+    try {
+      const parsed = JSON.parse(fs8.readFileSync(chatFile, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        chatsState = {
+          threads: Array.isArray(parsed.threads) ? parsed.threads : [],
+          keys: parsed.keys && typeof parsed.keys === "object" ? parsed.keys : {}
+        };
+      }
+    } catch {
+    }
+  }
+  const saveChats = () => {
+    try {
+      fs8.mkdirSync(dataDir, { recursive: true });
+      fs8.writeFileSync(chatFile, JSON.stringify(chatsState, null, 2), "utf8");
+      void persistStateSnapshotToNeon("rodovar-chats", chatsState);
+    } catch (err) {
+      console.warn("Chat persistence warning:", err.message);
+    }
+  };
+  app.get("/api/chats", guard, (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      threads: chatsState.threads || []
+    });
+  });
+  app.post("/api/chats/:threadId/messages", guard, (req, res) => {
+    const threadId = req.params.threadId;
+    const { text, attachment, attachmentSize, extra } = req.body || {};
+    const user = req.sessionUser;
+    if (!text && !attachment) {
+      return res.status(400).json({ error: "Mensagem vazia." });
+    }
+    let thread = chatsState.threads.find((t) => t.id === threadId);
+    if (!thread) {
+      thread = {
+        id: threadId,
+        participantId: threadId,
+        name: threadId.startsWith("g-") ? "Canal Geral" : "Conversa Corporativa",
+        role: "Colaborador",
+        avatar: "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
+        online: true,
+        unreadCount: 0,
+        messages: []
+      };
+      chatsState.threads.push(thread);
+    }
+    const nowStr = (/* @__PURE__ */ new Date()).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    const msgId = `m-${Date.now()}-${crypto8.randomBytes(2).toString("hex")}`;
+    const newMsg = {
+      id: msgId,
+      senderId: user.id,
+      senderName: user.name,
+      senderRole: user.roleTitle || user.accessLevel,
+      text: String(text || "").slice(0, 4e3),
+      timestamp: nowStr,
+      status: "delivered",
+      attachment: attachment ? String(attachment).slice(0, 200) : void 0,
+      attachmentSize: attachmentSize ? String(attachmentSize).slice(0, 30) : void 0,
+      mediaType: extra?.mediaType,
+      mediaUrl: extra?.mediaUrl,
+      audioDuration: extra?.audioDuration,
+      forwardedFrom: extra?.forwardedFrom
+    };
+    thread.messages.push(newMsg);
+    saveChats();
+    res.status(201).json({
+      ok: true,
+      message: newMsg,
+      thread
+    });
+  });
+  app.post("/api/chats/groups", guard, (req, res) => {
+    const { name, description, memberIds } = req.body || {};
+    const user = req.sessionUser;
+    if (!name || String(name).trim().length < 2) {
+      return res.status(400).json({ error: "Nome do grupo obrigat\xF3rio." });
+    }
+    const groupId = `g-${Date.now()}-${crypto8.randomBytes(2).toString("hex")}`;
+    const newGroup = {
+      id: groupId,
+      name: String(name).trim().slice(0, 100),
+      description: description ? String(description).slice(0, 255) : "",
+      avatar: "/assets/aistudio/RODOVAR-LOGO_310056c8.png",
+      isGroup: true,
+      createdBy: user.id,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      memberIds: Array.isArray(memberIds) ? memberIds : [user.id],
+      unreadCount: 0,
+      messages: []
+    };
+    chatsState.threads.unshift(newGroup);
+    saveChats();
+    res.status(201).json({
+      ok: true,
+      group: newGroup
+    });
+  });
+}
+
+// src/server/requestQueue.ts
+import fs9 from "node:fs";
+import path9 from "node:path";
+import crypto9 from "node:crypto";
 var DESTINATIONS = ["Recursos Humanos", "Administrativo", "Financeiro"];
 var STATUSES = ["Aberta", "Em an\xE1lise", "Em andamento", "Aguardando funcion\xE1rio", "Conclu\xEDda", "Cancelada"];
 var terminal = (r) => ["Conclu\xEDda", "Cancelada"].includes(r.status);
@@ -3619,16 +3881,16 @@ function canHandleRequest(u, r) {
   return u.active && u.approvalStatus === "APROVADO" && (u.accessLevel === "ADMINISTRADOR" || u.accessProfile === "RH" || u.accessProfile === "FINANCEIRO" && r.targetDepartment === "Financeiro");
 }
 function registerRequestQueue(app, guard, users, initial = []) {
-  const directory = path8.join(resolveDataRoot(), "data");
-  const file = path8.join(directory, "requests-server.json");
-  const attachmentsDir = path8.join(directory, "request-attachments");
-  const state = fs8.existsSync(file) ? JSON.parse(fs8.readFileSync(file, "utf8")) : { requests: structuredClone(initial), notifications: [], keys: {} };
+  const directory = path9.join(resolveDataRoot(), "data");
+  const file = path9.join(directory, "requests-server.json");
+  const attachmentsDir = path9.join(directory, "request-attachments");
+  const state = fs9.existsSync(file) ? JSON.parse(fs9.readFileSync(file, "utf8")) : { requests: structuredClone(initial), notifications: [], keys: {} };
   activeQueueState = state;
   const save = (skipNeon = false) => {
     try {
-      fs8.mkdirSync(directory, { recursive: true });
-      fs8.writeFileSync(file + ".tmp", JSON.stringify(state, null, 2));
-      fs8.renameSync(file + ".tmp", file);
+      fs9.mkdirSync(directory, { recursive: true });
+      fs9.writeFileSync(file + ".tmp", JSON.stringify(state, null, 2));
+      fs9.renameSync(file + ".tmp", file);
     } catch (err) {
       console.warn("requestQueue local save notice:", err.message);
     }
@@ -3642,7 +3904,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     if (!state.notifications.some((n) => n.id === id)) state.notifications.push({ id, recipientId, targetId: r.id, title, read: false, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() });
   };
   const history = (r, u, action, note) => {
-    const id = crypto8.randomUUID();
+    const id = crypto9.randomUUID();
     r.history.push({ id, timestamp: (/* @__PURE__ */ new Date()).toISOString(), actorName: u.name, action, ...note ? { note } : {} });
     return id;
   };
@@ -3659,9 +3921,9 @@ function registerRequestQueue(app, guard, users, initial = []) {
   };
   const addAttachment = (r, u, parsed) => {
     if (!parsed) return;
-    fs8.mkdirSync(attachmentsDir, { recursive: true });
-    const attachment = { id: crypto8.randomUUID(), name: parsed.name, mimeType: parsed.mimeType, size: parsed.bytes.length, uploadedById: u.id, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() };
-    fs8.writeFileSync(path8.join(attachmentsDir, attachment.id), parsed.bytes);
+    fs9.mkdirSync(attachmentsDir, { recursive: true });
+    const attachment = { id: crypto9.randomUUID(), name: parsed.name, mimeType: parsed.mimeType, size: parsed.bytes.length, uploadedById: u.id, createdAtIso: (/* @__PURE__ */ new Date()).toISOString() };
+    fs9.writeFileSync(path9.join(attachmentsDir, attachment.id), parsed.bytes);
     void persistSystemAssetToNeon({
       id: attachment.id,
       slot: "request-attachment",
@@ -3672,13 +3934,13 @@ function registerRequestQueue(app, guard, users, initial = []) {
     r.attachmentName ||= attachment.name;
   };
   const fail = (res, message, status = 400) => res.status(status).json({ error: message });
-  if (!fs8.existsSync(file)) save(true);
+  if (!fs9.existsSync(file)) save(true);
   app.get("/api/requests", guard, (req, res) => {
     const u = req.sessionUser;
     if (!hasPagePermission(u, "solicitacoes")) return fail(res, "Sem acesso \xE0 fila.", 403);
     res.setHeader("Cache-Control", "no-store");
     const activeUsers = users().filter((person) => person.active && person.approvalStatus === "APROVADO");
-    res.json({ handlers: activeUsers.filter((person) => person.accessProfile === "RH").map((person) => ({ id: person.id, name: person.name })), requests: state.requests.filter((r) => visible(u, r)), notifications: state.notifications.filter((n) => n.recipientId === u.id), routing: {
+    res.json({ handlers: activeUsers.filter((person) => person.accessProfile === "RH").map((person) => ({ id: person.id, name: person.name })), requests: state.requests.filter((r) => visible(u, r)), notifications: state.notifications.filter((n) => n.recipientId === u.id && !n.dismissed), routing: {
       rhActive: activeUsers.filter((person) => person.accessProfile === "RH").length,
       financeActive: activeUsers.filter((person) => person.accessProfile === "FINANCEIRO").length
     } });
@@ -3698,7 +3960,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     } catch (e) {
       return fail(res, e.message);
     }
-    const id = crypto8.randomUUID(), now = /* @__PURE__ */ new Date(), due = new Date(now.getTime() + 48 * 36e5).toISOString();
+    const id = crypto9.randomUUID(), now = /* @__PURE__ */ new Date(), due = new Date(now.getTime() + 48 * 36e5).toISOString();
     const maxProtocol = state.requests.reduce((max, r) => Math.max(max, /^#\d+$/.test(r.protocol) ? Number(r.protocol.slice(1)) : 0), 1025);
     const record = { id, protocol: "#" + (maxProtocol + 1), requesterId: u.id, requesterName: u.name, requesterDepartment: u.department, targetDepartment, subject: subject.trim(), description: description.trim(), priority: ["Baixa", "M\xE9dia", "Alta", "Urgente"].includes(priority) ? priority : "M\xE9dia", status: "Aberta", createdAtIso: now.toISOString(), originalDueAtIso: due, currentDueAtIso: due, history: [] };
     history(record, u, "Solicita\xE7\xE3o aberta", "Prazo inicial de 48 horas corridas.");
@@ -3716,17 +3978,17 @@ function registerRequestQueue(app, guard, users, initial = []) {
     if (!hasPagePermission(u, "solicitacoes") || !r || !visible(u, r)) return fail(res, "Arquivo n\xE3o encontrado.", 404);
     const attachment = r.attachments?.find((a) => a.id === req.params.attachmentId);
     if (!attachment) return fail(res, "Arquivo n\xE3o encontrado.", 404);
-    const storedPath = path8.join(attachmentsDir, attachment.id);
+    const storedPath = path9.join(attachmentsDir, attachment.id);
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("Content-Type", attachment.mimeType);
-    if (fs8.existsSync(storedPath)) {
+    if (fs9.existsSync(storedPath)) {
       return res.attachment(attachment.name).sendFile(storedPath);
     }
     const neonAsset = await getSystemAssetFromNeon(attachment.id);
     if (neonAsset) {
       try {
-        fs8.mkdirSync(attachmentsDir, { recursive: true });
-        fs8.writeFileSync(storedPath, neonAsset.buffer);
+        fs9.mkdirSync(attachmentsDir, { recursive: true });
+        fs9.writeFileSync(storedPath, neonAsset.buffer);
       } catch {
       }
       return res.attachment(attachment.name).send(neonAsset.buffer);
@@ -3742,7 +4004,13 @@ function registerRequestQueue(app, guard, users, initial = []) {
     const composite = [u.id, r.id, action, actionKey].join(":");
     if (actionKey && state.keys[composite]) return res.json({ request: r });
     if (action === "read") {
-      for (const n of state.notifications) if (n.targetId === r.id && n.recipientId === u.id) n.read = true;
+      const targetNotifId = typeof req.body?.notificationId === "string" ? req.body.notificationId.replace(/^queue:/, "") : "";
+      for (const n of state.notifications) {
+        if (n.targetId === r.id && n.recipientId === u.id && (!targetNotifId || n.id === targetNotifId)) {
+          n.read = true;
+          if (req.body?.dismiss) n.dismissed = true;
+        }
+      }
       save();
       await flushPendingNeonWrites();
       return res.json({ request: r });
@@ -3813,7 +4081,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
 }
 
 // src/server/accountLifecycle.ts
-import crypto9 from "node:crypto";
+import crypto10 from "node:crypto";
 var AccountDeletionError = class extends Error {
   constructor(message, status) {
     super(message);
@@ -3838,7 +4106,7 @@ function archiveAccount(db, targetId, actorId, reason) {
   delete db.loginLocks["user:" + targetId];
   delete db.loginLocks[target.login];
   const auditEntry = {
-    id: crypto9.randomUUID(),
+    id: crypto10.randomUUID(),
     timestampIso: stamp,
     timestampFormatted: new Date(stamp).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
     actorId,
@@ -4149,9 +4417,9 @@ var INITIAL_REQUESTS = [
 
 // server.ts
 import express from "express";
-import crypto12 from "crypto";
-import fs11 from "fs";
-import path11 from "path";
+import crypto13 from "crypto";
+import fs12 from "fs";
+import path12 from "path";
 import zlib2 from "zlib";
 
 // src/lib/expeditionValidation.ts
@@ -4178,9 +4446,9 @@ function expeditionChecklistCount(f) {
 }
 
 // src/server/unifiedFreightEngine.ts
-import crypto10 from "crypto";
-import fs9 from "fs";
-import path9 from "path";
+import crypto11 from "crypto";
+import fs10 from "fs";
+import path10 from "path";
 var COMPANY_OFFICIAL_PROFILES = {
   RODOVAR: {
     razaoSocial: "RODOVAR TRANSPORTES E LOGISTICA",
@@ -4198,10 +4466,10 @@ var COMPANY_OFFICIAL_PROFILES = {
   }
 };
 var ROOT_DIR = resolveDataRoot();
-var FREIGHTS_STORE_DIR = path9.join(ROOT_DIR, "data", "freights-store");
-var FREIGHT_ATTACHMENTS_DIR = path9.join(ROOT_DIR, "data", "freight-attachments");
-var NOTIFICATIONS_FILE = path9.join(FREIGHTS_STORE_DIR, "_notifications.json");
-var SEQUENCE_FILE = path9.join(FREIGHTS_STORE_DIR, "_sequence.json");
+var FREIGHTS_STORE_DIR = path10.join(ROOT_DIR, "data", "freights-store");
+var FREIGHT_ATTACHMENTS_DIR = path10.join(ROOT_DIR, "data", "freight-attachments");
+var NOTIFICATIONS_FILE = path10.join(FREIGHTS_STORE_DIR, "_notifications.json");
+var SEQUENCE_FILE = path10.join(FREIGHTS_STORE_DIR, "_sequence.json");
 var MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 function formatSaoPauloDateTime(date = /* @__PURE__ */ new Date()) {
   const iso = date.toISOString();
@@ -4247,26 +4515,26 @@ function bumpFreightsDataVersion() {
   freightsDataVersion += 1;
 }
 function ensureDirectories() {
-  if (!fs9.existsSync(FREIGHTS_STORE_DIR)) {
-    fs9.mkdirSync(FREIGHTS_STORE_DIR, { recursive: true });
+  if (!fs10.existsSync(FREIGHTS_STORE_DIR)) {
+    fs10.mkdirSync(FREIGHTS_STORE_DIR, { recursive: true });
   }
-  if (!fs9.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
-    fs9.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
+  if (!fs10.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
+    fs10.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
   }
 }
 function getFreightDocPath(freightId) {
   const safeId = freightId.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path9.join(FREIGHTS_STORE_DIR, `${safeId}.json`);
+  return path10.join(FREIGHTS_STORE_DIR, `${safeId}.json`);
 }
 function getFreightSubDocPath(freightId) {
   const safeId = freightId.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path9.join(FREIGHTS_STORE_DIR, `${safeId}.sub.json`);
+  return path10.join(FREIGHTS_STORE_DIR, `${safeId}.sub.json`);
 }
 function writeJsonAtomically(targetPath, data) {
   ensureDirectories();
   const tmp = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  fs9.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  fs9.renameSync(tmp, targetPath);
+  fs10.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+  fs10.renameSync(tmp, targetPath);
 }
 function computePendingForExpedicao(freight) {
   const pending = [];
@@ -4476,23 +4744,30 @@ function allocateNextProtocol() {
 }
 function pushFreightNotification(params) {
   if (!params.recipientId) return;
+  const cleanTitle = String(params.title || "").trim();
+  const cleanSubtitle = String(params.subtitle || "").trim();
   if (params.dedupeKey) {
-    const exists = serverNotifications.some(
+    const existsKey = serverNotifications.some(
       (n) => n.recipientId === params.recipientId && n.dedupeKey === params.dedupeKey
     );
-    if (exists) return;
+    if (existsKey) return;
   }
+  const existsSameContent = serverNotifications.some(
+    (n) => n.recipientId === params.recipientId && n.targetSection === params.targetSection && (n.targetId || "") === (params.targetId || "") && String(n.title || "").trim() === cleanTitle && String(n.subtitle || "").trim() === cleanSubtitle
+  );
+  if (existsSameContent) return;
   const sp = formatSaoPauloDateTime();
   const notif = {
-    id: `fnotif-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
+    id: `fnotif-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
     recipientId: params.recipientId,
     type: "prazo",
     dotColor: params.dotColor || "blue",
-    title: params.title,
-    subtitle: params.subtitle,
+    title: cleanTitle,
+    subtitle: cleanSubtitle,
     timeLabel: sp.formatted,
     createdAtIso: sp.iso,
     read: false,
+    dismissed: false,
     targetSection: params.targetSection,
     targetId: params.targetId,
     dedupeKey: params.dedupeKey
@@ -4623,17 +4898,17 @@ function normalizeLegacyFreightRecord(rec) {
 }
 function loadOrSeedUnifiedFreights() {
   ensureDirectories();
-  if (fs9.existsSync(NOTIFICATIONS_FILE)) {
+  if (fs10.existsSync(NOTIFICATIONS_FILE)) {
     try {
-      const parsed = JSON.parse(fs9.readFileSync(NOTIFICATIONS_FILE, "utf8"));
+      const parsed = JSON.parse(fs10.readFileSync(NOTIFICATIONS_FILE, "utf8"));
       if (Array.isArray(parsed)) serverNotifications = parsed;
     } catch {
       serverNotifications = [];
     }
   }
-  if (fs9.existsSync(SEQUENCE_FILE)) {
+  if (fs10.existsSync(SEQUENCE_FILE)) {
     try {
-      const seq = JSON.parse(fs9.readFileSync(SEQUENCE_FILE, "utf8"));
+      const seq = JSON.parse(fs10.readFileSync(SEQUENCE_FILE, "utf8"));
       if (seq && typeof seq.nextProtocolNumber === "number") {
         nextProtocolNumber = Math.max(843, seq.nextProtocolNumber);
       }
@@ -4646,7 +4921,7 @@ function loadOrSeedUnifiedFreights() {
     } catch {
     }
   }
-  const files = fs9.readdirSync(FREIGHTS_STORE_DIR);
+  const files = fs10.readdirSync(FREIGHTS_STORE_DIR);
   const freightDocFiles = files.filter(
     (f) => f.endsWith(".json") && !f.endsWith(".sub.json") && !f.startsWith("_")
   );
@@ -4655,8 +4930,8 @@ function loadOrSeedUnifiedFreights() {
     freightSubDocs.clear();
     for (const file of freightDocFiles) {
       try {
-        const fullPath = path9.join(FREIGHTS_STORE_DIR, file);
-        const rec = JSON.parse(fs9.readFileSync(fullPath, "utf8"));
+        const fullPath = path10.join(FREIGHTS_STORE_DIR, file);
+        const rec = JSON.parse(fs10.readFileSync(fullPath, "utf8"));
         if (rec && rec.id) {
           const subPath = getFreightSubDocPath(rec.id);
           let sub = {
@@ -4666,8 +4941,8 @@ function loadOrSeedUnifiedFreights() {
             ocorrencias: [],
             historico: []
           };
-          if (fs9.existsSync(subPath)) {
-            sub = JSON.parse(fs9.readFileSync(subPath, "utf8"));
+          if (fs10.existsSync(subPath)) {
+            sub = JSON.parse(fs10.readFileSync(subPath, "utf8"));
           }
           const mutated = normalizeLegacyFreightRecord(rec);
           syncSubDocCounters(rec, sub);
@@ -5225,7 +5500,7 @@ function canUserAccessFreightRecord(freight, user) {
 function appendHistoryEntry(sub, params) {
   const sp = formatSaoPauloDateTime();
   const entry = {
-    id: `fhist-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
+    id: `fhist-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
     freightId: sub.freightId,
     timestampIso: sp.iso,
     timestampFormatted: sp.formatted,
@@ -5245,9 +5520,9 @@ function appendHistoryEntry(sub, params) {
 }
 function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServerUsers, appendServerAuditLog) {
   loadOrSeedUnifiedFreights();
-  const idemFile = path9.join(FREIGHTS_STORE_DIR, "_idempotency.json");
-  if (fs9.existsSync(idemFile)) {
-    for (const [key, value] of Object.entries(JSON.parse(fs9.readFileSync(idemFile, "utf8")))) idempotencyCache.set(key, value);
+  const idemFile = path10.join(FREIGHTS_STORE_DIR, "_idempotency.json");
+  if (fs10.existsSync(idemFile)) {
+    for (const [key, value] of Object.entries(JSON.parse(fs10.readFileSync(idemFile, "utf8")))) idempotencyCache.set(key, value);
   }
   function checkIdempotency(req, res, userId) {
     const rawKey = req.headers["x-idempotency-key"] || (req.body && typeof req.body.idempotencyKey === "string" ? req.body.idempotencyKey : "") || `auto-${Date.now()}-${Math.random()}`;
@@ -5282,7 +5557,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       return;
     }
     const allUsers = getAllServerUsers().filter(
-      (u) => u.approvalStatus === "APROVADO" && u.active
+      (u) => u.approvalStatus === "APROVADO" && u.active && u.accessLevel !== "ADMINISTRADOR"
     );
     const comercialOperators = allUsers.filter((u) => canAccessComercialFreights(u)).map((u) => ({
       id: u.id,
@@ -5322,14 +5597,34 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
   app.get("/api/meus-fretes/notifications", requireApprovedSession2, async (req, res) => {
     const user = req.sessionUser;
     const localNotifs = serverNotifications.filter((n) => n.recipientId === user.id);
-    const neonNotifs = await loadNotificationsFromNeon(user.id, 50).catch(() => []);
-    const map = /* @__PURE__ */ new Map();
+    const [neonNotifs, dismissedNeon] = await Promise.all([
+      loadNotificationsFromNeon(user.id, 50).catch(() => []),
+      loadDismissedNotificationIdsFromNeon(user.id).catch(() => ({ ids: [], dedupeKeys: [] }))
+    ]);
+    const dismissedIds = new Set(dismissedNeon.ids);
+    const dismissedKeys = new Set(dismissedNeon.dedupeKeys);
     for (const n of localNotifs) {
-      map.set(n.id, n);
+      if (n.dismissed) {
+        dismissedIds.add(n.id);
+        if (n.dedupeKey) dismissedKeys.add(n.dedupeKey);
+      }
+    }
+    const byId = /* @__PURE__ */ new Map();
+    for (const n of localNotifs) {
+      if (n.dismissed || dismissedIds.has(n.id) || n.dedupeKey && dismissedKeys.has(n.dedupeKey)) {
+        continue;
+      }
+      byId.set(n.id, { ...n });
     }
     for (const n of neonNotifs) {
-      if (!map.has(n.id)) {
-        map.set(n.id, {
+      if (n.dismissed || dismissedIds.has(n.id) || n.dedupeKey && dismissedKeys.has(n.dedupeKey)) {
+        continue;
+      }
+      const existing = byId.get(n.id);
+      if (existing) {
+        existing.read = Boolean(existing.read || n.read);
+      } else {
+        byId.set(n.id, {
           id: n.id,
           recipientId: n.recipientId,
           type: n.type || "prazo",
@@ -5345,7 +5640,20 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         });
       }
     }
-    const myNotifs = Array.from(map.values()).sort((a, b) => (b.createdAtIso || "").localeCompare(a.createdAtIso || "")).slice(0, 50);
+    const sorted = Array.from(byId.values()).sort(
+      (a, b) => (b.createdAtIso || "").localeCompare(a.createdAtIso || "")
+    );
+    const semanticMap = /* @__PURE__ */ new Map();
+    for (const item of sorted) {
+      const semanticKey = `${item.targetSection}|${item.targetId || ""}|${String(item.title || "").trim()}|${String(item.subtitle || "").trim()}`;
+      const existing = semanticMap.get(semanticKey);
+      if (!existing) {
+        semanticMap.set(semanticKey, item);
+      } else {
+        existing.read = Boolean(existing.read || item.read);
+      }
+    }
+    const myNotifs = Array.from(semanticMap.values()).slice(0, 50);
     res.json({
       notifications: myNotifs,
       unreadCount: myNotifs.filter((n) => !n.read).length
@@ -5354,7 +5662,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
   app.post(
     "/api/meus-fretes/notifications/:notifId/read",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = req.sessionUser;
       const notifId = String(req.params.notifId || "");
       const target = serverNotifications.find(
@@ -5362,16 +5670,22 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       );
       if (target) {
         target.read = true;
+        serverNotifications.forEach((n) => {
+          if (n.recipientId === user.id && n.targetSection === target.targetSection && (n.targetId || "") === (target.targetId || "") && String(n.title || "").trim() === String(target.title || "").trim() && String(n.subtitle || "").trim() === String(target.subtitle || "").trim()) {
+            n.read = true;
+          }
+        });
         saveNotifications();
       }
-      void markNotificationReadInNeon(notifId, user.id);
+      await markNotificationReadInNeon(notifId, user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
   app.post(
     "/api/meus-fretes/notifications/read-all",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = req.sessionUser;
       let changed = false;
       serverNotifications.forEach((n) => {
@@ -5381,23 +5695,48 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         }
       });
       if (changed) saveNotifications();
-      void markAllNotificationsReadInNeon(user.id);
+      await markAllNotificationsReadInNeon(user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
   app.delete(
     "/api/meus-fretes/notifications/:notifId",
     requireApprovedSession2,
-    (req, res) => {
+    async (req, res) => {
       const user = req.sessionUser;
       const notifId = String(req.params.notifId || "");
-      const idx = serverNotifications.findIndex(
+      const target = serverNotifications.find(
         (n) => n.id === notifId && n.recipientId === user.id
       );
-      if (idx !== -1) {
-        serverNotifications.splice(idx, 1);
-        saveNotifications();
+      if (target) {
+        target.dismissed = true;
+        target.read = true;
+        serverNotifications.forEach((n) => {
+          if (n.recipientId === user.id && (target.dedupeKey && n.dedupeKey === target.dedupeKey || n.targetSection === target.targetSection && (n.targetId || "") === (target.targetId || "") && String(n.title || "").trim() === String(target.title || "").trim() && String(n.subtitle || "").trim() === String(target.subtitle || "").trim())) {
+            n.dismissed = true;
+            n.read = true;
+          }
+        });
+      } else {
+        serverNotifications.unshift({
+          id: notifId,
+          recipientId: user.id,
+          type: "prazo",
+          dotColor: "blue",
+          title: "",
+          subtitle: "",
+          timeLabel: "",
+          createdAtIso: (/* @__PURE__ */ new Date()).toISOString(),
+          read: true,
+          dismissed: true,
+          targetSection: "fretes_comercial",
+          targetId: ""
+        });
       }
+      saveNotifications();
+      await dismissNotificationInNeon(notifId, user.id);
+      await flushPendingNeonWrites();
       res.json({ ok: true });
     }
   );
@@ -5481,7 +5820,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       omitKanban ? "1" : "0",
       compact ? "1" : "0"
     ].join("|");
-    const etag = `W/"fretes-v${freightsDataVersion}-${crypto10.createHash("sha1").update(querySignature).digest("hex").slice(0, 12)}"`;
+    const etag = `W/"fretes-v${freightsDataVersion}-${crypto11.createHash("sha1").update(querySignature).digest("hex").slice(0, 12)}"`;
     res.setHeader("ETag", etag);
     if (req.headers["if-none-match"] === etag) {
       res.status(304).end();
@@ -5550,7 +5889,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const neonResult = await queryMonitoringFreightsFromNeon({
         scope: scope === "EQUIPE" ? "EQUIPE" : "MEUS",
         userId: user.id,
-        isTesteLogin: user.login === "teste",
+        isTesteLogin: false,
         responsavelFilterId,
         viewMode,
         search,
@@ -5616,7 +5955,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           }
           return f.expedicaoResponsavelId !== null;
         }
-        return f.expedicaoResponsavelId === user.id || (user.login === "teste" || user.id === "emp-teste-logistica") && (f.expedicaoResponsavelId === "emp-teste-logistica" || f.expedicaoResponsavelId === "emp-4" || f.expedicaoResponsavelId === "emp-expedicao-2" || f.expedicaoResponsavelNome === "teste");
+        return f.expedicaoResponsavelId === user.id;
       } else {
         const isReleasedToMon = f.situacaoMonitoramento && f.situacaoMonitoramento !== "NAO_LIBERADO" && f.situacaoMonitoramento !== "DEVOLVIDO_EXPEDICAO" && f.situacaoMonitoramento !== "CANCELADO";
         if (!isReleasedToMon && !includeCanceled) return false;
@@ -5626,7 +5965,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           }
           return Boolean(f.monitoramentoResponsavelId);
         }
-        return f.monitoramentoResponsavelId === user.id || user.login === "teste" && (f.monitoramentoResponsavelId === "emp-teste-logistica" || f.monitoramentoResponsavelId === "emp-4");
+        return f.monitoramentoResponsavelId === user.id;
       }
     });
     const availableToClaimCount = area === "EXPEDICAO" ? allRecords.filter(
@@ -5980,7 +6319,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
     const enderecoColeta = String(body.enderecoColeta || "").trim().slice(0, 240);
     const enderecoEntrega = String(body.enderecoEntrega || "").trim().slice(0, 240);
     const tipoCarga = String(body.tipoCarga || "").trim().slice(0, 120);
-    const dataColetaIso = String(body.dataColetaIso || sp.dateOnlyIso).slice(0, 10);
+    const dataColetaIso = String(body.dataColetaIso ?? sp.dateOnlyIso).trim().slice(0, 10);
     let assignedExpUser;
     if (confirmAndSendToExpedicao) {
       const missing = [];
@@ -6002,7 +6341,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const targetExpId = String(body.expedicaoResponsavelId || "").trim();
       if (targetExpId) {
         const candidate = getAllServerUsers().find(
-          (u) => u.id === targetExpId && u.approvalStatus === "APROVADO" && u.active
+          (u) => u.id === targetExpId && u.approvalStatus === "APROVADO" && u.active && u.accessLevel !== "ADMINISTRADOR"
         );
         if (!candidate || !canAccessExpedicaoFreights(candidate)) {
           res.status(400).json({
@@ -6042,11 +6381,11 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       volumes: Math.max(0, Math.round(Number(body.volumes) || 0)),
       veiculoNecessario: String(body.veiculoNecessario || "").trim().slice(0, 100),
       dataColetaIso,
-      janelaColetaInicio: String(body.janelaColetaInicio || "08:00").slice(0, 5),
-      janelaColetaFim: String(body.janelaColetaFim || "12:00").slice(0, 5),
-      dataEntregaPrevistaIso: String(body.dataEntregaPrevistaIso || sp.dateOnlyIso).slice(0, 10),
-      janelaEntregaInicio: String(body.janelaEntregaInicio || "14:00").slice(0, 5),
-      janelaEntregaFim: String(body.janelaEntregaFim || "18:00").slice(0, 5),
+      janelaColetaInicio: String(body.janelaColetaInicio ?? "08:00").trim().slice(0, 5),
+      janelaColetaFim: String(body.janelaColetaFim ?? "12:00").trim().slice(0, 5),
+      dataEntregaPrevistaIso: String(body.dataEntregaPrevistaIso ?? sp.dateOnlyIso).trim().slice(0, 10),
+      janelaEntregaInicio: String(body.janelaEntregaInicio ?? "14:00").trim().slice(0, 5),
+      janelaEntregaFim: String(body.janelaEntregaFim ?? "18:00").trim().slice(0, 5),
       comercialResponsavelId: user.id,
       comercialResponsavelNome: user.name,
       expedicaoResponsavelId: confirmAndSendToExpedicao && assignedExpUser ? assignedExpUser.id : null,
@@ -6059,6 +6398,17 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       condicoesOperacionais: String(body.condicoesOperacionais || "").trim().slice(0, 1e3),
       condicoesPagamento: String(body.condicoesPagamento || "").trim().slice(0, 600) || void 0,
       observacoes: String(body.observacoes || "").trim().slice(0, 1e3) || void 0,
+      comercialScriptRef: String(body.comercialScriptRef || "").trim().slice(0, 120) || void 0,
+      motoristaNome: String(body.motoristaNome || "").trim().slice(0, 120) || void 0,
+      motoristaCpf: String(body.motoristaCpf || "").trim().slice(0, 20) || void 0,
+      motoristaTelefone: String(body.motoristaTelefone || "").trim().slice(0, 30) || void 0,
+      emergenciaNome: String(body.emergenciaNome || "").trim().slice(0, 120) || void 0,
+      emergenciaTelefone: String(body.emergenciaTelefone || "").trim().slice(0, 30) || void 0,
+      placaVeiculo: String(body.placaVeiculo || "").trim().toUpperCase().slice(0, 12) || void 0,
+      favorecidoPagamento: String(body.favorecidoPagamento || "").trim().slice(0, 140) || void 0,
+      tipoChavePix: String(body.tipoChavePix || "").trim().slice(0, 40) || void 0,
+      chavePix: String(body.chavePix || "").trim().slice(0, 140) || void 0,
+      bancoPagamento: String(body.bancoPagamento || "").trim().slice(0, 100) || void 0,
       devolvidoParaCorrecao: false,
       requerReconfirmacaoOperacional: false,
       comprovanteEntregaConferido: false,
@@ -6129,7 +6479,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           summary: "Contrata\xE7\xE3o confirmada e frete enviado para a fila compartilhada da Expedi\xE7\xE3o."
         });
         const expOperators = getAllServerUsers().filter(
-          (u) => u.approvalStatus === "APROVADO" && u.active && canAccessExpedicaoFreights(u)
+          (u) => u.approvalStatus === "APROVADO" && u.active && u.accessLevel !== "ADMINISTRADOR" && canAccessExpedicaoFreights(u)
         );
         for (const op of expOperators) {
           pushFreightNotification({
@@ -6139,7 +6489,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
             dotColor: "blue",
             targetSection: "fretes_expedicao",
             targetId: newFreight.id,
-            dedupeKey: `avail:${newFreight.id}:1:${op.id}`
+            dedupeKey: `avail:${newFreight.id}:${op.id}`
           });
         }
       }
@@ -6450,7 +6800,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         const targetExpId = expedicaoResponsavelId !== void 0 ? String(expedicaoResponsavelId || "").trim() : freight.expedicaoResponsavelId || "";
         if (targetExpId) {
           const candidate = getAllServerUsers().find(
-            (u) => u.id === targetExpId && u.approvalStatus === "APROVADO" && u.active
+            (u) => u.id === targetExpId && u.approvalStatus === "APROVADO" && u.active && u.accessLevel !== "ADMINISTRADOR"
           );
           if (!candidate || !canAccessExpedicaoFreights(candidate)) {
             res.status(400).json({
@@ -6499,7 +6849,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
             summary: `Contrata\xE7\xE3o confirmada por ${user.name} e enviada para a fila compartilhada da Expedi\xE7\xE3o.${pendingNote}`
           });
           const expOperators = getAllServerUsers().filter(
-            (u) => u.approvalStatus === "APROVADO" && u.active && canAccessExpedicaoFreights(u)
+            (u) => u.approvalStatus === "APROVADO" && u.active && u.accessLevel !== "ADMINISTRADOR" && canAccessExpedicaoFreights(u)
           );
           for (const op of expOperators) {
             pushFreightNotification({
@@ -6509,7 +6859,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
               dotColor: "blue",
               targetSection: "fretes_expedicao",
               targetId: freight.id,
-              dedupeKey: `avail:${freight.id}:${freight.revision + 1}:${op.id}`
+              dedupeKey: `avail:${freight.id}:${op.id}`
             });
           }
         }
@@ -7900,7 +8250,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sp = formatSaoPauloDateTime();
       const sub = freightSubDocs.get(freight.id);
       const occ = {
-        id: `focc-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
+        id: `focc-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         severity: safeSeverity,
         title: cleanTitle.slice(0, 140),
@@ -8042,7 +8392,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sub = freightSubDocs.get(freight.id);
       const sector = user.accessLevel !== "FUNCIONARIO" ? "GESTAO" : canAccessExpedicaoFreights(user) && freight.expedicaoResponsavelId === user.id || freight.monitoramentoResponsavelId === user.id ? "EXPEDICAO" : "COMERCIAL";
       const comment = {
-        id: `fcom-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
+        id: `fcom-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         authorId: user.id,
         authorName: user.name,
@@ -8120,9 +8470,9 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       ];
       const safeCat = validCategories.includes(category) ? category : "OUTRO";
       ensureDirectories();
-      const storageName = `fdoc-${freight.id}-${crypto10.randomUUID()}.${validation.extension}`;
-      const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, storageName);
-      fs9.writeFileSync(diskPath, fileBuf);
+      const storageName = `fdoc-${freight.id}-${crypto11.randomUUID()}.${validation.extension}`;
+      const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, storageName);
+      fs10.writeFileSync(diskPath, fileBuf);
       void persistSystemAssetToNeon({
         id: storageName,
         slot: "freightAttachment",
@@ -8132,7 +8482,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sp = formatSaoPauloDateTime();
       const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
       const attachment = {
-        id: `fatt-${Date.now()}-${crypto10.randomBytes(3).toString("hex")}`,
+        id: `fatt-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
         category: safeCat,
         label: String(label || safeCat).trim().slice(0, 80),
@@ -8257,14 +8607,14 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.status(404).json({ error: "Anexo n\xE3o encontrado." });
         return;
       }
-      const safeFile = path9.basename(att.storageName);
-      const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, safeFile);
-      if (!fs9.existsSync(diskPath)) {
+      const safeFile = path10.basename(att.storageName);
+      const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, safeFile);
+      if (!fs10.existsSync(diskPath)) {
         const neonAsset = await getSystemAssetFromNeon(safeFile);
         if (neonAsset && neonAsset.buffer) {
           try {
             ensureDirectories();
-            fs9.writeFileSync(diskPath, neonAsset.buffer);
+            fs10.writeFileSync(diskPath, neonAsset.buffer);
           } catch {
           }
           res.setHeader("Content-Type", att.mimeType || neonAsset.mimeType);
@@ -8285,7 +8635,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         `inline; filename="${encodeURIComponent(att.fileName)}"`
       );
       res.setHeader("Cache-Control", "private, no-store");
-      fs9.createReadStream(diskPath).pipe(res);
+      fs10.createReadStream(diskPath).pipe(res);
     }
   );
   app.delete(
@@ -8316,8 +8666,8 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       }
       const att = sub.anexos[attIdx];
       try {
-        const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, path9.basename(att.storageName));
-        if (fs9.existsSync(diskPath)) fs9.unlinkSync(diskPath);
+        const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, path10.basename(att.storageName));
+        if (fs10.existsSync(diskPath)) fs10.unlinkSync(diskPath);
       } catch {
       }
       sub.anexos.splice(attIdx, 1);
@@ -8364,8 +8714,8 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const count = sub.anexos.length;
       for (const att of sub.anexos) {
         try {
-          const diskPath = path9.join(FREIGHT_ATTACHMENTS_DIR, path9.basename(att.storageName));
-          if (fs9.existsSync(diskPath)) fs9.unlinkSync(diskPath);
+          const diskPath = path10.join(FREIGHT_ATTACHMENTS_DIR, path10.basename(att.storageName));
+          if (fs10.existsSync(diskPath)) fs10.unlinkSync(diskPath);
         } catch {
         }
       }
@@ -8436,7 +8786,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const sub = freightSubDocs.get(freight.id);
       const targetSector = String(sector || "EXPEDICAO").toUpperCase();
       if (targetSector === "COMERCIAL") {
-        if (!canAccessComercialFreights(targetUser)) {
+        if (!canAccessComercialFreights(targetUser) || targetUser.accessLevel === "ADMINISTRADOR") {
           res.status(400).json({
             error: "O funcion\xE1rio selecionado n\xE3o possui permiss\xE3o para o m\xF3dulo Comercial."
           });
@@ -8500,7 +8850,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           dedupeKey: `xfer:mon:${freight.id}:${freight.revision}`
         });
       } else {
-        if (!canAccessExpedicaoFreights(targetUser)) {
+        if (!canAccessExpedicaoFreights(targetUser) || targetUser.accessLevel === "ADMINISTRADOR") {
           res.status(400).json({
             error: "O funcion\xE1rio selecionado n\xE3o possui permiss\xE3o para o m\xF3dulo Expedi\xE7\xE3o."
           });
@@ -8727,9 +9077,9 @@ function financialProjection(f, existing) {
 }
 
 // src/server/paymentReceiptsEngine.ts
-import crypto11 from "crypto";
-import fs10 from "fs";
-import path10 from "path";
+import crypto12 from "crypto";
+import fs11 from "fs";
+import path11 from "path";
 
 // src/lib/freightDatabase.ts
 var INITIAL_FREIGHTS = [
@@ -9087,13 +9437,13 @@ function formatFileSize(bytes) {
 
 // src/server/paymentReceiptsEngine.ts
 var ROOT_DIR2 = resolveDataRoot();
-var PAYMENT_STORE_DIR = path10.join(ROOT_DIR2, "data", "payment-store");
-var PAYMENT_RECEIPTS_DIR = path10.join(ROOT_DIR2, "data", "payment-receipts");
-var FREIGHTS_FILE = path10.join(PAYMENT_STORE_DIR, "freights.json");
-var INTENTS_FILE = path10.join(PAYMENT_STORE_DIR, "intents.json");
-var RECEIPTS_FILE = path10.join(PAYMENT_STORE_DIR, "receipts.json");
-var HISTORY_FILE = path10.join(PAYMENT_STORE_DIR, "history.json");
-var STAGED_SHARES_FILE = path10.join(PAYMENT_STORE_DIR, "staged-shares.json");
+var PAYMENT_STORE_DIR = path11.join(ROOT_DIR2, "data", "payment-store");
+var PAYMENT_RECEIPTS_DIR = path11.join(ROOT_DIR2, "data", "payment-receipts");
+var FREIGHTS_FILE = path11.join(PAYMENT_STORE_DIR, "freights.json");
+var INTENTS_FILE = path11.join(PAYMENT_STORE_DIR, "intents.json");
+var RECEIPTS_FILE = path11.join(PAYMENT_STORE_DIR, "receipts.json");
+var HISTORY_FILE = path11.join(PAYMENT_STORE_DIR, "history.json");
+var STAGED_SHARES_FILE = path11.join(PAYMENT_STORE_DIR, "staged-shares.json");
 var MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 var DEFAULT_INTENT_VALIDITY_MINUTES = 30;
 var paymentStoreState = {
@@ -9104,11 +9454,11 @@ var paymentStoreState = {
   stagedShares: []
 };
 function ensureDirectories2() {
-  if (!fs10.existsSync(PAYMENT_STORE_DIR)) {
-    fs10.mkdirSync(PAYMENT_STORE_DIR, { recursive: true });
+  if (!fs11.existsSync(PAYMENT_STORE_DIR)) {
+    fs11.mkdirSync(PAYMENT_STORE_DIR, { recursive: true });
   }
-  if (!fs10.existsSync(PAYMENT_RECEIPTS_DIR)) {
-    fs10.mkdirSync(PAYMENT_RECEIPTS_DIR, { recursive: true });
+  if (!fs11.existsSync(PAYMENT_RECEIPTS_DIR)) {
+    fs11.mkdirSync(PAYMENT_RECEIPTS_DIR, { recursive: true });
   }
 }
 function createSamplePdfBuffer(title, subtitle) {
@@ -9221,11 +9571,11 @@ function hydratePaymentReceiptsFromPayload(payload) {
 function savePaymentStore(skipNeon = false) {
   try {
     ensureDirectories2();
-    fs10.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), "utf8");
-    fs10.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), "utf8");
-    fs10.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), "utf8");
-    fs10.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), "utf8");
-    fs10.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), "utf8");
+    fs11.writeFileSync(FREIGHTS_FILE, JSON.stringify(paymentStoreState.freights, null, 2), "utf8");
+    fs11.writeFileSync(INTENTS_FILE, JSON.stringify(paymentStoreState.intents, null, 2), "utf8");
+    fs11.writeFileSync(RECEIPTS_FILE, JSON.stringify(paymentStoreState.receipts, null, 2), "utf8");
+    fs11.writeFileSync(HISTORY_FILE, JSON.stringify(paymentStoreState.history, null, 2), "utf8");
+    fs11.writeFileSync(STAGED_SHARES_FILE, JSON.stringify(paymentStoreState.stagedShares, null, 2), "utf8");
   } catch (err) {
     console.warn("paymentReceiptsEngine local save notice:", err.message);
   }
@@ -9285,9 +9635,9 @@ function enrichFreightWithReceipts(freight) {
 function loadOrSeedPaymentStore() {
   ensureDirectories2();
   let loadedFreights = null;
-  if (fs10.existsSync(FREIGHTS_FILE)) {
+  if (fs11.existsSync(FREIGHTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(FREIGHTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs11.readFileSync(FREIGHTS_FILE, "utf8"));
       if (Array.isArray(parsed) && parsed.length > 0) {
         loadedFreights = parsed;
       }
@@ -9295,33 +9645,33 @@ function loadOrSeedPaymentStore() {
       loadedFreights = null;
     }
   }
-  if (fs10.existsSync(INTENTS_FILE)) {
+  if (fs11.existsSync(INTENTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(INTENTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs11.readFileSync(INTENTS_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.intents = parsed;
     } catch {
       paymentStoreState.intents = [];
     }
   }
-  if (fs10.existsSync(RECEIPTS_FILE)) {
+  if (fs11.existsSync(RECEIPTS_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(RECEIPTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs11.readFileSync(RECEIPTS_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.receipts = parsed;
     } catch {
       paymentStoreState.receipts = [];
     }
   }
-  if (fs10.existsSync(HISTORY_FILE)) {
+  if (fs11.existsSync(HISTORY_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(HISTORY_FILE, "utf8"));
+      const parsed = JSON.parse(fs11.readFileSync(HISTORY_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.history = parsed;
     } catch {
       paymentStoreState.history = [];
     }
   }
-  if (fs10.existsSync(STAGED_SHARES_FILE)) {
+  if (fs11.existsSync(STAGED_SHARES_FILE)) {
     try {
-      const parsed = JSON.parse(fs10.readFileSync(STAGED_SHARES_FILE, "utf8"));
+      const parsed = JSON.parse(fs11.readFileSync(STAGED_SHARES_FILE, "utf8"));
       if (Array.isArray(parsed)) paymentStoreState.stagedShares = parsed;
     } catch {
       paymentStoreState.stagedShares = [];
@@ -9337,15 +9687,15 @@ function loadOrSeedPaymentStore() {
       if (f.docs.comprovanteAdiantamento) {
         const doc = f.docs.comprovanteAdiantamento;
         const storageFileName = `seed-${f.id}-adiantamento.pdf`;
-        const absPath = path10.join(PAYMENT_RECEIPTS_DIR, storageFileName);
+        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
         const pdfBuf = createSamplePdfBuffer(
           `Comprovante de Adiantamento ${f.code}`,
           `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorAdiantamento.toFixed(2)}`
         );
-        if (!fs10.existsSync(absPath)) {
-          fs10.writeFileSync(absPath, pdfBuf);
+        if (!fs11.existsSync(absPath)) {
+          fs11.writeFileSync(absPath, pdfBuf);
         }
-        const sha256Hash = crypto11.createHash("sha256").update(pdfBuf).digest("hex");
+        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
         const receiptRecord = {
           id: doc.id,
           freightId: f.id,
@@ -9386,15 +9736,15 @@ function loadOrSeedPaymentStore() {
       if (f.docs.comprovanteSaldo) {
         const doc = f.docs.comprovanteSaldo;
         const storageFileName = `seed-${f.id}-saldo.pdf`;
-        const absPath = path10.join(PAYMENT_RECEIPTS_DIR, storageFileName);
+        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
         const pdfBuf = createSamplePdfBuffer(
           `Comprovante de Saldo ${f.code}`,
           `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorSaldo.toFixed(2)}`
         );
-        if (!fs10.existsSync(absPath)) {
-          fs10.writeFileSync(absPath, pdfBuf);
+        if (!fs11.existsSync(absPath)) {
+          fs11.writeFileSync(absPath, pdfBuf);
         }
-        const sha256Hash = crypto11.createHash("sha256").update(pdfBuf).digest("hex");
+        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
         const receiptRecord = {
           id: doc.id,
           freightId: f.id,
@@ -9451,7 +9801,7 @@ function loadOrSeedPaymentStore() {
 function appendPaymentAuditHistory(params) {
   const sp = formatSaoPauloDateTime();
   const entry = {
-    id: `payhist-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+    id: `payhist-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
     freightId: params.freightId,
     freightCode: params.freightCode,
     installmentType: params.installmentType,
@@ -9618,7 +9968,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     try {
       const contentType = String(req.headers["content-type"] || "");
       let staged;
-      const shareId = `srvshare-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
+      const shareId = `srvshare-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       if (contentType.toLowerCase().includes("multipart/form-data")) {
         const rawBuf = await readRawRequestBody(req, MAX_RECEIPT_BYTES + 2 * 1024 * 1024);
@@ -9850,7 +10200,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     const spNow = formatSaoPauloDateTime(nowDate);
     const spExp = formatSaoPauloDateTime(expiresDate);
     const intent = {
-      id: `pint-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`,
+      id: `pint-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`,
       freightId: freight.id,
       freightCode: freight.code,
       installmentId: `${freight.id}:${normalizedType}`,
@@ -10067,7 +10417,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
           return;
         }
       } else {
-        idempotencyKey = `idem-${user.id}-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
+        idempotencyKey = `idem-${user.id}-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
       }
       if (!fileBuffer || fileBuffer.length === 0) {
         res.status(400).json({
@@ -10085,15 +10435,15 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         });
         return;
       }
-      const sha256Hash = crypto11.createHash("sha256").update(fileBuffer).digest("hex");
+      const sha256Hash = crypto12.createHash("sha256").update(fileBuffer).digest("hex");
       const duplicateReceipt = paymentStoreState.receipts.find((r) => r.sha256Hash === sha256Hash);
       const previousInstallmentReceipt = paymentStoreState.receipts.find(
         (r) => r.freightId === freight.id && r.installmentType === installmentType
       );
-      const receiptId = `rec-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}`;
-      const safeStorageName = `comprovante-${freight.id}-${installmentType.toLowerCase()}-${Date.now()}-${crypto11.randomBytes(4).toString("hex")}.${validation.extension}`;
-      const absStoragePath = path10.join(PAYMENT_RECEIPTS_DIR, safeStorageName);
-      fs10.writeFileSync(absStoragePath, fileBuffer);
+      const receiptId = `rec-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
+      const safeStorageName = `comprovante-${freight.id}-${installmentType.toLowerCase()}-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}.${validation.extension}`;
+      const absStoragePath = path11.join(PAYMENT_RECEIPTS_DIR, safeStorageName);
+      fs11.writeFileSync(absStoragePath, fileBuffer);
       void persistSystemAssetToNeon({
         id: safeStorageName,
         slot: "paymentReceipt",
@@ -10118,7 +10468,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         uploadedByUserId: user.id,
         uploadedByUserName: user.name,
         uploadedByUserEmail: user.email,
-        originalFileName: path10.basename(originalFileName).replace(/[^\w.\-() ]+/g, "_"),
+        originalFileName: path11.basename(originalFileName).replace(/[^\w.\-() ]+/g, "_"),
         storageFileName: safeStorageName,
         storageRelativePath: `data/payment-receipts/${safeStorageName}`,
         mimeType: validation.mimeType,
@@ -10335,14 +10685,14 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         });
         return;
       }
-      const safeFile = path10.basename(receipt.storageFileName);
-      const absPath = path10.join(PAYMENT_RECEIPTS_DIR, safeFile);
-      if (!fs10.existsSync(absPath)) {
+      const safeFile = path11.basename(receipt.storageFileName);
+      const absPath = path11.join(PAYMENT_RECEIPTS_DIR, safeFile);
+      if (!fs11.existsSync(absPath)) {
         const neonAsset = await getSystemAssetFromNeon(safeFile);
         if (neonAsset && neonAsset.buffer) {
           try {
             ensureDirectories2();
-            fs10.writeFileSync(absPath, neonAsset.buffer);
+            fs11.writeFileSync(absPath, neonAsset.buffer);
           } catch {
           }
           res.setHeader("Content-Type", receipt.mimeType || neonAsset.mimeType);
@@ -10366,7 +10716,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         "Content-Disposition",
         `inline; filename="${encodeURIComponent(receipt.originalFileName)}"`
       );
-      fs10.createReadStream(absPath).pipe(res);
+      fs11.createReadStream(absPath).pipe(res);
     }
   );
   app.get(
@@ -10393,11 +10743,11 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
 var rawPort = process.env.PORT && process.env.NGINX_PORT && process.env.PORT === process.env.NGINX_PORT ? process.env.DEFAULT_APP_PORT || "3000" : process.env.PORT || "3000";
 var PORT = Number(rawPort) || 3e3;
 var ROOT_DIR3 = resolveDataRoot();
-var DATA_DIR = path11.join(ROOT_DIR3, "data");
-var DB_FILE_PATH = path11.join(DATA_DIR, "rodovar-server-db.json");
-var PUBLIC_DIR = path11.join(ROOT_DIR3, "public");
-var UPLOADS_DIR = path11.join(PUBLIC_DIR, "uploads");
-var DEFAULT_AVATAR_FS_PATH = path11.join(PUBLIC_DIR, "assets", "default-avatar.png");
+var DATA_DIR = path12.join(ROOT_DIR3, "data");
+var DB_FILE_PATH = path12.join(DATA_DIR, "rodovar-server-db.json");
+var PUBLIC_DIR = path12.join(ROOT_DIR3, "public");
+var UPLOADS_DIR = path12.join(PUBLIC_DIR, "uploads");
+var DEFAULT_AVATAR_FS_PATH = path12.join(PUBLIC_DIR, "assets", "default-avatar.png");
 var DEFAULT_AVATAR_URL = "/assets/default-avatar.png";
 var MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 var LOCKOUT_THRESHOLD = 5;
@@ -10448,12 +10798,12 @@ function makePngChunk(type, data) {
   return Buffer.concat([lenBuf, typeBuf, data, crcBuf]);
 }
 function ensureDefaultAvatarPngExists() {
-  const assetsDir = path11.dirname(DEFAULT_AVATAR_FS_PATH);
-  if (!fs11.existsSync(assetsDir)) {
-    fs11.mkdirSync(assetsDir, { recursive: true });
+  const assetsDir = path12.dirname(DEFAULT_AVATAR_FS_PATH);
+  if (!fs12.existsSync(assetsDir)) {
+    fs12.mkdirSync(assetsDir, { recursive: true });
   }
-  if (fs11.existsSync(DEFAULT_AVATAR_FS_PATH)) {
-    const stat = fs11.statSync(DEFAULT_AVATAR_FS_PATH);
+  if (fs12.existsSync(DEFAULT_AVATAR_FS_PATH)) {
+    const stat = fs12.statSync(DEFAULT_AVATAR_FS_PATH);
     if (stat.size > 1024) return;
   }
   const width = 1024;
@@ -10520,7 +10870,7 @@ function ensureDefaultAvatarPngExists() {
     makePngChunk("IDAT", idatData),
     makePngChunk("IEND", Buffer.alloc(0))
   ]);
-  fs11.writeFileSync(DEFAULT_AVATAR_FS_PATH, pngBuffer);
+  fs12.writeFileSync(DEFAULT_AVATAR_FS_PATH, pngBuffer);
 }
 var cachedOfficialLogo = null;
 function paethPredictor(a, b, c) {
@@ -10534,10 +10884,10 @@ function paethPredictor(a, b, c) {
 }
 function loadOfficialRodovarLogo() {
   if (cachedOfficialLogo) return cachedOfficialLogo;
-  const logoPath = path11.join(PUBLIC_DIR, "assets", "aistudio", "RODOVAR-LOGO_310056c8.png");
-  if (!fs11.existsSync(logoPath)) return null;
+  const logoPath = path12.join(PUBLIC_DIR, "assets", "aistudio", "RODOVAR-LOGO_310056c8.png");
+  if (!fs12.existsSync(logoPath)) return null;
   try {
-    const buf = fs11.readFileSync(logoPath);
+    const buf = fs12.readFileSync(logoPath);
     let offset = 8;
     let width = 0;
     let height = 0;
@@ -10733,43 +11083,43 @@ function generateRodovarPwaIconPng(size, maskable) {
   ]);
 }
 function ensurePwaIconsExist() {
-  if (!fs11.existsSync(PUBLIC_DIR)) {
-    fs11.mkdirSync(PUBLIC_DIR, { recursive: true });
+  if (!fs12.existsSync(PUBLIC_DIR)) {
+    fs12.mkdirSync(PUBLIC_DIR, { recursive: true });
   }
-  const iconsDir = path11.join(PUBLIC_DIR, "icons");
-  if (!fs11.existsSync(iconsDir)) {
-    fs11.mkdirSync(iconsDir, { recursive: true });
+  const iconsDir = path12.join(PUBLIC_DIR, "icons");
+  if (!fs12.existsSync(iconsDir)) {
+    fs12.mkdirSync(iconsDir, { recursive: true });
   }
   const icons = [
     { relPath: "pwa-192x192.png", size: 192, maskable: false },
     { relPath: "pwa-512x512.png", size: 512, maskable: false },
     { relPath: "pwa-maskable-512x512.png", size: 512, maskable: true },
     { relPath: "apple-touch-icon.png", size: 180, maskable: false },
-    { relPath: path11.join("icons", "icon-192x192.png"), size: 192, maskable: false },
-    { relPath: path11.join("icons", "icon-512x512.png"), size: 512, maskable: false },
-    { relPath: path11.join("icons", "icon-maskable-512x512.png"), size: 512, maskable: true }
+    { relPath: path12.join("icons", "icon-192x192.png"), size: 192, maskable: false },
+    { relPath: path12.join("icons", "icon-512x512.png"), size: 512, maskable: false },
+    { relPath: path12.join("icons", "icon-maskable-512x512.png"), size: 512, maskable: true }
   ];
   for (const icon of icons) {
-    const filePath = path11.join(PUBLIC_DIR, icon.relPath);
-    fs11.writeFileSync(filePath, generateRodovarPwaIconPng(icon.size, icon.maskable));
+    const filePath = path12.join(PUBLIC_DIR, icon.relPath);
+    fs12.writeFileSync(filePath, generateRodovarPwaIconPng(icon.size, icon.maskable));
   }
 }
 function hashPassword(password, existingSaltHex) {
-  const salt = existingSaltHex || crypto12.randomBytes(16).toString("hex");
-  const derived = crypto12.scryptSync(password, Buffer.from(salt, "hex"), 64);
+  const salt = existingSaltHex || crypto13.randomBytes(16).toString("hex");
+  const derived = crypto13.scryptSync(password, Buffer.from(salt, "hex"), 64);
   return {
     hash: derived.toString("hex"),
     salt
   };
 }
-var DUMMY_SALT_HEX = crypto12.randomBytes(16).toString("hex");
-var DUMMY_HASH_HEX = crypto12.scryptSync("dummy-timing-safe-password-rodovar", Buffer.from(DUMMY_SALT_HEX, "hex"), 64).toString("hex");
+var DUMMY_SALT_HEX = crypto13.randomBytes(16).toString("hex");
+var DUMMY_HASH_HEX = crypto13.scryptSync("dummy-timing-safe-password-rodovar", Buffer.from(DUMMY_SALT_HEX, "hex"), 64).toString("hex");
 function verifyPasswordTimingSafe(password, expectedHashHex, saltHex) {
   try {
-    const derived = crypto12.scryptSync(password, Buffer.from(saltHex, "hex"), 64);
+    const derived = crypto13.scryptSync(password, Buffer.from(saltHex, "hex"), 64);
     const expectedBuf = Buffer.from(expectedHashHex, "hex");
     if (derived.length !== expectedBuf.length) return false;
-    return crypto12.timingSafeEqual(derived, expectedBuf);
+    return crypto13.timingSafeEqual(derived, expectedBuf);
   } catch {
     return false;
   }
@@ -11046,12 +11396,8 @@ function validateAndSanitizeImageBuffer(buf) {
     };
   }
   return {
-    valid: true,
-    mimeType: "image/jpeg",
-    extension: "jpg",
-    sanitizedBuffer: buf,
-    width: 1920,
-    height: 1080
+    valid: false,
+    error: "Formato de imagem n\xE3o suportado ou assinatura bin\xE1ria inv\xE1lida. Envie PNG, JPG, WebP, GIF, BMP, AVIF ou ICO."
   };
 }
 function getDefaultSystemConfig() {
@@ -11100,15 +11446,15 @@ function normalizeIdentifier(raw) {
   return String(raw || "").trim().toLowerCase();
 }
 function loadOrInitDatabase() {
-  if (!fs11.existsSync(DATA_DIR)) {
-    fs11.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs12.existsSync(DATA_DIR)) {
+    fs12.mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!fs11.existsSync(UPLOADS_DIR)) {
-    fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
+  if (!fs12.existsSync(UPLOADS_DIR)) {
+    fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
-  if (fs11.existsSync(DB_FILE_PATH)) {
+  if (fs12.existsSync(DB_FILE_PATH)) {
     try {
-      const raw = fs11.readFileSync(DB_FILE_PATH, "utf8");
+      const raw = fs12.readFileSync(DB_FILE_PATH, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.users) && parsed.users.length > 0) {
         if (!parsed.systemConfig) {
@@ -11160,14 +11506,24 @@ function loadOrInitDatabase() {
   }
   throw new Error("Banco ausente ou inv\xE1lido. Restaure o banco existente; cria\xE7\xE3o autom\xE1tica de contas desabilitada.");
 }
+function pruneExpiredSessions(db) {
+  if (!db.sessions || typeof db.sessions !== "object") return;
+  const now = Date.now();
+  for (const [sid, sess] of Object.entries(db.sessions)) {
+    if (!sess || typeof sess.expiresAt !== "number" || now >= sess.expiresAt) {
+      delete db.sessions[sid];
+    }
+  }
+}
 function saveLocalDbFile(db) {
   try {
-    if (!fs11.existsSync(DATA_DIR)) {
-      fs11.mkdirSync(DATA_DIR, { recursive: true });
+    pruneExpiredSessions(db);
+    if (!fs12.existsSync(DATA_DIR)) {
+      fs12.mkdirSync(DATA_DIR, { recursive: true });
     }
     const tmpFile = `${DB_FILE_PATH}.tmp-${process.pid}-${Date.now()}`;
-    fs11.writeFileSync(tmpFile, JSON.stringify(db, null, 2), "utf8");
-    fs11.renameSync(tmpFile, DB_FILE_PATH);
+    fs12.writeFileSync(tmpFile, JSON.stringify(db, null, 2), "utf8");
+    fs12.renameSync(tmpFile, DB_FILE_PATH);
   } catch (err) {
     console.warn("saveLocalDbFile notice:", err.message);
   }
@@ -11459,6 +11815,14 @@ async function syncAllModulesFromNeonIfNeeded(force = false) {
           })
         );
       }
+      if (shouldPull("rodovar-chats")) {
+        tasks.push(
+          loadStateSnapshotFromNeon("rodovar-chats").then((chatsSnap) => {
+            if (chatsSnap?.payload) hydrateChatsFromPayload(chatsSnap.payload);
+            localNeonTimestamps["rodovar-chats"] = remoteTs["rodovar-chats"];
+          })
+        );
+      }
       if (tasks.length > 0) {
         await Promise.all(tasks);
       }
@@ -11537,7 +11901,7 @@ function sanitizeUserForClient(user, config) {
 }
 function appendAuditLog(actorId, actorName, actorRole, action, details, ip) {
   const now = /* @__PURE__ */ new Date();
-  const logId = `aud-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`;
+  const logId = `aud-${Date.now()}-${crypto13.randomBytes(3).toString("hex")}`;
   const timestampIso = now.toISOString();
   const timestampFormatted = now.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   dbState.auditLogs.unshift({
@@ -11636,11 +12000,16 @@ function countActiveAdmins() {
 var rawSessionSecret = (process.env.SESSION_SECRET || "").trim();
 var STATELESS_SESSION_SECRET = rawSessionSecret;
 if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
-  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
-    const seedMaterial = (process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.VERCEL_PROJECT_ID || "rodovar-conecta-serverless-default-session-seed").trim();
-    STATELESS_SESSION_SECRET = crypto12.createHash("sha256").update(`rodovar-session-secret:${seedMaterial}`).digest("hex");
+  const envSeed = (process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.DATABASE_URL_UNPOOLED || "").trim();
+  if (envSeed) {
+    STATELESS_SESSION_SECRET = crypto13.createHash("sha256").update(`rodovar-session-secret:${envSeed}`).digest("hex");
     console.warn(
-      "SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo determin\xEDstico derivado do ambiente."
+      "SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo derivado de vari\xE1vel privada do ambiente."
+    );
+  } else if (isIsolatedTestEnv() || process.env.NODE_ENV !== "production") {
+    STATELESS_SESSION_SECRET = crypto13.randomBytes(32).toString("hex");
+    console.warn(
+      "SESSION_SECRET ausente; usando segredo ef\xEAmero gerado em runtime para ambiente local."
     );
   } else {
     throw new Error(
@@ -11651,14 +12020,14 @@ if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
 var revokedSessionIds = /* @__PURE__ */ new Set();
 var revokedUserAfterMap = /* @__PURE__ */ new Map();
 function createSignedStatelessSession(userId, createdAt, expiresAt, ip, userAgent) {
-  const nonce = crypto12.randomBytes(8).toString("hex");
+  const nonce = crypto13.randomBytes(8).toString("hex");
   const payloadB64 = Buffer.from(
     JSON.stringify({ u: userId, c: createdAt, e: expiresAt, n: nonce }),
     "utf8"
   ).toString("base64url");
-  const sig = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
+  const sig = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
   const sessionId = `s1.${payloadB64}.${sig}`;
-  const csrfToken = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sessionId}:csrf`).digest("hex").slice(0, 48);
+  const csrfToken = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sessionId}:csrf`).digest("hex").slice(0, 48);
   const record = {
     sessionId,
     csrfToken,
@@ -11686,7 +12055,7 @@ function resolveSessionRecord(sid) {
   const parts = sid.split(".");
   if (parts.length !== 3) return void 0;
   const [, payloadB64, sig] = parts;
-  const expectedSig = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
+  const expectedSig = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(payloadB64).digest("base64url");
   if (sig !== expectedSig) return void 0;
   try {
     const parsed = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
@@ -11694,7 +12063,7 @@ function resolveSessionRecord(sid) {
     const createdAt = Number(parsed.c || 0);
     const revokedAt = revokedUserAfterMap.get(parsed.u);
     if (revokedAt && createdAt <= revokedAt) return void 0;
-    const csrfToken = crypto12.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sid}:csrf`).digest("hex").slice(0, 48);
+    const csrfToken = crypto13.createHmac("sha256", STATELESS_SESSION_SECRET).update(`${sid}:csrf`).digest("hex").slice(0, 48);
     const reconstructed = {
       sessionId: sid,
       csrfToken,
@@ -11865,18 +12234,36 @@ function createExpressApp() {
         return;
       }
     }
-    if (req.path.startsWith("/auth") || req.path.startsWith("/profile") || req.method === "GET" && (req.path === "/system-config" || req.path === "/system-config/version" || req.path === "/economic-mode" || req.path === "/neon/health" || req.path === "/health") || req.path === "/rh-external/webhook" || req.path === "/pagamentos/share-target" || req.path.startsWith("/pagamentos/shared-staging/")) {
+    if (req.path.startsWith("/auth") || req.method === "GET" && (req.path === "/system-config" || req.path === "/system-config/version" || req.path === "/economic-mode" || req.path === "/neon/health" || req.path === "/health") || req.path === "/rh-external/webhook" || req.path === "/pagamentos/share-target" || req.path.startsWith("/pagamentos/shared-staging/")) {
       return next();
     }
     requireApprovedSession(req, res, () => {
       const user = req.sessionUser;
-      if (user.mustChangePassword) {
-        res.status(403).json({ error: "Troque sua senha antes de continuar.", code: "PASSWORD_CHANGE_REQUIRED" });
+      const isSelfOnboardingProfileRoute = req.path === "/profile" || req.path === "/profile/avatar" || req.path === "/profile/restore-default-avatar";
+      if (user.mustChangePassword && !isSelfOnboardingProfileRoute) {
+        res.status(403).json({
+          error: "Troque sua senha antes de continuar.",
+          code: "PASSWORD_CHANGE_REQUIRED"
+        });
         return;
       }
-      if (req.path.startsWith("/pagamentos") && !["GET", "HEAD"].includes(req.method) && user.accessProfile !== "FINANCEIRO" && user.accessLevel !== "ADMINISTRADOR") {
-        res.status(403).json({ error: "A\xE7\xE3o exclusiva do Financeiro." });
-        return;
+      if (req.path.startsWith("/pagamentos") && !["GET", "HEAD"].includes(req.method)) {
+        const isConfirmAction = /\/confirmar$/.test(req.path);
+        if (isConfirmAction) {
+          if (!canConfirmFreightPayment(user) && user.accessLevel !== "ADMINISTRADOR") {
+            res.status(403).json({
+              error: "A\xE7\xE3o exclusiva do Financeiro.",
+              code: "FORBIDDEN_CONFIRM_PAYMENT"
+            });
+            return;
+          }
+        } else if (!canAccessFinanceiroFreights(user)) {
+          res.status(403).json({
+            error: "A\xE7\xE3o exclusiva do Financeiro.",
+            code: "FORBIDDEN_FINANCEIRO"
+          });
+          return;
+        }
       }
       if (req.path.startsWith("/meus-fretes") && !["GET", "HEAD"].includes(req.method) && !req.path.includes("/notifications")) {
         const p = req.path, profile = user.accessProfile;
@@ -12047,13 +12434,7 @@ function createExpressApp() {
     }
     const user = findUserByIdentifier(normIdentifier);
     const trimmedPassword = rawPassword.trim();
-    let passwordMatches = user ? verifyPasswordTimingSafe(rawPassword, user.passwordHash, user.passwordSalt) || trimmedPassword !== rawPassword && verifyPasswordTimingSafe(trimmedPassword, user.passwordHash, user.passwordSalt) : verifyPasswordTimingSafe(rawPassword, DUMMY_HASH_HEX, DUMMY_SALT_HEX) && false;
-    if (!passwordMatches && user && (user.id === "emp-teste-logistica" || user.login === "teste") && (trimmedPassword === "teste" || trimmedPassword === "rodovar2027#@")) {
-      passwordMatches = true;
-    }
-    if (!passwordMatches && user && (trimmedPassword === "rodovar2027#@" || trimmedPassword === "pedigree2027#@")) {
-      passwordMatches = true;
-    }
+    const passwordMatches = user ? verifyPasswordTimingSafe(rawPassword, user.passwordHash, user.passwordSalt) || trimmedPassword !== rawPassword && verifyPasswordTimingSafe(trimmedPassword, user.passwordHash, user.passwordSalt) : verifyPasswordTimingSafe(rawPassword, DUMMY_HASH_HEX, DUMMY_SALT_HEX) && false;
     if (!user || !passwordMatches) {
       lock.consecutiveFailures += 1;
       lock.lastFailureAt = serverNow;
@@ -12187,112 +12568,6 @@ function createExpressApp() {
       systemConfig: dbState.systemConfig
     });
   });
-  app.post("/api/auth/request-access", (req, res) => {
-    const ip = req.ip || "unknown";
-    if (!checkIpRateLimit(ip, "request_access", 8)) {
-      res.status(429).json({
-        error: "Muitas solicita\xE7\xF5es enviadas em sequ\xEAncia. Aguarde alguns instantes.",
-        code: "RATE_LIMITED"
-      });
-      return;
-    }
-    const { name, username, department, password, websiteHoneypot } = req.body || {};
-    if (websiteHoneypot) {
-      res.status(400).json({ error: "Solicita\xE7\xE3o inv\xE1lida." });
-      return;
-    }
-    const cleanName = String(name || "").trim().replace(/[<>]/g, "");
-    const rawUsername = normalizeIdentifier(username).replace(/[<>]/g, "");
-    const cleanDept = String(department || "Operacional").trim();
-    const rawPass = String(password || "");
-    if (!cleanName || cleanName.length < 3) {
-      res.status(400).json({
-        error: "Informe seu nome completo (m\xEDnimo de 3 caracteres)."
-      });
-      return;
-    }
-    if (!rawUsername || rawUsername.length < 3) {
-      res.status(400).json({
-        error: "Informe um nome de usu\xE1rio ou e-mail v\xE1lido (m\xEDnimo de 3 caracteres)."
-      });
-      return;
-    }
-    const allowedDepartments = [
-      "Administrativo",
-      "Operacional",
-      "Recursos Humanos",
-      "Financeiro",
-      "Seguran\xE7a",
-      "Diretoria",
-      "Log\xEDstica"
-    ];
-    const safeDepartment = allowedDepartments.includes(cleanDept) ? cleanDept : "Operacional";
-    const pwCheck = validateStrongPasswordPolicy(rawPass);
-    if (!pwCheck.valid) {
-      res.status(400).json({ error: pwCheck.reason });
-      return;
-    }
-    const existing = findUserByIdentifier(rawUsername);
-    if (existing) {
-      if (existing.approvalStatus === "PENDENTE") {
-        res.status(409).json({
-          error: "J\xE1 existe uma solicita\xE7\xE3o pendente para este usu\xE1rio. Aguarde a libera\xE7\xE3o do administrador.",
-          code: "DUPLICATE_PENDING"
-        });
-        return;
-      }
-      res.status(409).json({
-        error: "Este nome de usu\xE1rio j\xE1 est\xE1 registrado no sistema.",
-        code: "DUPLICATE_USER"
-      });
-      return;
-    }
-    const cleanEmail = rawUsername.includes("@") ? rawUsername : `${rawUsername}@rodovar.com.br`;
-    const { hash, salt } = hashPassword(rawPass);
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    const newPendingUser = {
-      id: `emp-req-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
-      name: cleanName.slice(0, 120),
-      email: cleanEmail.slice(0, 160),
-      login: rawUsername.slice(0, 160),
-      passwordHash: hash,
-      passwordSalt: salt,
-      mustChangePassword: false,
-      roleTitle: `Colaborador (${safeDepartment})`,
-      department: safeDepartment,
-      accessLevel: "FUNCIONARIO",
-      // Always minimal common profile!
-      avatar: "",
-      // Uses neutral default avatar by reference
-      hasCustomAvatar: false,
-      approvalStatus: "PENDENTE",
-      requestedAt: nowIso,
-      phoneExt: "71 9 9920-2476",
-      joinedAt: (/* @__PURE__ */ new Date()).toLocaleDateString("pt-BR"),
-      active: false,
-      // Never active before admin approval!
-      location: "BA - Salvador",
-      phone: "71 9 9920-2476",
-      permissoesPaginas: ["inicio"]
-      // Minimal permissions until admin explicitly grants
-    };
-    dbState.users.unshift(newPendingUser);
-    appendAuditLog(
-      newPendingUser.id,
-      newPendingUser.name,
-      "FUNCIONARIO",
-      "SOLICITACAO_ACESSO_CRIADA",
-      `Nova solicita\xE7\xE3o de acesso registrada como PENDENTE (${newPendingUser.login} \u2022 Setor: ${newPendingUser.department}).`,
-      ip
-    );
-    saveDatabase(dbState);
-    void persistUserToNeon(newPendingUser);
-    res.status(201).json({
-      ok: true,
-      status: "PENDENTE",
-      message: "Solicita\xE7\xE3o recebida. Aguarde a libera\xE7\xE3o do administrador."
-    });
-  });
   app.get("/api/auth/session", (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
     const headerSid = req.headers["x-rodovar-session"];
@@ -12378,8 +12653,8 @@ function createExpressApp() {
     const { identifier } = req.body || {};
     const user = findUserByIdentifier(String(identifier || ""));
     if (user && user.approvalStatus === "APROVADO" && user.active) {
-      const rawToken = `RDV-RST-${crypto12.randomBytes(12).toString("hex").toUpperCase()}`;
-      const tokenHash = crypto12.createHash("sha256").update(rawToken).digest("hex");
+      const rawToken = `RDV-RST-${crypto13.randomBytes(12).toString("hex").toUpperCase()}`;
+      const tokenHash = crypto13.createHash("sha256").update(rawToken).digest("hex");
       const now = Date.now();
       for (const t of dbState.passwordResetTokens) {
         if (t.userId === user.id) t.used = true;
@@ -12430,7 +12705,7 @@ function createExpressApp() {
       res.status(400).json({ error: pwCheck.reason });
       return;
     }
-    const tokenHash = crypto12.createHash("sha256").update(rawToken).digest("hex");
+    const tokenHash = crypto13.createHash("sha256").update(rawToken).digest("hex");
     const now = Date.now();
     const record = dbState.passwordResetTokens.find(
       (t) => t.tokenHash === tokenHash && !t.used && now < t.expiresAt
@@ -12611,7 +12886,7 @@ function createExpressApp() {
         if (cleanReason) targetUser.statusReason = cleanReason;
       }
       const decisionRecord = {
-        id: `dec-${Date.now()}-${crypto12.randomBytes(3).toString("hex")}`,
+        id: `dec-${Date.now()}-${crypto13.randomBytes(3).toString("hex")}`,
         targetUserId: targetUser.id,
         targetName: targetUser.name,
         targetLogin: targetUser.login,
@@ -12688,7 +12963,7 @@ function createExpressApp() {
       cleanRoleTitle
     );
     const newUser = {
-      id: `emp-${Date.now()}-${crypto12.randomBytes(2).toString("hex")}`,
+      id: `emp-${Date.now()}-${crypto13.randomBytes(2).toString("hex")}`,
       name: cleanName,
       email: email ? normalizeIdentifier(email) : normLogin.includes("@") ? normLogin : `${normLogin}@rodovar.com.br`,
       login: normLogin,
@@ -12753,12 +13028,21 @@ function createExpressApp() {
       accessProfile,
       phoneExt,
       permissoesPaginas,
-      mustChangePassword
+      mustChangePassword,
+      active
     } = req.body || {};
-    if (target.accessLevel === "ADMINISTRADOR" && target.approvalStatus === "APROVADO" && target.active && accessLevel && accessLevel !== "ADMINISTRADOR") {
+    const protectedAdminUid = dbState.accessPolicy?.protectedAdminUid || "emp-admin-master";
+    if (active === false && target.id === protectedAdminUid) {
+      res.status(409).json({
+        error: "Opera\xE7\xE3o bloqueada: n\xE3o \xE9 permitido desativar o Administrador Master protegido.",
+        code: "PROTECTED_ADMIN_DEACTIVATION"
+      });
+      return;
+    }
+    if (target.accessLevel === "ADMINISTRADOR" && target.approvalStatus === "APROVADO" && target.active && (accessLevel && accessLevel !== "ADMINISTRADOR" || active === false)) {
       if (countActiveAdmins() <= 1) {
         res.status(409).json({
-          error: "Opera\xE7\xE3o bloqueada: n\xE3o \xE9 permitido remover o privil\xE9gio do \xFAltimo administrador ativo.",
+          error: "Opera\xE7\xE3o bloqueada: n\xE3o \xE9 permitido remover ou desativar o \xFAltimo administrador ativo.",
           code: "LAST_ADMIN_PROTECTION"
         });
         return;
@@ -12772,14 +13056,16 @@ function createExpressApp() {
     if (accessLevel && ["FUNCIONARIO", "ADMINISTRADOR", "DIRETORIA"].includes(accessLevel)) {
       target.accessLevel = accessLevel;
     }
-    const resolvedProfile = resolveAccessProfileFromSector(
-      target.department,
-      target.accessLevel,
-      accessProfile,
-      target.roleTitle
-    );
-    if (resolvedProfile) {
-      target.accessProfile = resolvedProfile;
+    if (department !== void 0 || accessLevel !== void 0 || accessProfile !== void 0) {
+      const resolvedProfile = resolveAccessProfileFromSector(
+        target.department,
+        target.accessLevel,
+        accessProfile,
+        target.roleTitle
+      );
+      if (resolvedProfile) {
+        target.accessProfile = resolvedProfile;
+      }
     }
     if (phoneExt !== void 0) {
       target.phoneExt = String(phoneExt).trim();
@@ -12790,6 +13076,9 @@ function createExpressApp() {
     }
     if (typeof mustChangePassword === "boolean") {
       target.mustChangePassword = mustChangePassword;
+    }
+    if (typeof active === "boolean") {
+      target.active = active;
     }
     if (password && String(password).trim() !== "") {
       const pwCheck = validateStrongPasswordPolicy(String(password));
@@ -12809,8 +13098,76 @@ function createExpressApp() {
       `Atualizou dados/permiss\xF5es de ${target.name} (${target.login} \u2022 ${target.accessLevel}).`,
       req.ip
     );
-    revokeAllSessionsForUser(target.id);
-    void persistUserToNeon(target);
+    if (target.id === admin.id && req.sessionRecord?.sessionId) {
+      for (const [sid, session] of Object.entries(dbState.sessions)) {
+        if (session.userId === target.id && sid !== req.sessionRecord.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, target.id);
+          delete dbState.sessions[sid];
+        }
+      }
+    } else {
+      revokeAllSessionsForUser(target.id);
+    }
+    await persistUserToNeon(target);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
+    res.json({
+      ok: true,
+      user: sanitizeUserForClient(target, dbState.systemConfig)
+    });
+  });
+  app.post("/api/admin/users/:userId/password", requireAdminSession, async (req, res) => {
+    const admin = req.sessionUser;
+    const targetId = String(req.params.userId || "");
+    const target = dbState.users.find((u) => u.id === targetId);
+    if (!target) {
+      res.status(404).json({ error: "Colaborador n\xE3o encontrado." });
+      return;
+    }
+    const { password, mustChangePassword } = req.body || {};
+    const pwStr = String(password || "");
+    const pwCheck = validateStrongPasswordPolicy(pwStr);
+    if (!pwCheck.valid) {
+      res.status(400).json({ error: pwCheck.reason });
+      return;
+    }
+    const { hash, salt } = hashPassword(pwStr);
+    target.passwordHash = hash;
+    target.passwordSalt = salt;
+    target.mustChangePassword = typeof mustChangePassword === "boolean" ? mustChangePassword : false;
+    for (const identifier of [target.login, target.email, target.id].filter(Boolean)) {
+      const lockKey = getCanonicalLockKey(String(identifier));
+      if (dbState.loginLocks[lockKey]) {
+        dbState.loginLocks[lockKey] = {
+          identifier: lockKey,
+          consecutiveFailures: 0,
+          blockedUntil: null,
+          lastFailureAt: 0
+        };
+        void persistLoginLockToNeon(dbState.loginLocks[lockKey]);
+      }
+    }
+    if (target.id === admin.id && req.sessionRecord?.sessionId) {
+      for (const [sid, session] of Object.entries(dbState.sessions)) {
+        if (session.userId === target.id && sid !== req.sessionRecord.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, target.id);
+          delete dbState.sessions[sid];
+        }
+      }
+    } else {
+      revokeAllSessionsForUser(target.id);
+    }
+    appendAuditLog(
+      admin.id,
+      admin.name,
+      admin.accessLevel,
+      "ALTERACAO_SENHA_PELO_ADMIN",
+      `Alterou a senha de ${target.name} (${target.login})${target.mustChangePassword ? " com troca obrigat\xF3ria no pr\xF3ximo acesso" : ""}.`,
+      req.ip
+    );
+    await persistUserToNeon(target);
     await saveDatabaseAsync(dbState);
     await flushPendingNeonWrites();
     res.json({
@@ -12861,11 +13218,11 @@ function createExpressApp() {
       });
       return;
     }
-    const fileName = `avatar-${crypto12.randomUUID()}.${validation.extension}`;
-    const filePath = path11.join(UPLOADS_DIR, fileName);
+    const fileName = `avatar-${crypto13.randomUUID()}.${validation.extension}`;
+    const filePath = path12.join(UPLOADS_DIR, fileName);
     try {
-      fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
-      fs11.writeFileSync(filePath, validation.sanitizedBuffer);
+      fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
+      fs12.writeFileSync(filePath, validation.sanitizedBuffer);
     } catch {
     }
     void persistSystemAssetToNeon({
@@ -12878,10 +13235,10 @@ function createExpressApp() {
     });
     if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith("/uploads/avatar-")) {
       const oldClean = targetUser.avatar.split("?")[0];
-      const oldFsPath = path11.join(PUBLIC_DIR, oldClean);
-      if (fs11.existsSync(oldFsPath)) {
+      const oldFsPath = path12.join(PUBLIC_DIR, oldClean);
+      if (fs12.existsSync(oldFsPath)) {
         try {
-          fs11.unlinkSync(oldFsPath);
+          fs12.unlinkSync(oldFsPath);
         } catch {
         }
       }
@@ -12926,10 +13283,10 @@ function createExpressApp() {
       }
       if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith("/uploads/avatar-")) {
         const oldClean = targetUser.avatar.split("?")[0];
-        const oldFsPath = path11.join(PUBLIC_DIR, oldClean);
-        if (fs11.existsSync(oldFsPath)) {
+        const oldFsPath = path12.join(PUBLIC_DIR, oldClean);
+        if (fs12.existsSync(oldFsPath)) {
           try {
-            fs11.unlinkSync(oldFsPath);
+            fs12.unlinkSync(oldFsPath);
           } catch {
           }
         }
@@ -13093,10 +13450,10 @@ function createExpressApp() {
     async (req, res, next) => {
       const rawId = req.params.assetId || req.params.fileName;
       if (!rawId) return next();
-      const subDir = req.params.subDir ? path11.basename(req.params.subDir) : "";
-      const fileName = path11.basename(rawId);
-      const diskPath = subDir ? path11.join(UPLOADS_DIR, subDir, fileName) : path11.join(UPLOADS_DIR, fileName);
-      if (fs11.existsSync(diskPath)) {
+      const subDir = req.params.subDir ? path12.basename(req.params.subDir) : "";
+      const fileName = path12.basename(rawId);
+      const diskPath = subDir ? path12.join(UPLOADS_DIR, subDir, fileName) : path12.join(UPLOADS_DIR, fileName);
+      if (fs12.existsSync(diskPath)) {
         res.setHeader("Cache-Control", "public, max-age=86400, must-revalidate");
         return res.sendFile(diskPath);
       }
@@ -13108,25 +13465,25 @@ function createExpressApp() {
       const asset = await getSystemAssetFromNeon(assetId) || await getSystemAssetFromNeon(fileName);
       if (asset && asset.buffer) {
         try {
-          fs11.mkdirSync(path11.dirname(diskPath), { recursive: true });
-          fs11.writeFileSync(diskPath, asset.buffer);
+          fs12.mkdirSync(path12.dirname(diskPath), { recursive: true });
+          fs12.writeFileSync(diskPath, asset.buffer);
         } catch {
         }
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
         return res.type(asset.mimeType || "image/jpeg").send(asset.buffer);
       }
       if (fileName.includes("topHeader")) {
-        const fallback = path11.join(PUBLIC_DIR, "assets/header-sunset.jpg");
-        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+        const fallback = path12.join(PUBLIC_DIR, "assets/header-sunset.jpg");
+        if (fs12.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes("welcomeBanner")) {
-        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-frota-pesada-institucional.jpg");
-        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+        const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-frota-pesada-institucional.jpg");
+        if (fs12.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes("sidebarPoster")) {
-        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-truck-yellow.png");
-        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+        const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-truck-yellow.png");
+        if (fs12.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes("defaultAvatar") || fileName.includes("avatar")) {
-        const fallback = path11.join(PUBLIC_DIR, "assets/rodovar-avatar-default.png");
-        if (fs11.existsSync(fallback)) return res.sendFile(fallback);
+        const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-avatar-default.png");
+        if (fs12.existsSync(fallback)) return res.sendFile(fallback);
       }
       next();
     }
@@ -13176,12 +13533,12 @@ function createExpressApp() {
       const width = validation.width || rec.w;
       const height = validation.height || rec.h;
       const lowResolutionWarning = width < rec.w * 0.75 || height < rec.h * 0.75;
-      const assetId = crypto12.randomUUID();
+      const assetId = crypto13.randomUUID();
       const fileName = `sysconfig-${slot}-${assetId}.${validation.extension}`;
-      const filePath = path11.join(UPLOADS_DIR, fileName);
+      const filePath = path12.join(UPLOADS_DIR, fileName);
       try {
-        fs11.mkdirSync(UPLOADS_DIR, { recursive: true });
-        fs11.writeFileSync(filePath, validation.sanitizedBuffer);
+        fs12.mkdirSync(UPLOADS_DIR, { recursive: true });
+        fs12.writeFileSync(filePath, validation.sanitizedBuffer);
       } catch {
       }
       const dataBase64 = validation.sanitizedBuffer.toString("base64");
@@ -13350,6 +13707,7 @@ function createExpressApp() {
   registerAgenda(app, requireApprovedSession, () => dbState.users);
   registerMural(app, requireApprovedSession, dbState, () => saveMuralStateAsync(dbState), INITIAL_ANNOUNCEMENTS);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
+  registerChats(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
   app.post("/api/admin/first-access/:uid", requireAdminSession, async (req, res) => {
@@ -13359,13 +13717,13 @@ function createExpressApp() {
       res.status(403).json({ error: "Identidade ainda n\xE3o vinculada \xE0 lista autorizada." });
       return;
     }
-    const token = "RDV-RST-" + crypto12.randomBytes(24).toString("hex").toUpperCase();
+    const token = "RDV-RST-" + crypto13.randomBytes(24).toString("hex").toUpperCase();
     for (const t of dbState.passwordResetTokens) {
       if (t.userId === user.id) t.used = true;
     }
     void markUserPasswordResetTokensUsedInNeon(user.id);
     const newTokenRecord = {
-      tokenHash: crypto12.createHash("sha256").update(token).digest("hex"),
+      tokenHash: crypto13.createHash("sha256").update(token).digest("hex"),
       userId: user.id,
       createdAt: Date.now(),
       expiresAt: Date.now() + 864e5,
@@ -13393,10 +13751,10 @@ function createExpressApp() {
     requireApprovedSession,
     appendAuditLog
   );
-  const DOCS_UPLOADS_DIR = path11.join(UPLOADS_DIR, "documents");
+  const DOCS_UPLOADS_DIR = path12.join(UPLOADS_DIR, "documents");
   try {
-    if (!fs11.existsSync(DOCS_UPLOADS_DIR)) {
-      fs11.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+    if (!fs12.existsSync(DOCS_UPLOADS_DIR)) {
+      fs12.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
     }
   } catch {
   }
@@ -13447,12 +13805,12 @@ function createExpressApp() {
           });
           return;
         }
-        const fileId = `doc-att-${Date.now()}-${crypto12.randomBytes(4).toString("hex")}`;
+        const fileId = `doc-att-${Date.now()}-${crypto13.randomBytes(4).toString("hex")}`;
         const fileName = `${fileId}.${ext}`;
-        const filePath = path11.join(DOCS_UPLOADS_DIR, fileName);
+        const filePath = path12.join(DOCS_UPLOADS_DIR, fileName);
         try {
-          fs11.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
-          fs11.writeFileSync(filePath, buffer);
+          fs12.mkdirSync(DOCS_UPLOADS_DIR, { recursive: true });
+          fs12.writeFileSync(filePath, buffer);
         } catch {
         }
         void persistSystemAssetToNeon({
@@ -13508,8 +13866,8 @@ function createExpressApp() {
       }
     })
   );
-  const bundledPublicDir = path11.join(process.cwd(), "public");
-  if (bundledPublicDir !== PUBLIC_DIR && fs11.existsSync(bundledPublicDir)) {
+  const bundledPublicDir = path12.join(process.cwd(), "public");
+  if (bundledPublicDir !== PUBLIC_DIR && fs12.existsSync(bundledPublicDir)) {
     app.use(express.static(bundledPublicDir));
   }
   app.all("/api/*", (_req, res) => {
@@ -13531,12 +13889,12 @@ function createExpressApp() {
 }
 async function startServer() {
   const app = createExpressApp();
-  const candidateDist = fs11.existsSync(path11.join(ROOT_DIR3, "dist")) ? path11.join(ROOT_DIR3, "dist") : path11.join(process.cwd(), "dist");
-  const isProd = process.env.NODE_ENV === "production" && fs11.existsSync(candidateDist);
+  const candidateDist = fs12.existsSync(path12.join(ROOT_DIR3, "dist")) ? path12.join(ROOT_DIR3, "dist") : path12.join(process.cwd(), "dist");
+  const isProd = process.env.NODE_ENV === "production" && fs12.existsSync(candidateDist);
   if (isProd) {
     app.use(express.static(candidateDist));
     app.get("*", (_req, res) => {
-      res.sendFile(path11.join(candidateDist, "index.html"));
+      res.sendFile(path12.join(candidateDist, "index.html"));
     });
   } else {
     const { createServer: createViteServer } = await import("vite");
@@ -13551,7 +13909,8 @@ async function startServer() {
     console.log(`RODOVAR CONECTA Server running on http://${host}:${PORT}`);
   });
 }
-if (process.env.VERCEL !== "1") {
+var isAutomatedTestProcess = Boolean(process.env.NODE_TEST_CONTEXT) || Boolean(process.env.RODOVAR_SKIP_AUTOSTART) || process.execArgv.includes("--test") || process.argv.includes("--test");
+if (process.env.VERCEL !== "1" && !isAutomatedTestProcess) {
   startServer().catch((err) => {
     console.error("Failed to start RODOVAR server:", err);
     process.exit(1);

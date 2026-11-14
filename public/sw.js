@@ -119,8 +119,7 @@ function isSensitiveOrAuthenticatedRequest(request, url) {
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/uploads/') ||
     url.pathname.includes('comprovante') ||
-    url.pathname.includes('pagamentos') ||
-    url.pathname.includes('firestore.googleapis.com')
+    url.pathname.includes('pagamentos')
   ) {
     return true;
   }

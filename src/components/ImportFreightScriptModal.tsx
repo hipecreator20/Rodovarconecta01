@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, CheckCircle2, ClipboardPaste, FileUp, Sparkles, X } from 'lucide-react';
 import { parseOperationalTrafficScript, ParsedTrafficScript } from '../lib/carrierLogos';
+import { emitPortalToast } from './ui/GlobalToastViewport';
 
 interface ImportFreightScriptModalProps {
   isOpen: boolean;
@@ -100,7 +101,9 @@ export const ImportFreightScriptModal: React.FC<ImportFreightScriptModalProps> =
   const handleFillForm = () => {
     setErrorMsg(null);
     if (!scriptText.trim() || filledCount === 0) {
-      setErrorMsg('Cole um script válido antes de importar.');
+      const msg = 'Cole um script válido antes de importar.';
+      setErrorMsg(msg);
+      emitPortalToast({ type: 'error', title: 'Script inválido', message: msg });
       return;
     }
     onFillForm?.(parsed);
@@ -111,13 +114,16 @@ export const ImportFreightScriptModal: React.FC<ImportFreightScriptModalProps> =
   const handleDirectImport = async () => {
     setErrorMsg(null);
     if (!scriptText.trim() || filledCount === 0) {
-      setErrorMsg('Cole um script válido antes de importar.');
+      const msg = 'Cole um script válido antes de importar.';
+      setErrorMsg(msg);
+      emitPortalToast({ type: 'error', title: 'Script inválido', message: msg });
       return;
     }
     if (!parsed.cliente || !parsed.origem || !parsed.destino) {
-      setErrorMsg(
-        'Para criar o frete diretamente, o script precisa conter pelo menos CLIENTE, ORIGEM e DESTINO (ou clique em "Preencher formulário" para completar).'
-      );
+      const msg =
+        'Para criar o frete diretamente, o script precisa conter pelo menos CLIENTE, ORIGEM e DESTINO (ou clique em "Preencher formulário" para completar).';
+      setErrorMsg(msg);
+      emitPortalToast({ type: 'error', title: 'Campos obrigatórios ausentes', message: msg });
       return;
     }
     if (!onImportDirect) return;
@@ -127,7 +133,9 @@ export const ImportFreightScriptModal: React.FC<ImportFreightScriptModalProps> =
       setScriptText('');
       onClose();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao importar frete.');
+      const msg = err instanceof Error ? err.message : 'Erro ao importar frete.';
+      setErrorMsg(msg);
+      emitPortalToast({ type: 'error', title: 'Erro ao importar frete', message: msg });
     } finally {
       setSubmitting(false);
     }

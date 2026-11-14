@@ -11,6 +11,7 @@ import {
   deleteSocialCommentFromNeon,
   persistStateSnapshotToNeon,
   persistSystemAssetToNeon,
+  persistUserToNeon,
 } from '../../neon.ts';
 import type { SocialPost, SocialComment, UserSocialProfile, SocialLinks } from '../types/index.ts';
 
@@ -251,14 +252,29 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
 
     if (typeof bio === 'string') profile.bio = bio.trim().slice(0, 1000);
+    let syncedUserRecord: any = null;
     if (typeof customDisplayName === 'string' && customDisplayName.trim()) {
       profile.customDisplayName = customDisplayName.trim().slice(0, 150);
       // Synchronize with user object if applicable
       const u = dbState.users.find((user: any) => user.id === sessionUser.id);
-      if (u) u.name = profile.customDisplayName;
+      if (u) {
+        u.name = profile.customDisplayName;
+        syncedUserRecord = u;
+      }
     }
-    if (typeof phone === 'string') profile.phone = phone.trim().slice(0, 50);
+    if (typeof phone === 'string') {
+      profile.phone = phone.trim().slice(0, 50);
+      const u = dbState.users.find((user: any) => user.id === sessionUser.id);
+      if (u) {
+        u.phoneExt = profile.phone;
+        u.phone = profile.phone;
+        syncedUserRecord = u;
+      }
+    }
     if (typeof location === 'string') profile.location = location.trim().slice(0, 100);
+    if (syncedUserRecord) {
+      void persistUserToNeon(syncedUserRecord).catch(() => {});
+    }
     if (typeof coverUrl === 'string' && coverUrl.trim()) profile.coverUrl = coverUrl.trim();
 
     if (socialLinks && typeof socialLinks === 'object') {
@@ -290,44 +306,95 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     });
   });
 
+function validateSocialImageBuffer(
+  buf: Buffer
+): { valid: boolean; mimeType?: string; ext?: string; error?: string } {
+  if (!buf || buf.length < 12) {
+    return { valid: false, error: 'Arquivo de imagem vazio ou corrompido.' };
+  }
+  if (buf.length > 5 * 1024 * 1024) {
+    return { valid: false, error: 'A imagem excede o limite de 5 MB.' };
+  }
+  const headAscii = buf.subarray(0, Math.min(buf.length, 256)).toString('utf8').toLowerCase();
+  if (
+    headAscii.includes('<svg') ||
+    headAscii.includes('<?xml') ||
+    headAscii.includes('<script') ||
+    headAscii.includes('<html')
+  ) {
+    return { valid: false, error: 'Imagens SVG ou conteúdo ativo não são permitidos.' };
+  }
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { valid: true, mimeType: 'image/png', ext: 'png' };
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { valid: true, mimeType: 'image/jpeg', ext: 'jpg' };
+  }
+  if (
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { valid: true, mimeType: 'image/webp', ext: 'webp' };
+  }
+  const gifSig = buf.subarray(0, 6).toString('ascii');
+  if (gifSig === 'GIF87a' || gifSig === 'GIF89a') {
+    return { valid: true, mimeType: 'image/gif', ext: 'gif' };
+  }
+  if (buf[0] === 0x42 && buf[1] === 0x4d && buf.length >= 26) {
+    return { valid: true, mimeType: 'image/bmp', ext: 'bmp' };
+  }
+  if (buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = buf.subarray(8, 12).toString('ascii');
+    if (brand.includes('avi') || brand.includes('mif') || brand.includes('heic') || brand.includes('msf')) {
+      return { valid: true, mimeType: 'image/avif', ext: 'avif' };
+    }
+  }
+  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01 && buf[3] === 0x00) {
+    return { valid: true, mimeType: 'image/x-icon', ext: 'ico' };
+  }
+  return { valid: false, error: 'Formato de imagem inválido. Envie PNG, JPG, WebP, GIF, BMP, AVIF ou ICO.' };
+}
+
   // 3. POST /api/profile/cover - Upload cover image
   app.post('/api/profile/cover', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { dataUrl, imageUrl } = req.body || {};
 
-    let targetCoverUrl = imageUrl;
+    let targetCoverUrl =
+      typeof imageUrl === 'string' &&
+      (imageUrl.startsWith('/uploads/') || imageUrl.startsWith('/assets/'))
+        ? imageUrl
+        : undefined;
 
-    if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+    if (dataUrl && typeof dataUrl === 'string') {
+      const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (!matches) {
+        return res.status(400).json({ error: 'Formato de imagem inválido.' });
+      }
+      const buffer = Buffer.from(matches[2], 'base64');
+      const check = validateSocialImageBuffer(buffer);
+      if (!check.valid || !check.mimeType || !check.ext) {
+        return res.status(400).json({ error: check.error || 'Imagem inválida.' });
+      }
+      const fileName = `cover-${sessionUser.id}-${Date.now()}.${check.ext}`;
+      const filePath = path.join(uploadsDir, fileName);
       try {
         fs.mkdirSync(uploadsDir, { recursive: true });
-        const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
-        if (!matches) {
-          return res.status(400).json({ error: 'Formato de imagem inválido.' });
-        }
-        const mimeType = `image/${matches[1]}`;
-        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1].replace(/[^a-z0-9]/gi, '');
-        const buffer = Buffer.from(matches[2], 'base64');
-        if (buffer.length > 5 * 1024 * 1024) {
-          return res.status(400).json({ error: 'A foto de capa excede o limite de 5 MB.' });
-        }
-
-        const fileName = `cover-${sessionUser.id}-${Date.now()}.${ext || 'jpg'}`;
-        const filePath = path.join(uploadsDir, fileName);
         fs.writeFileSync(filePath, buffer);
-        await persistSystemAssetToNeon({
-          id: fileName,
-          slot: 'social-cover',
-          mimeType,
-          dataBase64: matches[2],
-        });
-        targetCoverUrl = `/uploads/${fileName}`;
       } catch {
-        targetCoverUrl = dataUrl;
+        // serverless fallback handled by Neon asset persistence below
       }
+      await persistSystemAssetToNeon({
+        id: fileName,
+        slot: 'social-cover',
+        mimeType: check.mimeType,
+        dataBase64: buffer.toString('base64'),
+      });
+      targetCoverUrl = `/uploads/${fileName}`;
     }
 
     if (!targetCoverUrl) {
-      return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
+      return res.status(400).json({ error: 'Nenhuma imagem válida enviada.' });
     }
 
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
@@ -373,28 +440,33 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     if (Array.isArray(images)) {
       for (const img of images.slice(0, 10)) {
         if (typeof img === 'string') {
-          if (img.startsWith('data:image/')) {
+          if (img.startsWith('data:')) {
+            const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+            if (!matches) {
+              return res.status(400).json({ error: 'Uma das imagens enviadas possui formato inválido.' });
+            }
+            const buffer = Buffer.from(matches[2], 'base64');
+            const check = validateSocialImageBuffer(buffer);
+            if (!check.valid || !check.mimeType || !check.ext) {
+              return res.status(400).json({ error: check.error || 'Imagem inválida.' });
+            }
+            const fileName = `post-img-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${check.ext}`;
             try {
               fs.mkdirSync(uploadsDir, { recursive: true });
-              const matches = img.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
-              if (matches) {
-                const mimeType = `image/${matches[1]}`;
-                const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1].replace(/[^a-z0-9]/gi, '');
-                const buffer = Buffer.from(matches[2], 'base64');
-                const fileName = `post-img-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${ext || 'jpg'}`;
-                fs.writeFileSync(path.join(uploadsDir, fileName), buffer);
-                await persistSystemAssetToNeon({
-                  id: fileName,
-                  slot: 'social-post',
-                  mimeType,
-                  dataBase64: matches[2],
-                });
-                validImages.push(`/uploads/${fileName}`);
-                continue;
-              }
-            } catch {}
+              fs.writeFileSync(path.join(uploadsDir, fileName), buffer);
+            } catch {
+              // serverless fallback handled by Neon asset persistence below
+            }
+            await persistSystemAssetToNeon({
+              id: fileName,
+              slot: 'social-post',
+              mimeType: check.mimeType,
+              dataBase64: buffer.toString('base64'),
+            });
+            validImages.push(`/uploads/${fileName}`);
+          } else if (img.startsWith('/uploads/') || img.startsWith('/assets/')) {
+            validImages.push(img);
           }
-          validImages.push(img);
         }
       }
     }

@@ -6,7 +6,8 @@ import { registerMural } from './src/server/mural.ts';
 import { registerExternalRh, hydrateExternalRhFromPayload } from './src/server/externalRh.ts';
 import { hydrateMuralPollsFromPayload } from './src/server/muralPolls.ts';
 import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
-import { hasPagePermission, canOperateMonitoring, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
+import { registerChats, hydrateChatsFromPayload } from './src/server/chats.ts';
+import { hasPagePermission, canOperateMonitoring, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
 import { registerRequestQueue, hydrateRequestQueueFromPayload } from './src/server/requestQueue.ts';
 import { registerAccountDeletionRoutes } from './src/server/accountLifecycle.ts';
@@ -915,14 +916,11 @@ function validateAndSanitizeImageBuffer(buf: Buffer): ValidatedImageResult {
     };
   }
 
-  // 8. General safe image fallback (any standard image under 5 MB passed sanitization)
+  // 8. Reject unrecognized/arbitrary payloads instead of falling back to JPEG
   return {
-    valid: true,
-    mimeType: 'image/jpeg',
-    extension: 'jpg',
-    sanitizedBuffer: buf,
-    width: 1920,
-    height: 1080,
+    valid: false,
+    error:
+      'Formato de imagem não suportado ou assinatura binária inválida. Envie PNG, JPG, WebP, GIF, BMP, AVIF ou ICO.',
   };
 }
 
@@ -1122,8 +1120,19 @@ function loadOrInitDatabase(): ServerDatabase {
   throw new Error('Banco ausente ou inválido. Restaure o banco existente; criação automática de contas desabilitada.');
 }
 
+function pruneExpiredSessions(db: ServerDatabase): void {
+  if (!db.sessions || typeof db.sessions !== 'object') return;
+  const now = Date.now();
+  for (const [sid, sess] of Object.entries(db.sessions)) {
+    if (!sess || typeof sess.expiresAt !== 'number' || now >= sess.expiresAt) {
+      delete db.sessions[sid];
+    }
+  }
+}
+
 function saveLocalDbFile(db: ServerDatabase): void {
   try {
+    pruneExpiredSessions(db);
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
@@ -1486,6 +1495,15 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<boolean> {
         );
       }
 
+      if (shouldPull('rodovar-chats')) {
+        tasks.push(
+          loadStateSnapshotFromNeon<any>('rodovar-chats').then((chatsSnap) => {
+            if (chatsSnap?.payload) hydrateChatsFromPayload(chatsSnap.payload);
+            localNeonTimestamps['rodovar-chats'] = remoteTs['rodovar-chats'];
+          })
+        );
+      }
+
       if (tasks.length > 0) {
         await Promise.all(tasks);
       }
@@ -1701,20 +1719,25 @@ function countActiveAdmins(): number {
 const rawSessionSecret = (process.env.SESSION_SECRET || '').trim();
 let STATELESS_SESSION_SECRET = rawSessionSecret;
 if (!STATELESS_SESSION_SECRET || STATELESS_SESSION_SECRET.length < 32) {
-  if (isNeonConfigured || process.env.VERCEL || process.env.VERCEL_ENV) {
-    const seedMaterial = (
-      process.env.DATABASE_URL ||
-      process.env.POSTGRES_URL ||
-      process.env.POSTGRES_PRISMA_URL ||
-      process.env.VERCEL_PROJECT_ID ||
-      'rodovar-conecta-serverless-default-session-seed'
-    ).trim();
+  const envSeed = (
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_PRISMA_URL ||
+    process.env.DATABASE_URL_UNPOOLED ||
+    ''
+  ).trim();
+  if (envSeed) {
     STATELESS_SESSION_SECRET = crypto
       .createHash('sha256')
-      .update(`rodovar-session-secret:${seedMaterial}`)
+      .update(`rodovar-session-secret:${envSeed}`)
       .digest('hex');
     console.warn(
-      'SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo determinístico derivado do ambiente.'
+      'SESSION_SECRET ausente ou menor que 32 caracteres; usando segredo derivado de variável privada do ambiente.'
+    );
+  } else if (isIsolatedTestEnv() || process.env.NODE_ENV !== 'production') {
+    STATELESS_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+    console.warn(
+      'SESSION_SECRET ausente; usando segredo efêmero gerado em runtime para ambiente local.'
     );
   } else {
     throw new Error(
@@ -2012,7 +2035,6 @@ export function createExpressApp(): express.Express {
     }
     if (
       req.path.startsWith('/auth') ||
-      req.path.startsWith('/profile') ||
       (req.method === 'GET' &&
         (req.path === '/system-config' ||
           req.path === '/system-config/version' ||
@@ -2027,9 +2049,34 @@ export function createExpressApp(): express.Express {
     }
     requireApprovedSession(req, res, () => {
       const user = (req as AuthenticatedRequest).sessionUser!;
-      if (user.mustChangePassword) { res.status(403).json({error:'Troque sua senha antes de continuar.', code:'PASSWORD_CHANGE_REQUIRED'}); return; }
-      if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method) && user.accessProfile !== 'FINANCEIRO' && user.accessLevel !== 'ADMINISTRADOR') {
-        res.status(403).json({error:'Ação exclusiva do Financeiro.'}); return;
+      const isSelfOnboardingProfileRoute =
+        req.path === '/profile' ||
+        req.path === '/profile/avatar' ||
+        req.path === '/profile/restore-default-avatar';
+      if (user.mustChangePassword && !isSelfOnboardingProfileRoute) {
+        res.status(403).json({
+          error: 'Troque sua senha antes de continuar.',
+          code: 'PASSWORD_CHANGE_REQUIRED',
+        });
+        return;
+      }
+      if (req.path.startsWith('/pagamentos') && !['GET','HEAD'].includes(req.method)) {
+        const isConfirmAction = /\/confirmar$/.test(req.path);
+        if (isConfirmAction) {
+          if (!canConfirmFreightPayment(user) && user.accessLevel !== 'ADMINISTRADOR') {
+            res.status(403).json({
+              error: 'Ação exclusiva do Financeiro.',
+              code: 'FORBIDDEN_CONFIRM_PAYMENT',
+            });
+            return;
+          }
+        } else if (!canAccessFinanceiroFreights(user)) {
+          res.status(403).json({
+            error: 'Ação exclusiva do Financeiro.',
+            code: 'FORBIDDEN_FINANCEIRO',
+          });
+          return;
+        }
       }
       if (req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
         const p = req.path, profile = user.accessProfile;
@@ -2248,28 +2295,11 @@ export function createExpressApp(): express.Express {
     // 2. Lookup user and perform constant-time scrypt comparison (even if user does not exist)
     const user = findUserByIdentifier(normIdentifier);
     const trimmedPassword = rawPassword.trim();
-    let passwordMatches = user
+    const passwordMatches = user
       ? verifyPasswordTimingSafe(rawPassword, user.passwordHash, user.passwordSalt) ||
         (trimmedPassword !== rawPassword &&
           verifyPasswordTimingSafe(trimmedPassword, user.passwordHash, user.passwordSalt))
       : verifyPasswordTimingSafe(rawPassword, DUMMY_HASH_HEX, DUMMY_SALT_HEX) && false;
-
-    if (
-      !passwordMatches &&
-      user &&
-      (user.id === 'emp-teste-logistica' || user.login === 'teste') &&
-      (trimmedPassword === 'teste' || trimmedPassword === 'rodovar2027#@')
-    ) {
-      passwordMatches = true;
-    }
-
-    if (
-      !passwordMatches &&
-      user &&
-      (trimmedPassword === 'rodovar2027#@' || trimmedPassword === 'pedigree2027#@')
-    ) {
-      passwordMatches = true;
-    }
 
     if (!user || !passwordMatches) {
       lock.consecutiveFailures += 1;
@@ -2423,131 +2453,7 @@ export function createExpressApp(): express.Express {
 
 
 
-  // --------------------------------------------------------------------------
-  // REQUIREMENT 2: SOLICITAÇÃO DE ACESSO (CREATES PENDENTE ACCOUNT)
-  // --------------------------------------------------------------------------
-  app.post('/api/auth/request-access', (req, res) => {
-    const ip = req.ip || 'unknown';
-    if (!checkIpRateLimit(ip, 'request_access', 8)) {
-      res.status(429).json({
-        error: 'Muitas solicitações enviadas em sequência. Aguarde alguns instantes.',
-        code: 'RATE_LIMITED',
-      });
-      return;
-    }
-
-    // Ignore any approvalStatus, accessLevel, active, or permissoesPaginas sent by the browser!
-    const { name, username, department, password, websiteHoneypot } = req.body || {};
-
-    // Anti-automation honeypot
-    if (websiteHoneypot) {
-      res.status(400).json({ error: 'Solicitação inválida.' });
-      return;
-    }
-
-    const cleanName = String(name || '')
-      .trim()
-      .replace(/[<>]/g, '');
-    const rawUsername = normalizeIdentifier(username).replace(/[<>]/g, '');
-    const cleanDept = String(department || 'Operacional').trim() as Department;
-    const rawPass = String(password || '');
-
-    if (!cleanName || cleanName.length < 3) {
-      res.status(400).json({
-        error: 'Informe seu nome completo (mínimo de 3 caracteres).',
-      });
-      return;
-    }
-    if (!rawUsername || rawUsername.length < 3) {
-      res.status(400).json({
-        error: 'Informe um nome de usuário ou e-mail válido (mínimo de 3 caracteres).',
-      });
-      return;
-    }
-
-    const allowedDepartments: Department[] = [
-      'Administrativo',
-      'Operacional',
-      'Recursos Humanos',
-      'Financeiro',
-      'Segurança',
-      'Diretoria',
-      'Logística',
-    ];
-    const safeDepartment: Department = allowedDepartments.includes(cleanDept)
-      ? cleanDept
-      : 'Operacional';
-
-    const pwCheck = validateStrongPasswordPolicy(rawPass);
-    if (!pwCheck.valid) {
-      res.status(400).json({ error: pwCheck.reason });
-      return;
-    }
-
-    const existing = findUserByIdentifier(rawUsername);
-    if (existing) {
-      if (existing.approvalStatus === 'PENDENTE') {
-        res.status(409).json({
-          error: 'Já existe uma solicitação pendente para este usuário. Aguarde a liberação do administrador.',
-          code: 'DUPLICATE_PENDING',
-        });
-        return;
-      }
-      res.status(409).json({
-        error: 'Este nome de usuário já está registrado no sistema.',
-        code: 'DUPLICATE_USER',
-      });
-      return;
-    }
-
-    const cleanEmail = rawUsername.includes('@')
-      ? rawUsername
-      : `${rawUsername}@rodovar.com.br`;
-
-    const { hash, salt } = hashPassword(rawPass);
-    const nowIso = new Date().toISOString();
-
-    const newPendingUser: ServerUserRecord = {
-      id: `emp-req-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
-      name: cleanName.slice(0, 120),
-      email: cleanEmail.slice(0, 160),
-      login: rawUsername.slice(0, 160),
-      passwordHash: hash,
-      passwordSalt: salt,
-      mustChangePassword: false,
-      roleTitle: `Colaborador (${safeDepartment})`,
-      department: safeDepartment,
-      accessLevel: 'FUNCIONARIO', // Always minimal common profile!
-      avatar: '', // Uses neutral default avatar by reference
-      hasCustomAvatar: false,
-      approvalStatus: 'PENDENTE',
-      requestedAt: nowIso,
-      phoneExt: '71 9 9920-2476',
-      joinedAt: new Date().toLocaleDateString('pt-BR'),
-      active: false, // Never active before admin approval!
-      location: 'BA - Salvador',
-      phone: '71 9 9920-2476',
-      permissoesPaginas: ['inicio'], // Minimal permissions until admin explicitly grants
-    };
-
-    dbState.users.unshift(newPendingUser);
-    appendAuditLog(
-      newPendingUser.id,
-      newPendingUser.name,
-      'FUNCIONARIO',
-      'SOLICITACAO_ACESSO_CRIADA',
-      `Nova solicitação de acesso registrada como PENDENTE (${newPendingUser.login} • Setor: ${newPendingUser.department}).`,
-      ip
-    );
-    saveDatabase(dbState);
-    void persistUserToNeon(newPendingUser);
-
-    res.status(201).json({
-      ok: true,
-      status: 'PENDENTE',
-      message: 'Solicitação recebida. Aguarde a liberação do administrador.',
-    });
-  });
+  // (Cadastro público bloqueado pelo middleware acima com 403 PUBLIC_REGISTRATION_DISABLED)
 
   // --------------------------------------------------------------------------
   // REQUIREMENT 6: VALIDATE CURRENT SESSION & LOGOUT
@@ -3092,20 +2998,29 @@ export function createExpressApp(): express.Express {
       phoneExt,
       permissoesPaginas,
       mustChangePassword,
+      active,
     } = req.body || {};
 
-    // Prevent removing the last active administrator
+    const protectedAdminUid = (dbState as any).accessPolicy?.protectedAdminUid || 'emp-admin-master';
+    if (active === false && target.id === protectedAdminUid) {
+      res.status(409).json({
+        error: 'Operação bloqueada: não é permitido desativar o Administrador Master protegido.',
+        code: 'PROTECTED_ADMIN_DEACTIVATION',
+      });
+      return;
+    }
+
+    // Prevent removing or deactivating the last active administrator
     if (
       target.accessLevel === 'ADMINISTRADOR' &&
       target.approvalStatus === 'APROVADO' &&
       target.active &&
-      accessLevel &&
-      accessLevel !== 'ADMINISTRADOR'
+      ((accessLevel && accessLevel !== 'ADMINISTRADOR') || active === false)
     ) {
       if (countActiveAdmins() <= 1) {
         res.status(409).json({
           error:
-            'Operação bloqueada: não é permitido remover o privilégio do último administrador ativo.',
+            'Operação bloqueada: não é permitido remover ou desativar o último administrador ativo.',
           code: 'LAST_ADMIN_PROTECTION',
         });
         return;
@@ -3120,14 +3035,20 @@ export function createExpressApp(): express.Express {
     if (accessLevel && ['FUNCIONARIO', 'ADMINISTRADOR', 'DIRETORIA'].includes(accessLevel)) {
       target.accessLevel = accessLevel;
     }
-    const resolvedProfile = resolveAccessProfileFromSector(
-      target.department,
-      target.accessLevel,
-      accessProfile,
-      target.roleTitle
-    );
-    if (resolvedProfile) {
-      target.accessProfile = resolvedProfile;
+    if (
+      department !== undefined ||
+      accessLevel !== undefined ||
+      accessProfile !== undefined
+    ) {
+      const resolvedProfile = resolveAccessProfileFromSector(
+        target.department,
+        target.accessLevel,
+        accessProfile,
+        target.roleTitle
+      );
+      if (resolvedProfile) {
+        target.accessProfile = resolvedProfile;
+      }
     }
     if (phoneExt !== undefined) {
       target.phoneExt = String(phoneExt).trim();
@@ -3138,6 +3059,9 @@ export function createExpressApp(): express.Express {
     }
     if (typeof mustChangePassword === 'boolean') {
       target.mustChangePassword = mustChangePassword;
+    }
+    if (typeof active === 'boolean') {
+      target.active = active;
     }
 
     if (password && String(password).trim() !== '') {
@@ -3159,8 +3083,86 @@ export function createExpressApp(): express.Express {
       `Atualizou dados/permissões de ${target.name} (${target.login} • ${target.accessLevel}).`,
       req.ip
     );
-    revokeAllSessionsForUser(target.id);
-    void persistUserToNeon(target);
+    if (target.id === admin.id && req.sessionRecord?.sessionId) {
+      for (const [sid, session] of Object.entries(dbState.sessions)) {
+        if (session.userId === target.id && sid !== req.sessionRecord.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, target.id);
+          delete dbState.sessions[sid];
+        }
+      }
+    } else {
+      revokeAllSessionsForUser(target.id);
+    }
+    await persistUserToNeon(target);
+    await saveDatabaseAsync(dbState);
+    await flushPendingNeonWrites();
+
+    res.json({
+      ok: true,
+      user: sanitizeUserForClient(target, dbState.systemConfig),
+    });
+  });
+
+  app.post('/api/admin/users/:userId/password', requireAdminSession, async (req: AuthenticatedRequest, res) => {
+    const admin = req.sessionUser!;
+    const targetId = String(req.params.userId || '');
+    const target = dbState.users.find((u) => u.id === targetId);
+    if (!target) {
+      res.status(404).json({ error: 'Colaborador não encontrado.' });
+      return;
+    }
+
+    const { password, mustChangePassword } = req.body || {};
+    const pwStr = String(password || '');
+    const pwCheck = validateStrongPasswordPolicy(pwStr);
+    if (!pwCheck.valid) {
+      res.status(400).json({ error: pwCheck.reason });
+      return;
+    }
+
+    const { hash, salt } = hashPassword(pwStr);
+    target.passwordHash = hash;
+    target.passwordSalt = salt;
+    target.mustChangePassword =
+      typeof mustChangePassword === 'boolean' ? mustChangePassword : false;
+
+    // Clear login lockouts for the target user so the new password works immediately
+    for (const identifier of [target.login, target.email, target.id].filter(Boolean)) {
+      const lockKey = getCanonicalLockKey(String(identifier));
+      if (dbState.loginLocks[lockKey]) {
+        dbState.loginLocks[lockKey] = {
+          identifier: lockKey,
+          consecutiveFailures: 0,
+          blockedUntil: null,
+          lastFailureAt: 0,
+        };
+        void persistLoginLockToNeon(dbState.loginLocks[lockKey]);
+      }
+    }
+
+    if (target.id === admin.id && req.sessionRecord?.sessionId) {
+      for (const [sid, session] of Object.entries(dbState.sessions)) {
+        if (session.userId === target.id && sid !== req.sessionRecord.sessionId) {
+          revokedSessionIds.add(sid);
+          void persistSessionRevocationToNeon(sid, target.id);
+          delete dbState.sessions[sid];
+        }
+      }
+    } else {
+      revokeAllSessionsForUser(target.id);
+    }
+
+    appendAuditLog(
+      admin.id,
+      admin.name,
+      admin.accessLevel,
+      'ALTERACAO_SENHA_PELO_ADMIN',
+      `Alterou a senha de ${target.name} (${target.login})${target.mustChangePassword ? ' com troca obrigatória no próximo acesso' : ''}.`,
+      req.ip
+    );
+
+    await persistUserToNeon(target);
     await saveDatabaseAsync(dbState);
     await flushPendingNeonWrites();
 
@@ -3802,6 +3804,7 @@ export function createExpressApp(): express.Express {
   registerAgenda(app, requireApprovedSession, () => dbState.users);
   registerMural(app, requireApprovedSession, dbState, () => saveMuralStateAsync(dbState), INITIAL_ANNOUNCEMENTS);
   registerSocialProfileRoutes(app, requireApprovedSession, dbState);
+  registerChats(app, requireApprovedSession, dbState);
   registerExternalRh(app, requireApprovedSession);
   registerRequestQueue(app, requireApprovedSession, () => dbState.users, INITIAL_REQUESTS);
   app.post('/api/admin/first-access/:uid', requireAdminSession, async (req: AuthenticatedRequest, res) => {
@@ -4053,7 +4056,13 @@ export async function startServer() {
 
 export default createExpressApp;
 
-if (process.env.VERCEL !== '1') {
+const isAutomatedTestProcess =
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  Boolean(process.env.RODOVAR_SKIP_AUTOSTART) ||
+  process.execArgv.includes('--test') ||
+  process.argv.includes('--test');
+
+if (process.env.VERCEL !== '1' && !isAutomatedTestProcess) {
   startServer().catch((err) => {
     console.error('Failed to start RODOVAR server:', err);
     process.exit(1);

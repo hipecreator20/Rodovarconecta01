@@ -170,7 +170,7 @@ interface ModulesViewProps {
   onDeleteDocument?: (docId: string) => void;
   onCreateInvite: (inv: Omit<EmployeeInvite, 'id' | 'token' | 'expiresAt' | 'status'>) => void;
   onActivateInviteToken?: (tokenString: string) => boolean | Promise<boolean>;
-  onToggleEmployeeActive: (empId: string) => void;
+  onToggleEmployeeActive: (empId: string) => void | Promise<{ ok: boolean; error?: string }>;
   onCreateEmployeeDirect?: (data: {
     name: string;
     email: string;
@@ -182,7 +182,7 @@ interface ModulesViewProps {
     accessLevel: 'FUNCIONARIO' | 'ADMINISTRADOR' | 'DIRETORIA';
     phoneExt: string;
     permissoesPaginas?: string[];
-  }) => void;
+  }) => void | Promise<{ ok: boolean; error?: string }>;
   onDeleteEmployee?: (empId: string) => void;
   onUpdateEmployeeAdmin?: (
     empId: string,
@@ -198,15 +198,8 @@ interface ModulesViewProps {
       phoneExt: string;
       permissoesPaginas?: string[];
     }
-  ) => void;
-  onUpdateMyProfile?: (updates: {
-    name: string;
-    phoneExt: string;
-    avatar: string;
-    email?: string;
-    login?: string;
-    password?: string;
-  }) => void;
+  ) => void | Promise<{ ok: boolean; error?: string }>;
+  onUpdateMyProfile?: (updates: Partial<Employee>) => void;
   onRestorePortalDefaults?: () => void;
   onImportPortalBackup?: (backupData: Record<string, unknown>) => boolean;
   onStartDirectChat: (emp: Employee) => void;
@@ -214,6 +207,8 @@ interface ModulesViewProps {
   initialOpenRequestModal?: boolean;
   onClearInitialModal?: () => void;
   economicMode?: boolean;
+  profileInitialTab?: 'social' | 'settings';
+  profileTabRequestKey?: number;
 }
 
 const ModulesViewContent: React.FC<ModulesViewProps> = ({
@@ -274,6 +269,8 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   initialOpenRequestModal,
   onClearInitialModal,
   economicMode = true,
+  profileInitialTab = 'social',
+  profileTabRequestKey = 0,
 }) => {
   const canPublish =
     currentUser.accessLevel === 'DIRETORIA' || currentUser.accessLevel === 'ADMINISTRADOR';
@@ -523,6 +520,8 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   const [tokenVerifyInput, setTokenVerifyInput] = useState('');
   const [tokenVerifyFeedback, setTokenVerifyFeedback] = useState<string | null>(null);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [adminModalError, setAdminModalError] = useState<string | null>(null);
+  const [isSavingAdminUser, setIsSavingAdminUser] = useState(false);
   const [editEmpForm, setEditEmpForm] = useState({
     name: '',
     email: '',
@@ -4662,21 +4661,41 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 </div>
               </div>
 
+              {adminModalError && editingEmployee && (
+                <div className="mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs font-bold text-[#E5252A]">
+                  {adminModalError}
+                </div>
+              )}
+
               <div className="mt-4 pt-3 border-t border-gray-100 flex justify-end gap-2 shrink-0">
                 <button
-                  onClick={() => setEditingEmployee(null)}
+                  onClick={() => {
+                    setAdminModalError(null);
+                    setEditingEmployee(null);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700"
                 >
                   Cancelar
                 </button>
                 <button
-                  onClick={() => {
-                    onUpdateEmployeeAdmin?.(editingEmployee.id, editEmpForm);
-                    setEditingEmployee(null);
+                  disabled={isSavingAdminUser}
+                  onClick={async () => {
+                    setAdminModalError(null);
+                    setIsSavingAdminUser(true);
+                    try {
+                      const result = await onUpdateEmployeeAdmin?.(editingEmployee.id, editEmpForm);
+                      if (result && result.ok === false) {
+                        setAdminModalError(result.error || 'Não foi possível salvar as alterações.');
+                        return;
+                      }
+                      setEditingEmployee(null);
+                    } finally {
+                      setIsSavingAdminUser(false);
+                    }
                   }}
-                  className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-4 py-2 rounded-lg cursor-pointer"
+                  className="bg-[#FFD400] hover:bg-[#ffdf33] disabled:opacity-60 text-[#080B0D] text-xs font-extrabold px-4 py-2 rounded-lg cursor-pointer"
                 >
-                  Salvar Alterações de Login e Perfil
+                  {isSavingAdminUser ? 'Salvando…' : 'Salvar Alterações de Login e Perfil'}
                 </button>
               </div>
             </div>
@@ -4938,45 +4957,68 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 </div>
               </div>
 
+              {adminModalError && showCreateLoginModal && (
+                <div className="mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs font-bold text-[#E5252A]">
+                  {adminModalError}
+                </div>
+              )}
+
               <div className="mt-4 pt-3 border-t border-gray-100 flex justify-end gap-2 shrink-0">
                 <button
-                  onClick={() => setShowCreateLoginModal(false)}
+                  onClick={() => {
+                    setAdminModalError(null);
+                    setShowCreateLoginModal(false);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700"
                 >
                   Cancelar
                 </button>
                 <button
-                  onClick={() => {
-                    if (!createLoginForm.name.trim() || !createLoginForm.login.trim()) return;
-                    onCreateEmployeeDirect?.({
-                      ...createLoginForm,
-                      email: createLoginForm.login.includes('@')
-                        ? createLoginForm.login.trim()
-                        : `${createLoginForm.login.trim()}@rodovar.com.br`,
-                      login: createLoginForm.login.trim(),
-                      roleTitle: createLoginForm.roleTitle.trim() || 'Colaborador Corporativo',
-                      permissoesPaginas: createLoginForm.permissoesPaginas,
-                    });
-                    setShowCreateLoginModal(false);
-                    setCreateLoginForm({
-                      name: '',
-                      email: '',
-                      login: '',
-                      password: 'rodovar2027#@',
-                      mustChangePassword: true,
-                      roleTitle: '',
-                      department: 'Operacional',
-                      accessLevel: 'FUNCIONARIO',
-                      phoneExt: '71 9 9920-2476',
-                      permissoesPaginas: getDefaultPermissionsForDepartment(
-                        'Operacional',
-                        'FUNCIONARIO'
-                      ),
-                    });
+                  disabled={isSavingAdminUser}
+                  onClick={async () => {
+                    if (!createLoginForm.name.trim() || !createLoginForm.login.trim()) {
+                      setAdminModalError('Informe o nome completo e o login corporativo.');
+                      return;
+                    }
+                    setAdminModalError(null);
+                    setIsSavingAdminUser(true);
+                    try {
+                      const result = await onCreateEmployeeDirect?.({
+                        ...createLoginForm,
+                        email: createLoginForm.login.includes('@')
+                          ? createLoginForm.login.trim()
+                          : `${createLoginForm.login.trim()}@rodovar.com.br`,
+                        login: createLoginForm.login.trim(),
+                        roleTitle: createLoginForm.roleTitle.trim() || 'Colaborador Corporativo',
+                        permissoesPaginas: createLoginForm.permissoesPaginas,
+                      });
+                      if (result && result.ok === false) {
+                        setAdminModalError(result.error || 'Não foi possível criar o colaborador.');
+                        return;
+                      }
+                      setShowCreateLoginModal(false);
+                      setCreateLoginForm({
+                        name: '',
+                        email: '',
+                        login: '',
+                        password: 'rodovar2027#@',
+                        mustChangePassword: true,
+                        roleTitle: '',
+                        department: 'Operacional',
+                        accessLevel: 'FUNCIONARIO',
+                        phoneExt: '71 9 9920-2476',
+                        permissoesPaginas: getDefaultPermissionsForDepartment(
+                          'Operacional',
+                          'FUNCIONARIO'
+                        ),
+                      });
+                    } finally {
+                      setIsSavingAdminUser(false);
+                    }
                   }}
-                  className="bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] text-xs font-extrabold px-4 py-2 rounded-lg cursor-pointer"
+                  className="bg-[#FFD400] hover:bg-[#ffdf33] disabled:opacity-60 text-[#080B0D] text-xs font-extrabold px-4 py-2 rounded-lg cursor-pointer"
                 >
-                  Criar Login Agora
+                  {isSavingAdminUser ? 'Criando…' : 'Criar Login Agora'}
                 </button>
               </div>
             </div>
@@ -4994,6 +5036,8 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
       <SocialProfileView
         currentUser={currentUser}
         systemConfig={systemConfig}
+        initialTab={profileInitialTab}
+        tabRequestKey={profileTabRequestKey}
         onUpdateMyProfile={onUpdateMyProfile}
         announcements={announcements}
         events={events}

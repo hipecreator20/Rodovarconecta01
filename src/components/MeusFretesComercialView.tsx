@@ -28,6 +28,7 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { CorporateModal } from './ui/CorporateModal';
+import { emitPortalToast, PortalToastType } from './ui/GlobalToastViewport';
 import { FreightDocumentsManager } from './FreightDocumentsManager';
 import { ImportFreightScriptModal } from './ImportFreightScriptModal';
 import { ParsedTrafficScript } from '../lib/carrierLogos';
@@ -55,6 +56,7 @@ import {
   apiTransferFreightResponsibility,
   apiUpdateCommercialFreight,
   apiUploadFreightAttachment,
+  filterVisibleFreightOperators,
   formatCentavosToBrl,
   FreightOperatorOption,
   parseBrlInputToCentavos,
@@ -352,7 +354,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const [showImportedOpFields, setShowImportedOpFields] = useState(false);
-  const [localToast, setLocalToast] = useState<string | null>(null);
   const [editingFreight, setEditingFreight] = useState<UnifiedFreightRecord | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -468,15 +469,38 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
   const [actionBusy, setActionBusy] = useState(false);
 
   const showToast = useCallback(
-    (msg: string) => {
-      setLocalToast(msg);
-      setTimeout(() => {
-        setLocalToast((prev) => (prev === msg ? null : prev));
-      }, 4500);
+    (
+      msg: string,
+      options?: { type?: PortalToastType; title?: string; durationMs?: number }
+    ) => {
+      emitPortalToast({
+        type: options?.type,
+        title: options?.title,
+        message: msg,
+        durationMs: options?.durationMs,
+      });
       if (onToast) onToast(msg);
     },
     [onToast]
   );
+
+  const reportErrorBanner = useCallback((msg: string) => {
+    setErrorBanner(msg);
+    emitPortalToast({
+      type: 'error',
+      title: 'Erro / Atenção',
+      message: msg,
+    });
+  }, []);
+
+  const reportFormError = useCallback((msg: string) => {
+    setFormError(msg);
+    emitPortalToast({
+      type: 'error',
+      title: 'Atenção',
+      message: msg,
+    });
+  }, []);
 
   // Debounce search input (300ms)
   useEffect(() => {
@@ -490,8 +514,8 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
   useEffect(() => {
     apiFetchFreightOperators().then((res) => {
       if (res.ok) {
-        setComercialOperators(res.comercialOperators);
-        setExpedicaoOperators(res.expedicaoOperators);
+        setComercialOperators(filterVisibleFreightOperators(res.comercialOperators));
+        setExpedicaoOperators(filterVisibleFreightOperators(res.expedicaoOperators));
       }
     });
   }, []);
@@ -831,7 +855,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     setFormError(null);
 
     if (!formState.cliente.trim() || !formState.origemCidadeUf.trim() || !formState.destinoCidadeUf.trim()) {
-      setFormError('Preencha Cliente, Origem (Cidade/UF) e Destino (Cidade/UF).');
+      reportFormError('Preencha Cliente, Origem (Cidade/UF) e Destino (Cidade/UF).');
       return;
     }
 
@@ -849,7 +873,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         missing.push('Valor fechado com o cliente');
 
       if (missing.length > 0) {
-        setFormError(
+        reportFormError(
           `Para confirmar contratação e enviar à Expedição, informe os dados mínimos: ${missing.join(', ')}.`
         );
         return;
@@ -903,7 +927,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         });
 
         if (!res.ok || !res.freight) {
-          setFormError(res.error || 'Erro ao atualizar frete.');
+          reportFormError(res.error || 'Erro ao atualizar frete.');
           return;
         }
 
@@ -915,21 +939,26 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
             idempotencyKey: `send-${editingFreight.id}-${res.freight.revision}`,
           });
           if (!transRes.ok) {
-            setFormError(transRes.error || 'Frete salvo, mas houve erro ao enviar à Expedição.');
+            reportFormError(transRes.error || 'Frete salvo, mas houve erro ao enviar à Expedição.');
             return;
           }
           setIsFormOpen(false);
           showToast(
-            `Contratação confirmada! Frete ${editingFreight.protocol} enviado à Expedição.`
+            `Contratação confirmada! Frete ${editingFreight.protocol} enviado à Expedição.`,
+            { type: 'transfer', title: 'Enviado à Expedição' }
           );
         } else {
           setIsFormOpen(false);
           if (res.reconfirmationTriggered) {
             showToast(
-              `Frete ${editingFreight.protocol} atualizado. O responsável atual foi notificado.`
+              `Frete ${editingFreight.protocol} atualizado. O responsável atual foi notificado.`,
+              { type: 'success', title: 'Concluído' }
             );
           } else {
-            showToast(`Frete ${editingFreight.protocol} atualizado com sucesso.`);
+            showToast(`Frete ${editingFreight.protocol} atualizado com sucesso.`, {
+              type: 'success',
+              title: 'Concluído',
+            });
           }
         }
 
@@ -981,14 +1010,18 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         });
 
         if (!res.ok) {
-          setFormError(res.error || 'Erro ao registrar novo frete.');
+          reportFormError(res.error || 'Erro ao registrar novo frete.');
           return;
         }
         setIsFormOpen(false);
         showToast(
           confirmAndSendToExpedicao
             ? `Frete ${res.freight?.protocol || ''} contratado e enviado à Expedição!`
-            : `Rascunho do frete ${res.freight?.protocol || ''} salvo em "Em negociação".`
+            : `Rascunho do frete ${res.freight?.protocol || ''} salvo em "Em negociação".`,
+          {
+            type: confirmAndSendToExpedicao ? 'transfer' : 'success',
+            title: confirmAndSendToExpedicao ? 'Enviado à Expedição' : 'Concluído',
+          }
         );
         await fetchFreights(true);
       }
@@ -1011,7 +1044,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
       targetStatus === 'CONCLUIDO' ||
       targetStatus === 'FINALIZADO'
     ) {
-      setErrorBanner(
+      reportErrorBanner(
         'O Comercial acompanha o progresso dos seus fretes, mas as etapas "Em monitoramento" e "Concluídos" são atualizadas exclusivamente pela Expedição e pelo Operador de Monitoramento.'
       );
       return;
@@ -1036,9 +1069,12 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         idempotencyKey: `trans-${freight.id}-${freight.revision}-${targetStatus}`,
       });
       if (!res.ok) {
-        setErrorBanner(res.error || 'Não foi possível alterar a etapa comercial.');
+        reportErrorBanner(res.error || 'Não foi possível alterar a etapa comercial.');
       } else {
-        showToast(`Frete ${freight.protocol} atualizado.`);
+        showToast(`Frete ${freight.protocol} atualizado.`, {
+          type: 'success',
+          title: 'Concluído',
+        });
         await fetchFreights(true);
         if (selectedFreightId === freight.id) {
           await loadFreightDetails(freight.id);
@@ -1064,12 +1100,13 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         idempotencyKey: `send-exp-${sendModalFreight.id}-${sendModalFreight.revision}`,
       });
       if (!res.ok) {
-        setErrorBanner(res.error || 'Erro ao enviar frete para a Expedição.');
+        reportErrorBanner(res.error || 'Erro ao enviar frete para a Expedição.');
       } else {
         showToast(
           `Contratação confirmada! Frete ${sendModalFreight.protocol} enviado à Expedição (${
             expedicaoId ? res.freight?.expedicaoResponsavelNome : 'Fila disponível do setor'
-          }).`
+          }).`,
+          { type: 'transfer', title: 'Enviado à Expedição' }
         );
         setSendModalFreight(null);
         await fetchFreights(true);
@@ -1097,7 +1134,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         await loadFreightDetails(detailFreight.id);
         await fetchFreights(true);
       } else {
-        setErrorBanner(res.error || 'Erro ao publicar comentário.');
+        reportErrorBanner(res.error || 'Erro ao publicar comentário.');
       }
     } finally {
       setPostingComment(false);
@@ -1110,7 +1147,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     e.target.value = '';
 
     if (file.size > 5 * 1024 * 1024) {
-      setErrorBanner('O arquivo excede o tamanho máximo de 5 MB.');
+      reportErrorBanner('O arquivo excede o tamanho máximo de 5 MB.');
       return;
     }
 
@@ -1132,10 +1169,13 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
       });
 
       if (!res.ok) {
-        setErrorBanner(res.error || 'Falha ao enviar anexo.');
+        reportErrorBanner(res.error || 'Falha ao enviar anexo.');
       } else {
         setAttachmentLabel('');
-        showToast(`Documento "${file.name}" anexado ao frete ${detailFreight.protocol}.`);
+        showToast(`Documento "${file.name}" anexado ao frete ${detailFreight.protocol}.`, {
+          type: 'success',
+          title: 'Concluído',
+        });
         await loadFreightDetails(detailFreight.id);
         await fetchFreights(true);
       }
@@ -1156,9 +1196,12 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         reason: transferReason.trim(),
       });
       if (!res.ok) {
-        setErrorBanner(res.error || 'Erro ao transferir responsabilidade.');
+        reportErrorBanner(res.error || 'Erro ao transferir responsabilidade.');
       } else {
-        showToast(`Responsabilidade comercial do frete ${detailFreight.protocol} transferida.`);
+        showToast(`Responsabilidade comercial do frete ${detailFreight.protocol} transferida.`, {
+          type: 'transfer',
+          title: 'Transferido',
+        });
         setTransferModalOpen(false);
         setTransferReason('');
         await fetchFreights(true);
@@ -1179,9 +1222,12 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         reason: cancelReason.trim(),
       });
       if (!res.ok) {
-        setErrorBanner(res.error || 'Erro ao cancelar frete.');
+        reportErrorBanner(res.error || 'Erro ao cancelar frete.');
       } else {
-        showToast(`Frete ${detailFreight.protocol} cancelado com registro no histórico.`);
+        showToast(`Frete ${detailFreight.protocol} cancelado com registro no histórico.`, {
+          type: 'success',
+          title: 'Cancelado',
+        });
         setCancelModalOpen(false);
         setCancelReason('');
         await fetchFreights(true);
@@ -1316,13 +1362,6 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         </div>
       </div>
 
-      {localToast && !onToast && (
-        <div className="fixed bottom-5 right-5 z-50 bg-[#080B0D] text-white border-l-4 border-[#FFD400] px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold max-w-md">
-          <CheckCircle2 className="w-4 h-4 text-[#FFD400] shrink-0" />
-          <span>{localToast}</span>
-        </div>
-      )}
-
       {/* ERROR / FEEDBACK BANNER */}
       {errorBanner && (
         <div className="mb-5 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start justify-between gap-3 text-red-900 text-sm">
@@ -1437,7 +1476,11 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                   ))}
                 </>
               ) : (
-                <option value={currentUser.id}>Responsável: {currentUser.name.split(' ')[0]}</option>
+                <option value={currentUser.id}>
+                  {currentUser.accessLevel === 'ADMINISTRADOR'
+                    ? 'Responsável: Minha fila'
+                    : `Responsável: ${currentUser.name.split(' ')[0]}`}
+                </option>
               )}
             </select>
           </div>
@@ -3366,7 +3409,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                       targetStage: reactivateFreight.preCancelOperacional || 'RECEBIDO',
                     });
                     if (!res.ok || !res.freight) {
-                      setErrorBanner(res.error || 'Erro ao reativar frete.');
+                      reportErrorBanner(res.error || 'Erro ao reativar frete.');
                       return;
                     }
                     const updated = res.freight;
@@ -3378,10 +3421,13 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                     }
                     setReactivateFreight(null);
                     setReactivateReason('');
-                    showToast(`Frete ${updated.protocol} reativado com sucesso.`);
+                    showToast(`Frete ${updated.protocol} reativado com sucesso.`, {
+                      type: 'success',
+                      title: 'Concluído',
+                    });
                     void fetchFreights(true);
                   } catch (err) {
-                    setErrorBanner(
+                    reportErrorBanner(
                       err instanceof Error ? err.message : 'Erro ao reativar frete.'
                     );
                   } finally {

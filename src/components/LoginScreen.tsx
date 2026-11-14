@@ -10,7 +10,6 @@ import {
   Users,
   AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   Clock,
   Download,
   Eye,
@@ -19,15 +18,13 @@ import {
   Shield,
   ShieldCheck,
   Truck,
-  UserCheck,
 } from 'lucide-react';
 import { RodovarLogo } from './RodovarLogo';
 import './LoginScreen.css';
-import { Department, Employee, SystemConfig } from '../types';
+import { Employee, SystemConfig } from '../types';
 import {
   apiCheckLockStatus,
   apiLogin,
-  apiRequestAccess,
 } from '../lib/serverApi';
 
 interface LoginScreenProps {
@@ -36,18 +33,6 @@ interface LoginScreenProps {
   isInstalled?: boolean;
   canPromptInstall?: boolean;
 }
-
-type AuthModalView = 'login' | 'solicitar_acesso';
-
-const DEPARTMENTS: Department[] = [
-  'Operacional',
-  'Logística',
-  'Administrativo',
-  'Financeiro',
-  'Recursos Humanos',
-  'Segurança',
-  'Diretoria',
-];
 
 function formatCountdownMMSS(totalSeconds: number): string {
   const clamped = Math.max(0, Math.ceil(totalSeconds));
@@ -62,7 +47,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   isInstalled = false,
   canPromptInstall = false,
 }) => {
-  const [view, setView] = useState<AuthModalView>('login');
 
   // Login Form State
   const [identifier, setIdentifier] = useState<string>('');
@@ -78,17 +62,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [remainingLockSeconds, setRemainingLockSeconds] = useState<number>(0);
   const lockEndMonotonicRef = useRef<number | null>(null);
 
-  // Solicitar Acesso State (Requirement 2)
-  const [reqName, setReqName] = useState<string>('');
-  const [reqUsername, setReqUsername] = useState<string>('');
-  const [reqDepartment, setReqDepartment] = useState<Department>('Operacional');
-  const [reqPassword, setReqPassword] = useState<string>('');
-  const [reqConfirmPassword, setReqConfirmPassword] = useState<string>('');
-  const [reqError, setReqError] = useState<string | null>(null);
-  const [reqSuccessMessage, setReqSuccessMessage] = useState<string | null>(null);
-  const [isRequestingAccess, setIsRequestingAccess] = useState<boolean>(false);
-
-  // Recuperar Senha com Token Único State (Requirement 4)
+  // Lockout countdown timer (monotonic clock prevents local clock tampering)
   const startCountdownFromServer = (secondsFromServer: number) => {
     const secs = Math.max(0, Math.ceil(secondsFromServer));
     if (secs <= 0) {
@@ -194,59 +168,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  const handleRequestAccessSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isRequestingAccess) return;
-
-    setReqError(null);
-    setReqSuccessMessage(null);
-
-    if (!reqName.trim() || reqName.trim().length < 3) {
-      setReqError('Informe seu nome completo.');
-      return;
-    }
-    if (!reqUsername.trim() || reqUsername.trim().length < 3) {
-      setReqError('Informe o nome de usuário ou e-mail desejado.');
-      return;
-    }
-    if (reqPassword.length < 8) {
-      setReqError('A senha deve ter no mínimo 8 caracteres.');
-      return;
-    }
-    if (reqPassword !== reqConfirmPassword) {
-      setReqError('A confirmação de senha não coincide.');
-      return;
-    }
-
-    setIsRequestingAccess(true);
-    try {
-      const res = await apiRequestAccess({
-        name: reqName.trim(),
-        username: reqUsername.trim(),
-        department: reqDepartment,
-        password: reqPassword,
-      });
-
-      if (!res.ok) {
-        setReqError(res.error || 'Não foi possível registrar sua solicitação.');
-        return;
-      }
-
-      // Exact message required by Specification Section 2:
-      setReqSuccessMessage(
-        res.message || 'Solicitação recebida. Aguarde a liberação do administrador.'
-      );
-      setReqName('');
-      setReqUsername('');
-      setReqPassword('');
-      setReqConfirmPassword('');
-    } catch {
-      setReqError('Erro de comunicação com o servidor ao enviar solicitação.');
-    } finally {
-      setIsRequestingAccess(false);
-    }
-  };
-
   return (
     <div className="rv-login-shell">
       <div className="rv-login-scene" aria-hidden="true">
@@ -312,17 +233,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <div className="rv-login-panel-heading">
             <span className="rv-login-lock-mark"><LockKeyhole size={40} strokeWidth={2} aria-hidden="true" /></span>
             <div>
-              <button type="button" className="rv-login-mode" onClick={() => {
-                setView('login');
-                setLoginError(null);
-                setPendingNotice(null);
-              }}><Lock size={10} aria-hidden="true" /><span>Entrar com Senha</span></button>
+              <span className="rv-login-mode"><Lock size={10} aria-hidden="true" /><span>Entrar com Senha</span></span>
               <h2 id="login-title">Acesso ao Portal Corporativo</h2>
               <p>Entre exclusivamente com seu usuário corporativo e senha cadastrada.</p>
             </div>
           </div>
 
-            {view === 'login' && (
               <form onSubmit={handleLoginSubmit} className="rv-login-form" aria-labelledby="login-title" noValidate>
                 {/* Countdown Lockout Banner (5 failures = 2 minutes) */}
                 {remainingLockSeconds > 0 && (
@@ -473,132 +389,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
 <p className="rv-login-restricted"><Lock size={14} aria-hidden="true" /><span>Acesso restrito. Novas contas somente pelo administrador.</span></p>
               </form>
-            )}
-
-            {view === 'solicitar_acesso' && (
-              <form onSubmit={handleRequestAccessSubmit} className="space-y-3.5" noValidate>
-                <div>
-                  <h2 className="text-lg font-extrabold text-[#15191D]">
-                    Solicitar acesso
-                  </h2>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Preencha seus dados corporativos. Seu cadastro ficará com situação{' '}
-                    <strong>PENDENTE</strong> até a liberação explícita do administrador.
-                  </p>
-                </div>
-
-                {reqSuccessMessage && (
-                  <div
-                    role="status"
-                    data-testid="request-access-success"
-                    className="p-4 rounded-xl bg-emerald-50 border-2 border-emerald-500 text-emerald-950 space-y-1.5"
-                  >
-                    <div className="flex items-center gap-2 font-extrabold text-xs text-emerald-800">
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
-                      <span>Solicitação Registrada</span>
-                    </div>
-                    <p className="text-xs font-bold leading-relaxed">{reqSuccessMessage}</p>
-                  </div>
-                )}
-
-                {reqError && (
-                  <div
-                    role="alert"
-                    className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-[#E5252A] flex items-start gap-2"
-                  >
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{reqError}</span>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-xs font-extrabold text-[#15191D] mb-1">
-                    Nome Completo *
-                  </label>
-                  <input
-                    type="text"
-                    autoComplete="name"
-                    value={reqName}
-                    onChange={(e) => setReqName(e.target.value)}
-                    placeholder="Ex: Carlos Eduardo Mendes"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 text-xs font-semibold text-[#15191D]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-xs font-extrabold text-[#15191D] mb-1">
-                      Usuário *
-                    </label>
-                    <input
-                      type="text"
-                      autoComplete="username"
-                      value={reqUsername}
-                      onChange={(e) => setReqUsername(e.target.value)}
-                      placeholder="Ex: carlos.mendes"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 text-xs font-semibold text-[#15191D]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-extrabold text-[#15191D] mb-1">
-                      Setor *
-                    </label>
-                    <select
-                      value={reqDepartment}
-                      onChange={(e) => setReqDepartment(e.target.value as Department)}
-                      className="w-full px-3 py-2.5 rounded-xl border border-gray-300 text-xs font-semibold text-[#15191D] bg-white"
-                    >
-                      {DEPARTMENTS.map((dept) => (
-                        <option key={dept} value={dept}>
-                          {dept}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-xs font-extrabold text-[#15191D] mb-1">
-                      Senha (mín. 8 caracteres) *
-                    </label>
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={reqPassword}
-                      onChange={(e) => setReqPassword(e.target.value)}
-                      placeholder="Crie uma senha segura"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 text-xs font-semibold text-[#15191D]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-extrabold text-[#15191D] mb-1">
-                      Confirmar Senha *
-                    </label>
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={reqConfirmPassword}
-                      onChange={(e) => setReqConfirmPassword(e.target.value)}
-                      placeholder="Repita a senha"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 text-xs font-semibold text-[#15191D]"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isRequestingAccess}
-                  className="w-full py-3 rounded-xl bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-md cursor-pointer"
-                >
-                  <UserCheck className="w-4 h-4" />
-                  <span>
-                    {isRequestingAccess ? 'Enviando solicitação…' : 'Solicitar acesso'}
-                  </span>
-                </button>
-              </form>
-            )}
 
           <div className="rv-login-trust">
             <div>
