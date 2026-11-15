@@ -23,6 +23,7 @@ import {
 import { CarrierBrand, Employee, OperationalUnit } from '../types';
 import { CarrierBrandLogo, getUnitShortTag } from '../lib/carrierLogos';
 import { formatCurrencyBRL } from '../lib/freightDatabase';
+import { canViewFinancialValuesAndStats } from '../lib/permissions';
 import {
   FreightOrderDataForPdf,
   generateFreightOrderPdfA4,
@@ -67,22 +68,11 @@ export const FreightOrderDetailsModal: React.FC<FreightOrderDetailsModalProps> =
 }) => {
   if (!order) return null;
 
-  // Regra de Segurança do Bloco 4:
-  // Se o usuário logado NÃO for o Petrônio (Financeiro), os valores monetários aparecem mascarados ("R$ ••••••").
-  // Se for o Petrônio (ou perfil Financeiro), os valores ficam visíveis com opção de copiar chave PIX em 1 clique.
-  const isPetronioOrFinanceiro =
-    currentUser.department === 'Financeiro' ||
-    currentUser.roleTitle?.toLowerCase().includes('financeiro') ||
-    currentUser.name?.toLowerCase().includes('petrônio') ||
-    currentUser.name?.toLowerCase().includes('petronio');
-
-  const [simulatePetronioView, setSimulatePetronioView] = useState<boolean>(
-    isPetronioOrFinanceiro
-  );
+  // Regra de Sigilo Estrito do Bloco 4:
+  // Apenas Financeiro (Petrônio) e Diretoria (Vitor, Alexandre, Ricardo) visualizam valores e PIX.
+  const canSeeFinancialValues = canViewFinancialValuesAndStats(currentUser);
   const [copiedPix, setCopiedPix] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-
-  const canSeeFinancialValues = isPetronioOrFinanceiro || simulatePetronioView;
 
   const formatDigitsForWhatsApp = (phone: string) => {
     const digits = (phone || '').replace(/\D/g, '');
@@ -417,38 +407,17 @@ export const FreightOrderDetailsModal: React.FC<FreightOrderDetailsModalProps> =
                 </h3>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {canSeeFinancialValues ? (
                   <span className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10.5px] font-extrabold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Acesso Financeiro Autorizado (Petrônio)</span>
+                    <span>Acesso Financeiro Autorizado</span>
                   </span>
                 ) : (
                   <span className="bg-gray-100 text-gray-700 border border-gray-300 text-[10.5px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
                     <Lock className="w-3 h-3 text-gray-500" />
-                    <span>Valores Protegidos (Exclusivo Petrônio / Financeiro)</span>
+                    <span>Valores Protegidos (Exclusivo Financeiro / Diretoria)</span>
                   </span>
-                )}
-
-                {!isPetronioOrFinanceiro && (
-                  <button
-                    type="button"
-                    onClick={() => setSimulatePetronioView((v) => !v)}
-                    className="text-[10.5px] font-extrabold px-2.5 py-1 rounded-lg bg-[#111315] text-[#FACC15] hover:bg-gray-800 inline-flex items-center gap-1 cursor-pointer transition"
-                    title="Simular visão do perfil Financeiro (Petrônio) para testar desbloqueio dos valores e PIX"
-                  >
-                    {simulatePetronioView ? (
-                      <>
-                        <EyeOff className="w-3 h-3" />
-                        <span>Bloquear Visão Petrônio</span>
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="w-3 h-3" />
-                        <span>Simular Visão Petrônio</span>
-                      </>
-                    )}
-                  </button>
                 )}
               </div>
             </div>

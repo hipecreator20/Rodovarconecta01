@@ -28,8 +28,14 @@ import {
   PaymentReceiptRecord,
   PaymentReceiptUploadState,
 } from '../types';
-import { formatCurrencyBRL, formatFileSize, readFileAsDataUrl } from '../lib/freightDatabase';
-import { canAccessFinanceiroFreights, canConfirmFreightPayment } from '../lib/permissions';
+import { formatCurrencyBRL, formatFileSize } from '../lib/freightDatabase';
+import {
+  canAccessFinanceiroFreights,
+  canConfirmFreightPayment,
+  canViewFinancialValuesAndStats,
+} from '../lib/permissions';
+import { prepareMobileUploadFile } from '../lib/mobileFileHelper';
+import { emitPortalToast } from './ui/GlobalToastViewport';
 import { getAuthHeaders } from '../lib/serverApi';
 import {
   SharedReceiptDraft,
@@ -92,6 +98,9 @@ export const ReceberComprovanteModal: React.FC<ReceberComprovanteModalProps> = (
 
   const hasFinanceiroAccess = canAccessFinanceiroFreights(currentUser);
   const canConfirmSettlement = canConfirmFreightPayment(currentUser);
+  const canSeeFinancialValues = canViewFinancialValuesAndStats(currentUser);
+  const formatProtectedBRL = (val: number | string) =>
+    canSeeFinancialValues ? formatCurrencyBRL(Number(val) || 0) : 'R$ ••••••';
 
   // Sync eligible intents from server for the current authenticated user
   useEffect(() => {
@@ -201,44 +210,17 @@ export const ReceberComprovanteModal: React.FC<ReceberComprovanteModalProps> = (
     e.target.value = '';
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      setErrorMessage('O arquivo excede o tamanho máximo permitido de 10 MB.');
-      return;
-    }
-
-    const lower = file.name.toLowerCase();
-    const validType =
-      file.type === 'application/pdf' ||
-      file.type === 'image/jpeg' ||
-      file.type === 'image/png' ||
-      lower.endsWith('.pdf') ||
-      lower.endsWith('.jpg') ||
-      lower.endsWith('.jpeg') ||
-      lower.endsWith('.png');
-
-    if (!validType) {
-      setErrorMessage('Formato não suportado. Selecione um arquivo PDF, JPEG ou PNG.');
-      return;
-    }
-
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      const prepared = await prepareMobileUploadFile(file, { maxBytes: 10 * 1024 * 1024 });
       const newDraft: SharedReceiptDraft = {
         id: `manual-${Date.now()}`,
         createdAtIso: new Date().toISOString(),
         textOnly: false,
-        fileName: file.name,
-        mimeType:
-          file.type ||
-          (lower.endsWith('.pdf')
-            ? 'application/pdf'
-            : lower.endsWith('.png')
-              ? 'image/png'
-              : 'image/jpeg'),
-        sizeBytes: file.size,
-        dataUrl,
-        fileBase64: base64,
+        fileName: prepared.fileName,
+        mimeType: prepared.mimeType,
+        sizeBytes: prepared.sizeBytes,
+        dataUrl: prepared.dataUrl,
+        fileBase64: prepared.base64,
         origin: 'ANEXACAO_MANUAL',
       };
       setDraft(newDraft);
@@ -252,12 +234,21 @@ export const ReceberComprovanteModal: React.FC<ReceberComprovanteModalProps> = (
       setIdempotencyKey(
         `idem-${currentUser.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       );
-      if (lower.includes('agendamento')) {
+      if (prepared.fileName.toLowerCase().includes('agendamento')) {
         setIsScheduledProof(true);
       }
       await saveSharedDraftToDevice(newDraft);
-    } catch {
-      setErrorMessage('Não foi possível ler o arquivo selecionado no dispositivo.');
+      emitPortalToast({
+        type: 'info',
+        title: 'Comprovante carregado no dispositivo',
+        message: `${prepared.fileName} pronto para envio ao servidor.`,
+      });
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível ler o arquivo selecionado no dispositivo.'
+      );
     }
   };
 
@@ -399,10 +390,15 @@ trailer << /Root 1 0 R >>
       setSavedReceipt(data.receipt);
       removeOfflinePendingReceipt(idempotencyKey);
       await clearSharedReceiptDraft(draft.id);
-      setStatusNotice(
+      const noticeMsg =
         data.message ||
-          'Comprovante salvo no servidor! A parcela está registrada como "Aguardando conferência".'
-      );
+        'Comprovante anexado no servidor! Responsável do frete e Monitoramento notificados automaticamente.';
+      setStatusNotice(noticeMsg);
+      emitPortalToast({
+        type: 'success',
+        title: `Comprovante anexado (${selectedFreight.code})`,
+        message: 'Responsável do frete e equipe de Monitoramento notificados.',
+      });
 
       if (data.freight && data.receipt) {
         onReceiptSavedOnServer(data.freight, data.receipt);
@@ -458,8 +454,14 @@ trailer << /Root 1 0 R >>
 
       setSavedReceipt(data.receipt);
       setStatusNotice(
-        data.message || 'Pagamento conferido e confirmado por usuário autorizado!'
+        data.message ||
+          'PAGO! Pagamento confirmado. Responsável do frete e Monitoramento foram avisados.'
       );
+      emitPortalToast({
+        type: 'success',
+        title: 'Pagamento confirmado (PAGO)',
+        message: 'Comprovante validado e equipe de Monitoramento/Frete notificada.',
+      });
       if (data.freight && data.receipt) {
         onReceiptSavedOnServer(data.freight, data.receipt);
       }
@@ -512,24 +514,24 @@ trailer << /Root 1 0 R >>
   };
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto">
-      <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[94vh] flex flex-col">
+    <div className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4 overflow-y-auto overflow-x-hidden">
+      <div className="bg-white w-full max-w-2xl rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[95vh] flex flex-col">
         {/* Top Header Rodovar Identity: Black & Yellow */}
-        <div className="bg-[#080B0D] text-white px-5 py-4 flex items-center justify-between border-b-4 border-[#FFD400] shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#FFD400] text-[#080B0D] flex items-center justify-center font-black shadow-sm">
+        <div className="bg-[#080B0D] text-white px-4 sm:px-5 py-3.5 sm:py-4 flex items-center justify-between gap-2 border-b-4 border-[#FFD400] shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-[#FFD400] text-[#080B0D] flex items-center justify-center font-black shadow-sm shrink-0">
               <Share2 className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded bg-[#FFD400] text-[#080B0D]">
                   RODOVAR CONECTA • MOBILE
                 </span>
-                <span className="text-[11px] font-semibold text-slate-300">
+                <span className="text-[11px] font-semibold text-slate-300 truncate">
                   /receber-comprovante
                 </span>
               </div>
-              <h2 className="text-base sm:text-lg font-black tracking-tight mt-0.5">
+              <h2 className="text-sm sm:text-lg font-black tracking-tight mt-0.5 break-words">
                 Recebimento e Conferência de Comprovante Bancário
               </h2>
             </div>
@@ -537,7 +539,7 @@ trailer << /Root 1 0 R >>
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center"
             title="Fechar"
           >
             <X className="w-5 h-5" />
@@ -545,7 +547,7 @@ trailer << /Root 1 0 R >>
         </div>
 
         {/* Body */}
-        <div className="p-5 overflow-y-auto space-y-5 flex-1">
+        <div className="p-4 sm:p-5 overflow-y-auto overflow-x-hidden space-y-4 sm:space-y-5 flex-1">
           {!hasFinanceiroAccess ? (
             <div className="p-5 rounded-xl bg-red-50 border border-red-200 text-red-900 space-y-2">
               <div className="flex items-center gap-2 font-black text-sm">
@@ -685,9 +687,9 @@ trailer << /Root 1 0 R >>
                                 {intent.expiresAtFormatted}
                               </p>
                             </div>
-                            <div className="text-right">
+                            <div className="text-right shrink-0">
                               <div className="text-sm font-black text-slate-900">
-                                {formatCurrencyBRL(intent.expectedAmountBRL)}
+                                {formatProtectedBRL(intent.expectedAmountBRL)}
                               </div>
                               <span className="text-[10px] font-bold text-slate-500">
                                 {isPicked ? 'Selecionado ✓' : 'Selecionar'}
@@ -702,7 +704,7 @@ trailer << /Root 1 0 R >>
 
                 {/* Freight Selector */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-[11px] font-bold uppercase text-slate-600 mb-1">
                       Frete Autorizado
                     </label>
@@ -724,7 +726,7 @@ trailer << /Root 1 0 R >>
                   </div>
 
                   {/* Single Installment Selection (Requirement 1) */}
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-[11px] font-bold uppercase text-slate-600 mb-1">
                       Seleção Única da Parcela
                     </label>
@@ -741,28 +743,28 @@ trailer << /Root 1 0 R >>
                             key={inst}
                             type="button"
                             onClick={() => setSelectedInstallment(inst)}
-                            className={`px-3 py-2 rounded-xl border-2 text-left transition-all ${
+                            className={`px-3 py-2 rounded-xl border-2 text-left transition-all min-w-0 min-h-[44px] ${
                               isSelected
                                 ? 'border-[#080B0D] bg-[#080B0D] text-white shadow-sm'
                                 : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
                             }`}
                           >
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-black uppercase">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[11px] font-black uppercase truncate">
                                 {inst === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'}
                               </span>
                               <span
-                                className={`w-2 h-2 rounded-full ${
+                                className={`w-2 h-2 rounded-full shrink-0 ${
                                   isSelected ? 'bg-[#FFD400]' : 'bg-slate-300'
                                 }`}
                               />
                             </div>
                             <div
-                              className={`text-xs font-black mt-0.5 ${
+                              className={`text-xs font-black mt-0.5 tabular-nums truncate ${
                                 isSelected ? 'text-[#FFD400]' : 'text-slate-900'
                               }`}
                             >
-                              {formatCurrencyBRL(instValue)}
+                              {formatProtectedBRL(instValue)}
                             </div>
                           </button>
                         );
@@ -774,24 +776,24 @@ trailer << /Root 1 0 R >>
                 {/* Summary of Freight, Route, Favorecido, Installment & Value before confirmation */}
                 {selectedFreight && (
                   <div className="p-3.5 rounded-xl bg-white border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                      <div>
-                        <span className="text-xs font-black text-slate-900">
+                    <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="text-xs font-black text-slate-900 break-words block">
                           Frete {selectedFreight.code} • {selectedFreight.cliente}
                         </span>
-                        <div className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
-                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="truncate">
+                        <div className="text-[11px] text-slate-600 flex items-start gap-1 mt-0.5">
+                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                          <span className="break-words">
                             {selectedFreight.origem} → {selectedFreight.destino}
                           </span>
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="text-left sm:text-right shrink-0">
                         <span className="text-[10px] font-bold uppercase text-slate-400 block">
                           Valor da Parcela ({selectedInstallment === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'})
                         </span>
-                        <span className="text-base font-black text-slate-900">
-                          {formatCurrencyBRL(activeInstallmentAmountBRL)}
+                        <span className="text-base font-black text-slate-900 tabular-nums">
+                          {formatProtectedBRL(activeInstallmentAmountBRL)}
                         </span>
                       </div>
                     </div>
@@ -837,36 +839,36 @@ trailer << /Root 1 0 R >>
                 </div>
 
                 <input
+                  id="receber-comprovante-file-input"
                   ref={fileInputRef}
                   type="file"
-                  accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
+                  accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic"
                   onChange={(e) => void handleManualFilePick(e)}
-                  className="hidden"
+                  className="sr-only"
                 />
 
                 {!draft || draft.textOnly ? (
-                  <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center bg-white space-y-3">
+                  <div className="border-2 border-dashed border-slate-300 rounded-xl p-5 sm:p-6 text-center bg-white space-y-3">
                     <div className="w-12 h-12 rounded-2xl bg-[#FFD400]/20 text-[#080B0D] flex items-center justify-center mx-auto">
                       <Upload className="w-6 h-6" />
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xs font-extrabold text-slate-900">
-                        Anexe o comprovante bancário em PDF, JPEG ou PNG (máx. 10 MB)
+                      <p className="text-xs font-extrabold text-slate-900 break-words">
+                        Anexe o comprovante bancário em PDF, JPEG, PNG ou foto do celular (máx. 10 MB)
                       </p>
-                      <p className="text-[11px] text-slate-500">
+                      <p className="text-[11px] text-slate-500 break-words">
                         Compatível com compartilhamento direto no Android ou seleção manual em
                         Arquivos/Fotos no iPhone e Computador.
                       </p>
                     </div>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="px-4 py-2.5 rounded-xl bg-[#080B0D] text-[#FFD400] font-black text-xs hover:bg-slate-800 transition-colors inline-flex items-center gap-2"
+                      <label
+                        htmlFor="receber-comprovante-file-input"
+                        className="px-4 py-3 rounded-xl bg-[#080B0D] text-[#FFD400] font-black text-xs hover:bg-slate-800 transition-colors inline-flex items-center gap-2 cursor-pointer min-h-[44px]"
                       >
                         <Upload className="w-4 h-4" />
-                        Anexar PDF ou imagem
-                      </button>
+                        <span>Anexar PDF ou imagem</span>
+                      </label>
                     </div>
                   </div>
                 ) : (
@@ -1042,18 +1044,20 @@ trailer << /Root 1 0 R >>
                           type="button"
                           disabled={isConfirmingSettlement}
                           onClick={() => void handleConfirmPaymentSettlement()}
-                          className="w-full py-2.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
+                          className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2 min-h-[44px]"
                         >
                           {isConfirmingSettlement ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
                             <UserCheck className="w-4 h-4" />
                           )}
-                          Confirmar Liquidação Bancária ({activeReceiptTitle} •{' '}
-                          {formatCurrencyBRL(activeInstallmentAmountBRL)})
+                          <span className="break-words text-center">
+                            Confirmar Liquidação Bancária ({activeReceiptTitle} •{' '}
+                            {formatProtectedBRL(activeInstallmentAmountBRL)})
+                          </span>
                         </button>
                       ) : (
-                        <div className="p-2.5 rounded-lg bg-white/10 text-[11px] text-slate-300">
+                        <div className="p-2.5 rounded-lg bg-white/10 text-[11px] text-slate-300 break-words">
                           Seu perfil (<strong>{currentUser.roleTitle}</strong>) concluiu o envio do
                           comprovante. Um Coordenador Financeiro, Diretor ou Administrador fará a
                           confirmação final da liquidação.
@@ -1068,13 +1072,13 @@ trailer << /Root 1 0 R >>
         </div>
 
         {/* Footer with Confirmation Summary Text & Action Buttons */}
-        <div className="px-5 py-4 bg-slate-100 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shrink-0">
-          <div className="text-xs text-slate-700">
+        <div className="px-4 sm:px-5 py-3.5 sm:py-4 bg-slate-100 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shrink-0">
+          <div className="text-xs text-slate-700 min-w-0 break-words">
             {selectedFreight ? (
               <span>
                 Resumo de confirmação:{' '}
-                <strong className="text-slate-950">
-                  Salvar {activeReceiptTitle} ({formatCurrencyBRL(activeInstallmentAmountBRL)}) no
+                <strong className="text-slate-950 break-words">
+                  Salvar {activeReceiptTitle} ({formatProtectedBRL(activeInstallmentAmountBRL)}) no
                   Frete {selectedFreight.code} ({selectedFreight.favorecido})
                 </strong>
               </span>

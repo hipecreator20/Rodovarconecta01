@@ -15,6 +15,16 @@ var PROFILE_MODULES = {
   FINANCEIRO: ["financeiro", "financeiro_confirmar", "solicitacoes", "fretes_ativos"]
 };
 
+// src/types/index.ts
+var DEFAULT_PORTAL_NOTIFICATION_PREFERENCES = {
+  comunicados: true,
+  fretesMovimentacoes: true,
+  ocorrenciasMonitoramento: true,
+  financeiroPagamentos: true,
+  solicitacoesPrazos: true,
+  agendaEventos: true
+};
+
 // src/lib/permissions.ts
 var AVAILABLE_MODULES = [
   {
@@ -103,6 +113,22 @@ var AVAILABLE_MODULES = [
   }
 ];
 var ALL_MODULE_IDS = AVAILABLE_MODULES.map((m) => m.id);
+var AUTHORIZED_FINANCIAL_VIEWER_IDS = /* @__PURE__ */ new Set([
+  "emp-7",
+  // Petrônio Santos (Financeiro)
+  "emp-2",
+  // Vitor (Diretoria)
+  "emp-admin-google-migrated",
+  // Alexandre (Diretoria)
+  "emp-diretoria-ricardo"
+  // Ricardo (Diretoria)
+]);
+var AUTHORIZED_FINANCIAL_VIEWER_EMAILS = /* @__PURE__ */ new Set([
+  "petronio.santos@rodovar.com.br",
+  "vitor@rodovar.com.br",
+  "alexandre@rodovar.com.br",
+  "ricardo@rodovar.com.br"
+]);
 function resolveAccessProfileFromSector(dept, accessLevel, explicitProfile, roleTitle) {
   if (accessLevel === "ADMINISTRADOR") return void 0;
   if (accessLevel === "DIRETORIA") return "DIRETORIA";
@@ -158,6 +184,68 @@ var canAccessExpedicaoFreights = (u) => hasPagePermission(u, "fretes_expedicao")
 var canAccessMonitoramentoFreights = (u) => hasPagePermission(u, "fretes_ativos");
 var canAccessFinanceiroFreights = (u) => hasPagePermission(u, "financeiro");
 var canConfirmFreightPayment = (u) => !!u && u.accessProfile === "FINANCEIRO" && hasPagePermission(u, "financeiro_confirmar");
+function canViewFinancialValuesAndStats(u) {
+  if (!u || u.active !== true || u.approvalStatus !== "APROVADO") return false;
+  if (u.accessLevel === "ADMINISTRADOR") return false;
+  const email = String(u.email || "").trim().toLowerCase();
+  const login = String(u.login || "").trim().toLowerCase();
+  const id = String(u.id || "").trim();
+  const isRoleAllowed = u.accessProfile === "FINANCEIRO" || u.accessProfile === "DIRETORIA" || u.accessLevel === "DIRETORIA";
+  if (!isRoleAllowed) return false;
+  if (AUTHORIZED_FINANCIAL_VIEWER_IDS.has(id)) return true;
+  if (email && AUTHORIZED_FINANCIAL_VIEWER_EMAILS.has(email) || login && AUTHORIZED_FINANCIAL_VIEWER_EMAILS.has(login)) {
+    return true;
+  }
+  if (!email && !login.includes("@") && u.accessProfile === "FINANCEIRO") {
+    return true;
+  }
+  return false;
+}
+function normalizePortalNotificationPreferences(prefs) {
+  const raw = prefs && typeof prefs === "object" ? prefs : {};
+  const pick = (key, legacyKeys = []) => {
+    if (typeof raw[key] === "boolean") return raw[key];
+    for (const lk of legacyKeys) {
+      if (typeof raw[lk] === "boolean") return raw[lk];
+    }
+    return DEFAULT_PORTAL_NOTIFICATION_PREFERENCES[key];
+  };
+  return {
+    comunicados: pick("comunicados", ["urgentAnnouncements"]),
+    fretesMovimentacoes: pick("fretesMovimentacoes"),
+    ocorrenciasMonitoramento: pick("ocorrenciasMonitoramento"),
+    financeiroPagamentos: pick("financeiroPagamentos"),
+    solicitacoesPrazos: pick("solicitacoesPrazos", ["requestUpdates", "slaWarnings"]),
+    agendaEventos: pick("agendaEventos", ["calendarReminders"])
+  };
+}
+function resolveNotificationPreferenceCategory(notif) {
+  const section = String(notif.targetSection || "").toLowerCase();
+  const type = String(notif.type || "").toLowerCase();
+  const text = `${notif.title || ""} ${notif.subtitle || ""}`.toLowerCase();
+  if (type === "comunicado" || section === "comunicados") {
+    return "comunicados";
+  }
+  if (type === "evento" || type === "agenda" || section === "agenda") {
+    return "agendaEventos";
+  }
+  if (section === "financeiro" || /pagamento|comprovante|adiantamento|saldo|liquida[cç][aã]o|\bpago\b/.test(text)) {
+    return "financeiroPagamentos";
+  }
+  if (section === "fretes_ativos" || /ocorr[eê]ncia|atraso|monitoramento|impeditiv/.test(text)) {
+    return "ocorrenciasMonitoramento";
+  }
+  if (section === "fretes_comercial" || section === "fretes_expedicao") {
+    return "fretesMovimentacoes";
+  }
+  return "solicitacoesPrazos";
+}
+function shouldUserReceiveNotification(user, notif) {
+  if (!user) return true;
+  const prefs = normalizePortalNotificationPreferences(user.notificationPreferences);
+  const category = resolveNotificationPreferenceCategory(notif);
+  return prefs[category] !== false;
+}
 var canViewFreightTeam = (u) => !!u && u.active && u.approvalStatus === "APROVADO" && (u.accessLevel === "ADMINISTRADOR" || u.accessProfile === "DIRETORIA" || u.accessLevel === "DIRETORIA" || u.accessProfile === "MONITORAMENTO" || u.accessProfile === "FINANCEIRO");
 var canOperateMonitoring = (u) => !!u && (u.accessProfile === "MONITORAMENTO" || isLogisticsManager(u)) && hasPagePermission(u, "fretes_ativos");
 function canViewPendingPaymentsCount(u) {
@@ -599,6 +687,7 @@ async function initializeNeonSchema() {
         joined_at VARCHAR(64) DEFAULT '',
         active BOOLEAN DEFAULT TRUE,
         permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        notification_preferences JSONB DEFAULT '{}'::jsonb,
         roster_activation_version INT DEFAULT 1,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -622,6 +711,7 @@ async function initializeNeonSchema() {
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS joined_at VARCHAR(64) DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS permissoes_paginas JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS notification_preferences JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS roster_activation_version INT DEFAULT 1;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
@@ -1276,6 +1366,7 @@ async function syncLocalDataToNeon(client) {
 }
 function mapRowToServerUserRecord(row) {
   const permissoes = Array.isArray(row.permissoes_paginas) ? row.permissoes_paginas : typeof row.permissoes_paginas === "string" ? JSON.parse(row.permissoes_paginas || "[]") : [];
+  const rawPrefs = row.notification_preferences && typeof row.notification_preferences === "object" ? row.notification_preferences : typeof row.notification_preferences === "string" ? JSON.parse(row.notification_preferences || "{}") : void 0;
   return {
     id: String(row.id),
     name: String(row.name || row.login || row.email),
@@ -1302,6 +1393,7 @@ function mapRowToServerUserRecord(row) {
     joinedAt: String(row.joined_at || "28/10/2026"),
     active: row.active !== void 0 && row.active !== null ? Boolean(row.active) : true,
     permissoesPaginas: permissoes,
+    ...rawPrefs && Object.keys(rawPrefs).length > 0 ? { notificationPreferences: rawPrefs } : {},
     rosterActivationVersion: Number(row.roster_activation_version || 1)
   };
 }
@@ -1317,13 +1409,16 @@ function persistUserToNeon(u) {
         const roleTitle = String(u.roleTitle || u.accessProfile || "Colaborador").slice(0, 150);
         const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
         const permissoes = JSON.stringify(Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : []);
+        const notifPrefs = JSON.stringify(
+          u.notificationPreferences && typeof u.notificationPreferences === "object" ? u.notificationPreferences : {}
+        );
         await dbSql`
           INSERT INTO rodovar_users (
             id, name, email, login, department, role, role_title, access_level, access_profile,
             password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
             approval_status, requested_at, approved_by, approved_at, status_reason,
             migrated_from_google, phone_ext, phone, location, joined_at, active,
-            permissoes_paginas, roster_activation_version, updated_at
+            permissoes_paginas, notification_preferences, roster_activation_version, updated_at
           ) VALUES (
             ${String(u.id)}, ${String(u.name || login)}, ${email}, ${login},
             ${String(u.department || "Administrativo")}, ${role}, ${roleTitle},
@@ -1335,7 +1430,7 @@ function persistUserToNeon(u) {
             ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
             ${String(u.phoneExt || "71 9 9920-2476")}, ${String(u.phone || u.phoneExt || "71 9 9920-2476")},
             ${String(u.location || "BA - Salvador")}, ${String(u.joinedAt || "28/10/2026")},
-            ${u.active !== void 0 ? Boolean(u.active) : true}, ${permissoes}::jsonb,
+            ${u.active !== void 0 ? Boolean(u.active) : true}, ${permissoes}::jsonb, ${notifPrefs}::jsonb,
             ${Number(u.rosterActivationVersion || 1)}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO UPDATE SET
@@ -1364,6 +1459,7 @@ function persistUserToNeon(u) {
             joined_at = EXCLUDED.joined_at,
             active = EXCLUDED.active,
             permissoes_paginas = EXCLUDED.permissoes_paginas,
+            notification_preferences = EXCLUDED.notification_preferences,
             roster_activation_version = EXCLUDED.roster_activation_version,
             updated_at = CURRENT_TIMESTAMP
         `;
@@ -2386,6 +2482,10 @@ function persistNotificationToNeon(notif) {
 async function loadNotificationsFromNeon(recipientId, limit = 50) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return [];
   try {
+    try {
+      await sql`ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE`;
+    } catch {
+    }
     const rows = await sql`
       SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
               time_label AS "timeLabel", read, COALESCE(dismissed, FALSE) AS dismissed,
@@ -2399,13 +2499,31 @@ async function loadNotificationsFromNeon(recipientId, limit = 50) {
     `;
     return rows;
   } catch (err) {
-    console.warn("Neon loadNotificationsFromNeon error:", err.message);
-    return [];
+    try {
+      const rowsFallback = await sql`
+        SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
+                time_label AS "timeLabel", read, FALSE AS dismissed,
+                target_section AS "targetSection", target_id AS "targetId",
+                dedupe_key AS "dedupeKey", created_at AS "createdAt"
+         FROM rodovar_notifications
+         WHERE recipient_id = ${recipientId}
+         ORDER BY created_at DESC
+         LIMIT ${limit}
+      `;
+      return rowsFallback;
+    } catch (err2) {
+      console.warn("Neon loadNotificationsFromNeon error:", err2.message);
+      return [];
+    }
   }
 }
 async function loadDismissedNotificationIdsFromNeon(recipientId) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return { ids: [], dedupeKeys: [] };
   try {
+    try {
+      await sql`ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE`;
+    } catch {
+    }
     const rows = await sql`
       SELECT id, dedupe_key AS "dedupeKey"
        FROM rodovar_notifications
@@ -2584,7 +2702,7 @@ function registerAgenda(app, guard, users) {
     }
     if (changed) save();
     res.setHeader("Cache-Control", "no-store");
-    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed) });
+    res.json({ events: state.events.filter((e) => visible(e, req.sessionUser)).map((e) => view(e, req.sessionUser)), canCreate: agendaCreator(req.sessionUser), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed && shouldUserReceiveNotification(req.sessionUser, { type: "evento", targetSection: "agenda", title: n.title, subtitle: n.subtitle })) });
   });
   app.post("/api/agenda/import", guard, (req, res) => {
     if (req.sessionUser.accessLevel !== "ADMINISTRADOR") return res.status(403).json({ error: "Importa\xE7\xE3o n\xE3o autorizada." });
@@ -2680,6 +2798,19 @@ function registerPolls(app, guard, storageFile = path4.join(resolveDataRoot(), "
   const isDefaultStorage = storageFile === path4.join(resolveDataRoot(), "data", "mural-polls.local.json");
   const polls = fs4.existsSync(storageFile) ? JSON.parse(fs4.readFileSync(storageFile, "utf8")) : [];
   if (!Array.isArray(polls)) throw Error("Arquivo local de enquetes inv\xE1lido.");
+  if (polls.length === 0) {
+    polls.push({
+      id: "default-corporate-poll-2027",
+      question: "Pesquisa de Satisfa\xE7\xE3o Interna RODOVAR CONECTA \u2014 Como voc\xEA avalia a evolu\xE7\xE3o da nossa frota inteligente e opera\xE7\xF5es log\xEDsticas integradas em 2027?",
+      options: ["Excelente e inovadora", "Muito boa e eficiente", "Em expans\xE3o constante", "Necessita de melhorias operacionais"],
+      deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1e3).toISOString(),
+      closed: false,
+      draft: false,
+      results: "after",
+      votes: {},
+      authorId: "emp-admin-master"
+    });
+  }
   if (isDefaultStorage) activePollsRef = polls;
   const save = () => {
     fs4.mkdirSync(path4.dirname(storageFile), { recursive: true });
@@ -2783,7 +2914,7 @@ function registerMural(app, guard, db, save, initial) {
     void persistSystemAssetToNeon({ id, slot: "mural-attachment", mimeType: mime[extension], dataBase64: bytes.toString("base64") });
     return { id, name: String(input.name).replace(/[\r\n<>"/\\]/g, "_").slice(0, 160), size: Math.ceil(bytes.length / 1024) + " KB", type: extension.toUpperCase(), mimeType: mime[extension], hash: crypto5.createHash("sha256").update(bytes).digest("hex") };
   };
-  app.get("/api/mural", guard, check, (req, res) => res.json({ announcements: state.announcements.filter((a) => visible(a, req.sessionUser)).map((a) => publicRecord(a, req.sessionUser)), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed), canPublish: publisher(req.sessionUser) }));
+  app.get("/api/mural", guard, check, (req, res) => res.json({ announcements: state.announcements.filter((a) => visible(a, req.sessionUser)).map((a) => publicRecord(a, req.sessionUser)), notifications: state.notifications.filter((n) => n.recipientId === req.sessionUser.id && !n.dismissed && shouldUserReceiveNotification(req.sessionUser, { type: "comunicado", targetSection: "comunicados", title: n.title, subtitle: n.subtitle })), canPublish: publisher(req.sessionUser) }));
   app.post("/api/mural/notifications/read", guard, check, (req, res) => {
     const ids = req.body?.ids;
     if (!Array.isArray(ids) || ids.length > 500) return fail(res, 400, "Notifica\xE7\xF5es inv\xE1lidas.");
@@ -3940,7 +4071,7 @@ function registerRequestQueue(app, guard, users, initial = []) {
     if (!hasPagePermission(u, "solicitacoes")) return fail(res, "Sem acesso \xE0 fila.", 403);
     res.setHeader("Cache-Control", "no-store");
     const activeUsers = users().filter((person) => person.active && person.approvalStatus === "APROVADO");
-    res.json({ handlers: activeUsers.filter((person) => person.accessProfile === "RH").map((person) => ({ id: person.id, name: person.name })), requests: state.requests.filter((r) => visible(u, r)), notifications: state.notifications.filter((n) => n.recipientId === u.id && !n.dismissed), routing: {
+    res.json({ handlers: activeUsers.filter((person) => person.accessProfile === "RH").map((person) => ({ id: person.id, name: person.name })), requests: state.requests.filter((r) => visible(u, r)), notifications: state.notifications.filter((n) => n.recipientId === u.id && !n.dismissed && shouldUserReceiveNotification(u, { type: "solicitacao", targetSection: "solicitacoes", title: n.title })), routing: {
       rhActive: activeUsers.filter((person) => person.accessProfile === "RH").length,
       financeActive: activeUsers.filter((person) => person.accessProfile === "FINANCEIRO").length
     } });
@@ -4594,12 +4725,150 @@ function syncSubDocCounters(freight, sub) {
     freight.pendenciaPrincipal = void 0;
   }
 }
+var activeGetAllServerUsers = () => [];
 var financeListeners = /* @__PURE__ */ new Set();
 var subscribeUnifiedFinance = (listener) => {
   financeListeners.add(listener);
   return () => financeListeners.delete(listener);
 };
 var unifiedFinanceFreights = () => [...freightsIndex.values()].filter((f) => f.situacaoMonitoramento !== "NAO_LIBERADO" && f.situacaoMonitoramento !== "DEVOLVIDO_EXPEDICAO" && f.situacaoOperacional !== "CANCELADO");
+function syncPaymentReceiptToUnifiedFreight(params) {
+  const freight = freightsIndex.get(params.freightId);
+  const sub = freight ? freightSubDocs.get(freight.id) : void 0;
+  const sp = formatSaoPauloDateTime();
+  const freightLabel = freight?.protocol || params.freightCode || params.freightId;
+  const clientLabel = freight?.cliente || params.cliente || "Frete Rodovar";
+  if (freight && sub) {
+    if (params.eventKind === "RECEIPT_UPLOADED" && params.receipt) {
+      let storageName = params.receipt.storageFileName;
+      if (params.fileBuffer && params.fileBuffer.length > 0) {
+        try {
+          if (!fs10.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
+            fs10.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
+          }
+          const copyName = `fpay-${freight.id}-${params.receipt.id}.${params.receipt.storageFileName.split(".").pop() || "pdf"}`;
+          fs10.writeFileSync(path10.join(FREIGHT_ATTACHMENTS_DIR, copyName), params.fileBuffer);
+          storageName = copyName;
+          void persistSystemAssetToNeon({
+            id: copyName,
+            slot: "freightAttachment",
+            mimeType: params.receipt.mimeType || "application/octet-stream",
+            dataBase64: params.fileBuffer.toString("base64")
+          });
+        } catch {
+        }
+      }
+      const existingAtt = sub.anexos.find((a) => a.id === `fpay-${params.receipt.id}`);
+      if (!existingAtt) {
+        sub.anexos.unshift({
+          id: `fpay-${params.receipt.id}`,
+          freightId: freight.id,
+          category: "COMPROVANTE_PAGAMENTO",
+          label: params.receipt.title,
+          fileName: params.receipt.originalFileName,
+          storageName,
+          mimeType: params.receipt.mimeType,
+          sizeBytes: params.receipt.sizeBytes,
+          sizeLabel: params.receipt.sizeLabel,
+          conferido: false,
+          uploadedById: params.actor.id,
+          uploadedByName: params.actor.name,
+          uploadedAtIso: sp.iso,
+          uploadedAtFormatted: sp.formatted
+        });
+      }
+      if (freight.situacaoFinanceira === "NAO_INICIADO") {
+        freight.situacaoFinanceira = params.installmentType === "ADIANTAMENTO" ? "PENDENTE_ADIANTAMENTO" : "PENDENTE_SALDO";
+      }
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: "Financeiro",
+        eventType: "UPLOAD_ANEXO",
+        summary: `${params.receipt.title} (${params.receipt.originalFileName}) anexado no Financeiro por ${params.actor.name}. Aguardando confer\xEAncia.`
+      });
+    } else if (params.eventKind === "PAYMENT_CONFIRMED" && params.receipt) {
+      const targetAtt = sub.anexos.find(
+        (a) => a.id === `fpay-${params.receipt.id}` || a.category === "COMPROVANTE_PAGAMENTO" && a.label === params.receipt.title
+      );
+      if (targetAtt) {
+        targetAtt.conferido = true;
+        targetAtt.conferidoPorId = params.actor.id;
+        targetAtt.conferidoPorNome = params.actor.name;
+        targetAtt.conferidoEmFormatado = sp.formatted;
+      }
+      freight.situacaoFinanceira = params.freightPago ? "PAGO" : params.installmentType === "ADIANTAMENTO" ? "ADIANTAMENTO_PAGO" : "PENDENTE_SALDO";
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: "Financeiro",
+        eventType: "CONFERENCIA_ANEXO",
+        summary: `Pagamento de ${params.installmentType === "ADIANTAMENTO" ? "Adiantamento" : "Saldo"} confirmado (Pago) no Financeiro por ${params.actor.name}.`
+      });
+    } else if (params.eventKind === "DELIVERY_CONFIRMED") {
+      if (freight.situacaoFinanceira !== "PAGO") {
+        freight.situacaoFinanceira = "PENDENTE_SALDO";
+      }
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: "Financeiro",
+        eventType: "CONFERENCIA_ANEXO",
+        summary: `Entrega validada no Financeiro por ${params.actor.name} \u2014 Saldo liberado para pagamento.`
+      });
+    }
+    freight.updatedAtIso = sp.iso;
+    freight.updatedAtFormatted = sp.formatted;
+    freight.revision += 1;
+    persistFreightAndSubDoc(freight, sub);
+  }
+  const title = params.eventKind === "PAYMENT_CONFIRMED" ? `Pagamento confirmado (Pago) \u2014 Frete ${freightLabel}` : params.eventKind === "DELIVERY_CONFIRMED" ? `Saldo liberado no Financeiro \u2014 Frete ${freightLabel}` : `Comprovante anexado no Frete ${freightLabel}`;
+  const subtitle = params.eventKind === "PAYMENT_CONFIRMED" ? `${params.receipt?.title || "Parcela"} liquidada por ${params.actor.name} (${clientLabel}).` : params.eventKind === "DELIVERY_CONFIRMED" ? `Entrega conferida no Financeiro por ${params.actor.name} (${clientLabel}).` : `${params.receipt?.title || "Comprovante"} (${params.receipt?.originalFileName || "arquivo"}) anexado por ${params.actor.name} (${clientLabel}).`;
+  const targets = [];
+  if (freight?.comercialResponsavelId && freight.comercialResponsavelId !== params.actor.id) {
+    targets.push({
+      recipientId: freight.comercialResponsavelId,
+      section: "fretes_comercial",
+      key: "com"
+    });
+  }
+  if (freight?.expedicaoResponsavelId && freight.expedicaoResponsavelId !== params.actor.id) {
+    targets.push({
+      recipientId: freight.expedicaoResponsavelId,
+      section: "fretes_expedicao",
+      key: "exp"
+    });
+  }
+  const monitorIds = /* @__PURE__ */ new Set();
+  if (freight?.monitoramentoResponsavelId && freight.monitoramentoResponsavelId !== params.actor.id) {
+    monitorIds.add(freight.monitoramentoResponsavelId);
+  } else {
+    for (const u of activeGetAllServerUsers()) {
+      if (u.id !== params.actor.id && canOperateMonitoring(u)) {
+        monitorIds.add(u.id);
+      }
+    }
+  }
+  for (const mid of monitorIds) {
+    targets.push({
+      recipientId: mid,
+      section: "fretes_ativos",
+      key: `mon:${mid}`
+    });
+  }
+  const eventNonce = params.receipt?.id || `${Date.now()}`;
+  for (const t of targets) {
+    pushFreightNotification({
+      recipientId: t.recipientId,
+      title,
+      subtitle,
+      dotColor: params.eventKind === "PAYMENT_CONFIRMED" ? "blue" : "blue",
+      targetSection: t.section,
+      targetId: params.freightId,
+      dedupeKey: `finpay:${params.eventKind}:${params.freightId}:${eventNonce}:${t.key}`
+    });
+  }
+}
 function saveFreightsSnapshotToNeon() {
   void persistStateSnapshotToNeon("rodovar-freights-state", {
     nextProtocolNumber,
@@ -5414,7 +5683,8 @@ function validateAttachmentFileBuffer(buf, originalFileName) {
   };
 }
 function sanitizeFreightForUser(freight, user, isSharedAvailableQueueItem = false) {
-  const canSeeCommercialValue = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA" || canAccessComercialFreights(user) || hasPagePermission(user, "financeiro");
+  const canSeeCommercialValue = user.accessLevel !== "ADMINISTRADOR" && canAccessComercialFreights(user) || canViewFinancialValuesAndStats(user);
+  const canSeeContractedValue = user.accessLevel !== "ADMINISTRADOR" && (canAccessComercialFreights(user) || canAccessExpedicaoFreights(user)) || canViewFinancialValuesAndStats(user);
   if (isSharedAvailableQueueItem && user.accessLevel === "FUNCIONARIO" && !canViewFreightTeam(user)) {
     return {
       id: freight.id,
@@ -5442,7 +5712,8 @@ function sanitizeFreightForUser(freight, user, isSharedAvailableQueueItem = fals
       expedicaoResponsavelNome: null,
       monitoramentoResponsavelId: null,
       monitoramentoResponsavelNome: null,
-      valorContratadoCentavos: freight.valorContratadoCentavos,
+      valorContratadoCentavos: canSeeContractedValue ? freight.valorContratadoCentavos : void 0,
+      ...canSeeContractedValue ? {} : { valorOculto: true },
       condicoesComerciais: "",
       condicoesOperacionais: freight.condicoesOperacionais,
       camposPendentesExpedicao: freight.camposPendentesExpedicao,
@@ -5471,6 +5742,10 @@ function sanitizeFreightForUser(freight, user, isSharedAvailableQueueItem = fals
   const copy = { ...freight };
   if (!canSeeCommercialValue) {
     delete copy.valorCobradoClienteCentavos;
+  }
+  if (!canSeeContractedValue) {
+    delete copy.valorContratadoCentavos;
+    copy.valorOculto = true;
   }
   return copy;
 }
@@ -5519,6 +5794,7 @@ function appendHistoryEntry(sub, params) {
   return entry;
 }
 function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServerUsers, appendServerAuditLog) {
+  activeGetAllServerUsers = getAllServerUsers;
   loadOrSeedUnifiedFreights();
   const idemFile = path10.join(FREIGHTS_STORE_DIR, "_idempotency.json");
   if (fs10.existsSync(idemFile)) {
@@ -5653,7 +5929,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         existing.read = Boolean(existing.read || item.read);
       }
     }
-    const myNotifs = Array.from(semanticMap.values()).slice(0, 50);
+    const myNotifs = Array.from(semanticMap.values()).filter((n) => shouldUserReceiveNotification(user, n)).slice(0, 50);
     res.json({
       notifications: myNotifs,
       unreadCount: myNotifs.filter((n) => !n.read).length
@@ -6156,6 +6432,10 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         filteredList = filteredList.filter((f) => matchesComercialStage(f, situacao));
       } else if (area === "EXPEDICAO") {
         filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
+      } else if (situacao === "PENDENCIAS") {
+        filteredList = filteredList.filter(
+          (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido
+        );
       } else {
         filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
       }
@@ -8237,7 +8517,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       }
       const idemKey = checkIdempotency(req, res, user.id);
       if (idemKey === "__HANDLED__") return;
-      const { title, description, severity, horarioRealEvento } = req.body || {};
+      const { title, description, severity, horarioRealEvento, attachment } = req.body || {};
       const cleanTitle = String(title || "").trim();
       const cleanDesc = String(description || "").trim();
       if (cleanTitle.length < 3) {
@@ -8249,6 +8529,56 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       ) ? severity : "MEDIA";
       const sp = formatSaoPauloDateTime();
       const sub = freightSubDocs.get(freight.id);
+      let occAttachment;
+      if (attachment && typeof attachment.dataUrl === "string" && attachment.dataUrl.includes(",")) {
+        const base64Part = attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1);
+        let fileBuf;
+        try {
+          fileBuf = Buffer.from(base64Part, "base64");
+        } catch {
+          res.status(400).json({ error: "Falha ao decodificar o anexo da ocorr\xEAncia." });
+          return;
+        }
+        const cleanAttName = String(attachment.fileName || "comprovante_ocorrencia.pdf").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+        const attValidation = validateAttachmentFileBuffer(fileBuf, cleanAttName);
+        if (!attValidation.valid || !attValidation.extension || !attValidation.mimeType) {
+          res.status(400).json({
+            error: attValidation.error || "Anexo da ocorr\xEAncia inv\xE1lido.",
+            code: "INVALID_ATTACHMENT_FORMAT"
+          });
+          return;
+        }
+        ensureDirectories();
+        const storageName = `focc-${freight.id}-${crypto11.randomUUID()}.${attValidation.extension}`;
+        fs10.writeFileSync(path10.join(FREIGHT_ATTACHMENTS_DIR, storageName), fileBuf);
+        void persistSystemAssetToNeon({
+          id: storageName,
+          slot: "freightAttachment",
+          mimeType: attValidation.mimeType,
+          dataBase64: fileBuf.toString("base64")
+        });
+        const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
+        const isPaymentDoc = /comprovante|pix|pagamento|adiantamento|saldo/i.test(
+          `${cleanTitle} ${cleanAttName}`
+        );
+        occAttachment = {
+          id: `fatt-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
+          freightId: freight.id,
+          category: isPaymentDoc ? "COMPROVANTE_PAGAMENTO" : "OUTRO",
+          label: `Ocorr\xEAncia: ${cleanTitle.slice(0, 60)}`,
+          fileName: cleanAttName,
+          storageName,
+          mimeType: attValidation.mimeType,
+          sizeBytes: fileBuf.length,
+          sizeLabel: sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`,
+          conferido: false,
+          uploadedById: user.id,
+          uploadedByName: user.name,
+          uploadedAtIso: sp.iso,
+          uploadedAtFormatted: sp.formatted
+        };
+        sub.anexos.unshift(occAttachment);
+      }
       const occ = {
         id: `focc-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
@@ -8259,7 +8589,12 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         createdById: user.id,
         createdByName: user.name,
         createdAtIso: sp.iso,
-        createdAtFormatted: sp.formatted
+        createdAtFormatted: sp.formatted,
+        ...occAttachment ? {
+          attachmentId: occAttachment.id,
+          attachmentName: occAttachment.fileName,
+          attachmentMimeType: occAttachment.mimeType
+        } : {}
       };
       sub.ocorrencias.unshift(occ);
       freight.updatedAtIso = sp.iso;
@@ -8271,7 +8606,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         actorName: user.name,
         actorSector,
         eventType: "OCORRENCIA",
-        summary: `Ocorr\xEAncia registrada (${safeSeverity}): ${occ.title}`,
+        summary: `Ocorr\xEAncia registrada (${safeSeverity}): ${occ.title}${occAttachment ? ` \u2022 Anexo: ${occAttachment.fileName}` : ""}`,
         reason: occ.description || void 0,
         horarioRealEvento: horarioRealEvento ? String(horarioRealEvento).slice(0, 60) : sp.formatted
       });
@@ -8308,12 +8643,25 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           targetId: freight.id,
           dedupeKey: `occ:${occ.id}:mon`
         });
+      } else if (!freight.monitoramentoResponsavelId) {
+        for (const mon of getAllServerUsers().filter((u) => u.id !== user.id && canOperateMonitoring(u))) {
+          pushFreightNotification({
+            recipientId: mon.id,
+            title: `Ocorr\xEAncia no Frete ${freight.protocol} (${safeSeverity})`,
+            subtitle: `${occ.title} \u2014 registrada por ${user.name}`,
+            dotColor: safeSeverity === "IMPEDITIVA" ? "red" : "blue",
+            targetSection: "fretes_ativos",
+            targetId: freight.id,
+            dedupeKey: `occ:${occ.id}:mon:${mon.id}`
+          });
+        }
       }
       const payload = {
         ok: true,
         occurrence: occ,
         freight: sanitizeFreightForUser(freight, user),
         ocorrencias: sub.ocorrencias,
+        anexos: sub.anexos,
         historico: sub.historico
       };
       storeIdempotentResponse(idemKey, 201, payload);
@@ -8465,6 +8813,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         "MDFE",
         "RPA",
         "COMPROVANTE_ENTREGA",
+        "COMPROVANTE_PAGAMENTO",
         "ORDEM_CARREGAMENTO",
         "OUTRO"
       ];
@@ -9063,6 +9412,196 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       });
     }
   );
+  app.post(
+    "/api/admin/restore-freights-json-backup",
+    requireApprovedSession2,
+    async (req, res) => {
+      const user = req.sessionUser;
+      if (!user || user.id !== "emp-admin-master") {
+        res.status(403).json({ error: "Acesso restrito ao Administrador Master." });
+        return;
+      }
+      const backupData = req.body;
+      if (!backupData || typeof backupData !== "object") {
+        res.status(400).json({ error: "Payload JSON inv\xE1lido." });
+        return;
+      }
+      const schemaVersion = backupData.schema_version || backupData.schemaVersion;
+      if (schemaVersion !== "3.2-PRO") {
+        res.status(400).json({ error: `Vers\xE3o de schema incompat\xEDvel: ${schemaVersion}. Esperado "3.2-PRO".` });
+        return;
+      }
+      const entregas = backupData.entregas || backupData.freights;
+      if (!Array.isArray(entregas)) {
+        res.status(400).json({ error: "Cole\xE7\xE3o de entregas/fretes n\xE3o encontrada no arquivo JSON." });
+        return;
+      }
+      const checkOnly = Boolean(backupData.checkOnly);
+      const currentCount = freightsIndex.size;
+      const identifiers = [];
+      const inconsistencies = [];
+      let validCount = 0;
+      for (const [idx, item] of entregas.entries()) {
+        if (!item || typeof item !== "object") {
+          inconsistencies.push(`Item #${idx + 1}: objeto inv\xE1lido`);
+          continue;
+        }
+        const tracking = item.trackingCode || item.protocol || item.id || `Item #${idx + 1}`;
+        const st = String(item.status || "").toLowerCase();
+        identifiers.push(String(tracking));
+        if (st !== "coletando" && st !== "em_transito") {
+          inconsistencies.push(`Frete ${tracking}: status "${item.status}" (deve ser coletando ou em_tr\xE2nsito)`);
+        } else {
+          validCount++;
+        }
+      }
+      if (checkOnly) {
+        res.json({
+          ok: true,
+          preview: {
+            schemaVersion,
+            totalFound: entregas.length,
+            validCount,
+            identifiers: identifiers.slice(0, 25),
+            inconsistencies,
+            currentRecordsToDelete: currentCount
+          }
+        });
+        return;
+      }
+      const safetyBackup = {
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        freights: Array.from(freightsIndex.values())
+      };
+      try {
+        freightsIndex.clear();
+        freightSubDocs.clear();
+        if (isNeonConfigured && !isIsolatedTestEnv() && sql) {
+          await sql`DELETE FROM rodovar_fretes`;
+        }
+        let importedCount = 0;
+        for (const item of entregas) {
+          const st = String(item.status || "").toLowerCase();
+          if (st !== "coletando" && st !== "em_transito") continue;
+          const id = String(item.id || `ent-${Math.random().toString(36).substring(2, 11)}`);
+          const trackingCode = String(item.trackingCode || item.protocol || `RDV${Math.floor(1e3 + Math.random() * 9e3)}`);
+          const cliente = String(item.cliente || "CLIENTE GERAL");
+          const motorista = String(item.motorista || item.motoristaNome || "MOTORISTA GERAL");
+          const origem = String(item.origem || "Origem");
+          const destino = String(item.destino || "Destino");
+          const freteEmpresa = Number(item.frete_empresa || item.valorFreteEmpresa) || 0;
+          const freteMotorista = Number(item.frete_motorista || item.valorFreteMotorista) || 0;
+          const dataColeta = item.data_coleta ? String(item.data_coleta).slice(0, 10) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+          const observacoes = String(item.observacoes || "");
+          const historico = Array.isArray(item.historico) ? item.historico : [
+            {
+              id: "evt-" + Math.random().toString(36).substring(2, 9),
+              timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+              usuario: "master",
+              usuarionome: "Administrador Master",
+              cargo: "Master",
+              descricao: "Restaurado via Backup JSON 3.2-PRO"
+            }
+          ];
+          const situacaoMonitoramento = st === "coletando" ? "NOVO_PARA_CARREGAR" : "CARREGADO_EM_TRANSPORTE";
+          const newFreight = {
+            id,
+            protocol: trackingCode,
+            empresaMarca: "RODOVAR",
+            unidadeOperacional: "BA - Salvador",
+            cliente,
+            clienteContato: item.tel_cliente || void 0,
+            origemCidadeUf: origem,
+            enderecoColeta: origem,
+            destinoCidadeUf: destino,
+            enderecoEntrega: destino,
+            tipoCarga: "Carga Geral",
+            pesoKg: 0,
+            volumes: 1,
+            veiculoNecessario: "Carreta / Truck",
+            dataColetaIso: dataColeta,
+            janelaColetaInicio: "08:00",
+            janelaColetaFim: "18:00",
+            dataEntregaPrevistaIso: item.prazo ? String(item.prazo).slice(0, 10) : dataColeta,
+            janelaEntregaInicio: "08:00",
+            janelaEntregaFim: "18:00",
+            comercialResponsavelId: item.userId || "col-master",
+            comercialResponsavelNome: item.vendedor || "Administrador Master",
+            expedicaoResponsavelId: "col-master",
+            expedicaoResponsavelNome: "Administrador Master",
+            monitoramentoResponsavelId: "col-master",
+            monitoramentoResponsavelNome: "Administrador Master",
+            valorCobradoClienteCentavos: Math.round(freteEmpresa * 100),
+            valorContratadoCentavos: Math.round(freteMotorista * 100),
+            condicoesComerciais: "Restaurado via Backup 3.2-PRO",
+            condicoesOperacionais: "Restaurado via Backup 3.2-PRO",
+            observacoes,
+            motoristaNome: motorista,
+            motoristaTelefone: item.tel_motorista || void 0,
+            favorecidoPagamento: item.favorecidoPix || void 0,
+            chavePix: item.chavePix || void 0,
+            bancoPagamento: item.bancoPix || void 0,
+            devolvidoParaCorrecao: false,
+            requerReconfirmacaoOperacional: false,
+            comprovanteEntregaConferido: false,
+            situacaoComercial: "EM_MONITORAMENTO",
+            situacaoOperacional: "LIBERADO_MONITORAMENTO",
+            situacaoMonitoramento,
+            situacaoFinanceira: "PENDENTE",
+            checklistFechamento: { motoristaConfirmado: true, veiculoConfirmado: true, condicoesConferidas: true, documentosConferidos: true, videochamadaRealizada: true, ordemColetaEnviadaMotorista: true },
+            anexosCount: 0,
+            comentariosCount: 0,
+            ocorrenciasAbertasCount: 0,
+            ocorrenciasImpeditivasCount: 0,
+            checklistConcluidosCount: 6,
+            autorId: item.userId || "col-master",
+            autorNome: item.vendedor || "Administrador Master",
+            createdAtIso: item.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+            createdAtFormatted: "Agora",
+            updatedAtIso: (/* @__PURE__ */ new Date()).toISOString(),
+            updatedAtFormatted: "Agora",
+            revision: 1
+          };
+          const subDoc = {
+            freightId: id,
+            anexos: [],
+            comentarios: [],
+            ocorrencias: [],
+            historico: historico.map((h) => ({
+              id: h.id || "evt-" + Math.random().toString(36).substring(2, 9),
+              freightId: id,
+              timestamp: h.timestamp || (/* @__PURE__ */ new Date()).toISOString(),
+              usuarioId: h.usuario || "master",
+              usuarioNome: h.usuarionome || "Administrador Master",
+              cargo: h.cargo || "Master",
+              descricao: h.descricao || "Restaurado via Backup"
+            }))
+          };
+          freightsIndex.set(id, newFreight);
+          freightSubDocs.set(id, subDoc);
+          persistFreightAndSubDoc(newFreight, subDoc);
+          importedCount++;
+        }
+        freightsDataVersion++;
+        res.json({
+          ok: true,
+          importedCount,
+          message: `\u2713 Restaurados ${importedCount} fretes com sucesso (schema 3.2-PRO).`
+        });
+      } catch (err) {
+        console.error("Error restoring freights backup:", err);
+        freightsIndex.clear();
+        freightSubDocs.clear();
+        for (const f of safetyBackup.freights) {
+          freightsIndex.set(f.id, f);
+        }
+        res.status(500).json({
+          error: err instanceof Error ? err.message : "Falha na transa\xE7\xE3o de restaura\xE7\xE3o de fretes.",
+          code: "RESTORE_TRANSACTION_FAILED"
+        });
+      }
+    }
+  );
 }
 
 // src/server/financialProjection.ts
@@ -9511,7 +10050,7 @@ function validatePaymentReceiptBinary(buf, originalFileName) {
   if (lowerName.endsWith(".svg") || lowerName.endsWith(".exe") || lowerName.endsWith(".bat") || lowerName.endsWith(".sh") || lowerName.endsWith(".js") || lowerName.endsWith(".html")) {
     return {
       valid: false,
-      error: "Formato de arquivo n\xE3o permitido. Envie apenas PDF, JPEG ou PNG.",
+      error: "Formato de arquivo n\xE3o permitido. Envie apenas PDF, JPEG, PNG ou WebP.",
       code: "INVALID_FILE_TYPE"
     };
   }
@@ -9519,7 +10058,7 @@ function validatePaymentReceiptBinary(buf, originalFileName) {
   if (headText.includes("<svg") || headText.includes("<script") || headText.includes("<!doctype html")) {
     return {
       valid: false,
-      error: "Conte\xFAdo de arquivo rejeitado por seguran\xE7a. Envie apenas PDF, JPEG ou PNG.",
+      error: "Conte\xFAdo de arquivo rejeitado por seguran\xE7a. Envie apenas PDF, JPEG, PNG ou WebP.",
       code: "INVALID_FILE_TYPE"
     };
   }
@@ -9544,9 +10083,16 @@ function validatePaymentReceiptBinary(buf, originalFileName) {
       extension: "jpg"
     };
   }
+  if (buf.length >= 12 && buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") {
+    return {
+      valid: true,
+      mimeType: "image/webp",
+      extension: "webp"
+    };
+  }
   return {
     valid: false,
-    error: "Tipo real do arquivo inv\xE1lido. O servidor aceita apenas comprovantes em PDF, JPEG ou PNG.",
+    error: "Tipo real do arquivo inv\xE1lido. O servidor aceita apenas comprovantes em PDF, JPEG, PNG ou WebP.",
     code: "INVALID_FILE_TYPE"
   };
 }
@@ -9630,6 +10176,45 @@ function enrichFreightWithReceipts(freight) {
     saldoComprovanteId: latestSaldo?.id || freight.saldoComprovanteId,
     comprovantesList: freightReceipts,
     historicoPagamentos: freightHistory
+  };
+}
+function redactReceiptForUser(r, user) {
+  if (canViewFinancialValuesAndStats(user)) return r;
+  return {
+    ...r,
+    expectedAmountBRL: null,
+    expectedAmountCentavos: null
+  };
+}
+function redactIntentForUser(i, user) {
+  if (canViewFinancialValuesAndStats(user)) return i;
+  return {
+    ...i,
+    expectedAmountBRL: null,
+    expectedAmountCentavos: null,
+    chavePix: i.chavePix ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : ""
+  };
+}
+function redactHistoryForUser(h, user) {
+  if (canViewFinancialValuesAndStats(user)) return h;
+  return {
+    ...h,
+    amountBRL: null,
+    summary: String(h.summary || "").replace(/R\$\s?[\d.,]+/g, "R$ \u2022\u2022\u2022\u2022\u2022\u2022")
+  };
+}
+function redactFreightFinancialsForUser(freight, user) {
+  if (canViewFinancialValuesAndStats(user)) return freight;
+  return {
+    ...freight,
+    valorTotal: null,
+    valorAdiantamento: null,
+    valorSaldo: null,
+    valorFreteEmpresa: null,
+    valorFreteMotorista: null,
+    chavePix: freight.chavePix ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : "",
+    comprovantesList: Array.isArray(freight.comprovantesList) ? freight.comprovantesList.map((r) => redactReceiptForUser(r, user)) : freight.comprovantesList,
+    historicoPagamentos: Array.isArray(freight.historicoPagamentos) ? freight.historicoPagamentos.map((h) => redactHistoryForUser(h, user)) : freight.historicoPagamentos
   };
 }
 function loadOrSeedPaymentStore() {
@@ -10076,15 +10661,17 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     if (sweepExpiredIntents()) {
       savePaymentStore();
     }
-    const enrichedFreights = paymentStoreState.freights.map((f) => enrichFreightWithReceipts(f));
-    const userActiveIntents = paymentStoreState.intents.filter(
-      (i) => i.responsibleUserId === user.id && i.status === "AGUARDANDO_COMPROVANTE"
+    const canSeeStats = canViewFinancialValuesAndStats(user);
+    const enrichedFreights = paymentStoreState.freights.map(
+      (f) => redactFreightFinancialsForUser(enrichFreightWithReceipts(f), user)
     );
+    const userActiveIntents = paymentStoreState.intents.filter((i) => i.responsibleUserId === user.id && i.status === "AGUARDANDO_COMPROVANTE").map((i) => redactIntentForUser(i, user));
     res.json({
       ok: true,
       freights: enrichedFreights,
       activeIntents: userActiveIntents,
-      canConfirmPayment: canConfirmFreightPayment(user)
+      canConfirmPayment: canConfirmFreightPayment(user),
+      canViewFinancialStatsAndValues: canSeeStats
     });
   });
   app.post("/api/pagamentos/fretes", requireApprovedSession2, async (req, res) => {
@@ -10103,7 +10690,10 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         res.status(409).json({ error: "O registro financeiro j\xE1 existe. Valores e pagamentos devem ser tratados no fluxo autorizado." });
         return;
       }
-      res.status(200).json({ ok: true, freight: enrichFreightWithReceipts(current) });
+      res.status(200).json({
+        ok: true,
+        freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(current), user)
+      });
       return;
     }
     if (incoming.adiantamentoPago || incoming.saldoPago || incoming.status !== "Pendente Adiantamento") {
@@ -10121,8 +10711,9 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     await savePaymentStoreAsync();
     res.status(201).json({
       ok: true,
-      freight: enrichFreightWithReceipts(
-        paymentStoreState.freights.find((f) => f.id === incoming.id)
+      freight: redactFreightFinancialsForUser(
+        enrichFreightWithReceipts(paymentStoreState.freights.find((f) => f.id === incoming.id)),
+        user
       )
     });
   });
@@ -10141,6 +10732,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       res.status(409).json({ error: "A confirma\xE7\xE3o de pagamento exige o fluxo banc\xE1rio autorizado." });
       return;
     }
+    const confirmedDeliveryNow = typeof patch.entregaConfirmada === "boolean" && patch.entregaConfirmada && !current.entregaConfirmada;
     const updated = {
       ...current,
       entregaConfirmada: typeof patch.entregaConfirmada === "boolean" ? patch.entregaConfirmada : current.entregaConfirmada,
@@ -10150,10 +10742,20 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       docs: patch.docs ? { ...current.docs, ...patch.docs } : current.docs
     };
     paymentStoreState.freights[existingIdx] = updated;
+    if (confirmedDeliveryNow) {
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: updated.id,
+        freightCode: updated.code,
+        cliente: updated.cliente,
+        installmentType: "SALDO",
+        eventKind: "DELIVERY_CONFIRMED",
+        actor: user
+      });
+    }
     await savePaymentStoreAsync();
     res.json({
       ok: true,
-      freight: enrichFreightWithReceipts(updated)
+      freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(updated), user)
     });
   });
   app.post("/api/pagamentos/intencoes", requireApprovedSession2, async (req, res) => {
@@ -10247,7 +10849,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     await savePaymentStoreAsync();
     res.status(201).json({
       ok: true,
-      intent,
+      intent: redactIntentForUser(intent, user),
       guidance: "Fa\xE7a o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta.",
       disclaimer: "Preparar o pagamento n\xE3o executa PIX, n\xE3o acessa conta banc\xE1ria e n\xE3o significa pagamento realizado."
     });
@@ -10258,10 +10860,8 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
     if (sweepExpiredIntents()) {
       savePaymentStore();
     }
-    const eligibleIntents = paymentStoreState.intents.filter(
-      (i) => i.responsibleUserId === user.id && i.status === "AGUARDANDO_COMPROVANTE"
-    );
-    const recentUserIntents = paymentStoreState.intents.filter((i) => i.responsibleUserId === user.id).slice(0, 20);
+    const eligibleIntents = paymentStoreState.intents.filter((i) => i.responsibleUserId === user.id && i.status === "AGUARDANDO_COMPROVANTE").map((i) => redactIntentForUser(i, user));
+    const recentUserIntents = paymentStoreState.intents.filter((i) => i.responsibleUserId === user.id).slice(0, 20).map((i) => redactIntentForUser(i, user));
     res.json({
       ok: true,
       eligibleCount: eligibleIntents.length,
@@ -10303,7 +10903,7 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         amountBRL: intent.expectedAmountBRL
       });
       await savePaymentStoreAsync();
-      res.json({ ok: true, intent });
+      res.json({ ok: true, intent: redactIntentForUser(intent, user) });
     }
   );
   app.post("/api/pagamentos/comprovantes", requireApprovedSession2, async (req, res) => {
@@ -10410,8 +11010,8 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
           res.status(200).json({
             ok: true,
             idempotentReplay: true,
-            receipt: existingIdempotent,
-            freight: enrichFreightWithReceipts(freight),
+            receipt: redactReceiptForUser(existingIdempotent, user),
+            freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
             message: "Comprovante salvo no servidor (requisi\xE7\xE3o idempotente confirmada)."
           });
           return;
@@ -10534,12 +11134,30 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         req.ip
       );
       void persistPaymentReceiptToNeon(receiptRecord);
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: freight.id,
+        freightCode: freight.code,
+        cliente: freight.cliente,
+        installmentType,
+        eventKind: "RECEIPT_UPLOADED",
+        actor: user,
+        receipt: {
+          id: receiptRecord.id,
+          title: receiptRecord.title,
+          originalFileName: receiptRecord.originalFileName,
+          storageFileName: receiptRecord.storageFileName,
+          mimeType: receiptRecord.mimeType,
+          sizeBytes: receiptRecord.sizeBytes,
+          sizeLabel: receiptRecord.sizeLabel
+        },
+        fileBuffer
+      });
       await savePaymentStoreAsync();
       res.status(201).json({
         ok: true,
-        receipt: receiptRecord,
-        freight: enrichFreightWithReceipts(freight),
-        message: "Comprovante salvo no servidor com sucesso. A parcela encontra-se Aguardando confer\xEAncia."
+        receipt: redactReceiptForUser(receiptRecord, user),
+        freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
+        message: "Comprovante anexado e salvo com sucesso! Respons\xE1vel pelo frete e Monitoramento notificados."
       });
     } catch (err) {
       if (err?.message === "PAYLOAD_TOO_LARGE") {
@@ -10661,12 +11279,30 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
         req.ip
       );
       void persistPaymentReceiptToNeon(receipt);
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: freight.id,
+        freightCode: freight.code,
+        cliente: freight.cliente,
+        installmentType: receipt.installmentType,
+        eventKind: "PAYMENT_CONFIRMED",
+        actor: user,
+        receipt: {
+          id: receipt.id,
+          title: receipt.title,
+          originalFileName: receipt.originalFileName,
+          storageFileName: receipt.storageFileName,
+          mimeType: receipt.mimeType,
+          sizeBytes: receipt.sizeBytes,
+          sizeLabel: receipt.sizeLabel
+        },
+        freightPago: freight.status === "Pago"
+      });
       await savePaymentStoreAsync();
       res.json({
         ok: true,
-        receipt,
-        freight: enrichFreightWithReceipts(freight),
-        message: `Pagamento de ${receipt.installmentType === "ADIANTAMENTO" ? "Adiantamento" : "Saldo"} confirmado com sucesso por ${user.name}.`
+        receipt: redactReceiptForUser(receipt, user),
+        freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
+        message: `Pago \u2014 Pagamento de ${receipt.installmentType === "ADIANTAMENTO" ? "Adiantamento" : "Saldo"} confirmado por ${user.name}. Respons\xE1vel e Monitoramento notificados.`
       });
     }
   );
@@ -10726,9 +11362,9 @@ function registerPaymentReceiptRoutes(app, requireApprovedSession2, appendServer
       const user = requireFinanceiroPermission(req, res);
       if (!user) return;
       const freightId = String(req.params.freightId || "");
-      const receipts = paymentStoreState.receipts.filter((r) => r.freightId === freightId);
-      const history = paymentStoreState.history.filter((h) => h.freightId === freightId);
-      const intents = paymentStoreState.intents.filter((i) => i.freightId === freightId);
+      const receipts = paymentStoreState.receipts.filter((r) => r.freightId === freightId).map((r) => redactReceiptForUser(r, user));
+      const history = paymentStoreState.history.filter((h) => h.freightId === freightId).map((h) => redactHistoryForUser(h, user));
+      const intents = paymentStoreState.intents.filter((i) => i.freightId === freightId).map((i) => redactIntentForUser(i, user));
       res.json({
         ok: true,
         receipts,
@@ -11896,7 +12532,8 @@ function sanitizeUserForClient(user, config2) {
     location: user.location,
     joinedAt: user.joinedAt,
     active: user.active,
-    permissoesPaginas: user.permissoesPaginas
+    permissoesPaginas: user.permissoesPaginas,
+    notificationPreferences: normalizePortalNotificationPreferences(user.notificationPreferences)
   };
 }
 function appendAuditLog(actorId, actorName, actorRole, action, details, ip) {
@@ -12268,8 +12905,8 @@ function createExpressApp() {
       if (req.path.startsWith("/meus-fretes") && !["GET", "HEAD"].includes(req.method) && !req.path.includes("/notifications")) {
         const p = req.path, profile = user.accessProfile;
         const isManagerOrAdmin = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA";
-        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate|reopen)$/.test(p);
-        const permitted = isManagerOrAdmin || isSharedAction && (profile === "COMERCIAL" || profile === "EXPEDICAO" || canOperateMonitoring(user) || hasPagePermission(user, "fretes_transferir") || hasPagePermission(user, "fretes_cancelar")) || profile === "COMERCIAL" && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p)) || profile === "EXPEDICAO" && /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p) || canOperateMonitoring(user) && /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p);
+        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|occurrences(\/[^/]+\/resolve)?|transfer|cancel|reactivate|reopen)$/.test(p);
+        const permitted = isManagerOrAdmin || isSharedAction && (profile === "COMERCIAL" || profile === "EXPEDICAO" || profile === "FINANCEIRO" || canOperateMonitoring(user) || hasPagePermission(user, "fretes_transferir") || hasPagePermission(user, "fretes_cancelar")) || profile === "COMERCIAL" && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p)) || profile === "EXPEDICAO" && /\/(claim|operational-data|operational|expedicao-action|occurrences(\/[^/]+\/resolve)?)$/.test(p) || canOperateMonitoring(user) && /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p);
         if (!permitted) {
           res.status(403).json({ error: "Etapa exclusiva de outro perfil." });
           return;
@@ -12947,9 +13584,9 @@ function createExpressApp() {
       res.status(400).json({ error: pwCheck.reason });
       return;
     }
-    if (findUserByIdentifier(normLogin)) {
-      res.status(409).json({ error: "J\xE1 existe um usu\xE1rio com este login ou e-mail." });
-      return;
+    let finalLogin = normLogin;
+    if (findUserByIdentifier(finalLogin)) {
+      finalLogin = `${normLogin}-${crypto13.randomBytes(2).toString("hex")}`;
     }
     const { hash, salt } = hashPassword(String(password));
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
@@ -12966,7 +13603,7 @@ function createExpressApp() {
       id: `emp-${Date.now()}-${crypto13.randomBytes(2).toString("hex")}`,
       name: cleanName,
       email: email ? normalizeIdentifier(email) : normLogin.includes("@") ? normLogin : `${normLogin}@rodovar.com.br`,
-      login: normLogin,
+      login: finalLogin,
       passwordHash: hash,
       passwordSalt: salt,
       mustChangePassword: Boolean(mustChangePassword),
@@ -13312,13 +13949,19 @@ function createExpressApp() {
   );
   app.put("/api/profile", requireApprovedSession, async (req, res) => {
     const actor = req.sessionUser;
-    const { name, phoneExt, login, password } = req.body || {};
+    const { name, phoneExt, login, password, notificationPreferences } = req.body || {};
     if (name && String(name).trim().length >= 3) {
       actor.name = String(name).trim().replace(/[<>]/g, "").slice(0, 120);
     }
     if (phoneExt !== void 0) {
       actor.phoneExt = String(phoneExt).trim().slice(0, 40);
       actor.phone = actor.phoneExt;
+    }
+    if (notificationPreferences && typeof notificationPreferences === "object") {
+      actor.notificationPreferences = normalizePortalNotificationPreferences({
+        ...actor.notificationPreferences || {},
+        ...notificationPreferences
+      });
     }
     if (false) {
       const nextLogin = normalizeIdentifier(login);

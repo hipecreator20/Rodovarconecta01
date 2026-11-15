@@ -28,8 +28,10 @@ import {
   canAccessComercialFreights,
   canAccessExpedicaoFreights,
   canAccessMonitoramentoFreights,
+  canViewFinancialValuesAndStats,
   canViewFreightTeam,
   hasPagePermission,
+  shouldUserReceiveNotification,
 } from '../lib/permissions.ts';
 import {
   isNeonConfigured,
@@ -46,6 +48,7 @@ import {
   persistSystemAssetToNeon,
   getSystemAssetFromNeon,
   queryMonitoringFreightsFromNeon,
+  sql,
 } from '../../neon.ts';
 import { resolveDataRoot } from './dataRoot.ts';
 
@@ -274,9 +277,191 @@ function syncSubDocCounters(freight: UnifiedFreightRecord, sub: FreightSubDocume
   }
 }
 
+let activeGetAllServerUsers: () => Employee[] = () => [];
 const financeListeners = new Set<(freight:UnifiedFreightRecord)=>void>();
 export const subscribeUnifiedFinance=(listener:(freight:UnifiedFreightRecord)=>void)=>{financeListeners.add(listener);return ()=>financeListeners.delete(listener);};
 export const unifiedFinanceFreights=()=>[...freightsIndex.values()].filter(f=>f.situacaoMonitoramento!=='NAO_LIBERADO'&&f.situacaoMonitoramento!=='DEVOLVIDO_EXPEDICAO'&&f.situacaoOperacional!=='CANCELADO');
+
+export function syncPaymentReceiptToUnifiedFreight(params: {
+  freightId: string;
+  freightCode?: string;
+  cliente?: string;
+  installmentType: 'ADIANTAMENTO' | 'SALDO';
+  eventKind: 'RECEIPT_UPLOADED' | 'PAYMENT_CONFIRMED' | 'DELIVERY_CONFIRMED';
+  actor: Employee;
+  receipt?: {
+    id: string;
+    title: string;
+    originalFileName: string;
+    storageFileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    sizeLabel: string;
+  };
+  fileBuffer?: Buffer;
+  freightPago?: boolean;
+}): void {
+  const freight = freightsIndex.get(params.freightId);
+  const sub = freight ? freightSubDocs.get(freight.id) : undefined;
+  const sp = formatSaoPauloDateTime();
+  const freightLabel = freight?.protocol || params.freightCode || params.freightId;
+  const clientLabel = freight?.cliente || params.cliente || 'Frete Rodovar';
+
+  if (freight && sub) {
+    if (params.eventKind === 'RECEIPT_UPLOADED' && params.receipt) {
+      let storageName = params.receipt.storageFileName;
+      if (params.fileBuffer && params.fileBuffer.length > 0) {
+        try {
+          if (!fs.existsSync(FREIGHT_ATTACHMENTS_DIR)) {
+            fs.mkdirSync(FREIGHT_ATTACHMENTS_DIR, { recursive: true });
+          }
+          const copyName = `fpay-${freight.id}-${params.receipt.id}.${params.receipt.storageFileName.split('.').pop() || 'pdf'}`;
+          fs.writeFileSync(path.join(FREIGHT_ATTACHMENTS_DIR, copyName), params.fileBuffer);
+          storageName = copyName;
+          void persistSystemAssetToNeon({
+            id: copyName,
+            slot: 'freightAttachment',
+            mimeType: params.receipt.mimeType || 'application/octet-stream',
+            dataBase64: params.fileBuffer.toString('base64'),
+          });
+        } catch {
+          // fallback keeping storageFileName
+        }
+      }
+      const existingAtt = sub.anexos.find((a) => a.id === `fpay-${params.receipt!.id}`);
+      if (!existingAtt) {
+        sub.anexos.unshift({
+          id: `fpay-${params.receipt.id}`,
+          freightId: freight.id,
+          category: 'COMPROVANTE_PAGAMENTO',
+          label: params.receipt.title,
+          fileName: params.receipt.originalFileName,
+          storageName,
+          mimeType: params.receipt.mimeType,
+          sizeBytes: params.receipt.sizeBytes,
+          sizeLabel: params.receipt.sizeLabel,
+          conferido: false,
+          uploadedById: params.actor.id,
+          uploadedByName: params.actor.name,
+          uploadedAtIso: sp.iso,
+          uploadedAtFormatted: sp.formatted,
+        });
+      }
+      if (freight.situacaoFinanceira === 'NAO_INICIADO') {
+        freight.situacaoFinanceira =
+          params.installmentType === 'ADIANTAMENTO' ? 'PENDENTE_ADIANTAMENTO' : 'PENDENTE_SALDO';
+      }
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: 'Financeiro',
+        eventType: 'UPLOAD_ANEXO',
+        summary: `${params.receipt.title} (${params.receipt.originalFileName}) anexado no Financeiro por ${params.actor.name}. Aguardando conferência.`,
+      });
+    } else if (params.eventKind === 'PAYMENT_CONFIRMED' && params.receipt) {
+      const targetAtt = sub.anexos.find(
+        (a) =>
+          a.id === `fpay-${params.receipt!.id}` ||
+          (a.category === 'COMPROVANTE_PAGAMENTO' && a.label === params.receipt!.title)
+      );
+      if (targetAtt) {
+        targetAtt.conferido = true;
+        targetAtt.conferidoPorId = params.actor.id;
+        targetAtt.conferidoPorNome = params.actor.name;
+        targetAtt.conferidoEmFormatado = sp.formatted;
+      }
+      freight.situacaoFinanceira = params.freightPago
+        ? 'PAGO'
+        : params.installmentType === 'ADIANTAMENTO'
+        ? 'ADIANTAMENTO_PAGO'
+        : 'PENDENTE_SALDO';
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: 'Financeiro',
+        eventType: 'CONFERENCIA_ANEXO',
+        summary: `Pagamento de ${params.installmentType === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmado (Pago) no Financeiro por ${params.actor.name}.`,
+      });
+    } else if (params.eventKind === 'DELIVERY_CONFIRMED') {
+      if (freight.situacaoFinanceira !== 'PAGO') {
+        freight.situacaoFinanceira = 'PENDENTE_SALDO';
+      }
+      appendHistoryEntry(sub, {
+        actorId: params.actor.id,
+        actorName: params.actor.name,
+        actorSector: 'Financeiro',
+        eventType: 'CONFERENCIA_ANEXO',
+        summary: `Entrega validada no Financeiro por ${params.actor.name} — Saldo liberado para pagamento.`,
+      });
+    }
+
+    freight.updatedAtIso = sp.iso;
+    freight.updatedAtFormatted = sp.formatted;
+    freight.revision += 1;
+    persistFreightAndSubDoc(freight, sub);
+  }
+
+  // Notificar imediatamente o responsável pelo frete (Comercial/Expedição) e o Monitoramento
+  const title =
+    params.eventKind === 'PAYMENT_CONFIRMED'
+      ? `Pagamento confirmado (Pago) — Frete ${freightLabel}`
+      : params.eventKind === 'DELIVERY_CONFIRMED'
+      ? `Saldo liberado no Financeiro — Frete ${freightLabel}`
+      : `Comprovante anexado no Frete ${freightLabel}`;
+  const subtitle =
+    params.eventKind === 'PAYMENT_CONFIRMED'
+      ? `${params.receipt?.title || 'Parcela'} liquidada por ${params.actor.name} (${clientLabel}).`
+      : params.eventKind === 'DELIVERY_CONFIRMED'
+      ? `Entrega conferida no Financeiro por ${params.actor.name} (${clientLabel}).`
+      : `${params.receipt?.title || 'Comprovante'} (${params.receipt?.originalFileName || 'arquivo'}) anexado por ${params.actor.name} (${clientLabel}).`;
+
+  const targets: Array<{ recipientId: string; section: 'fretes_comercial' | 'fretes_expedicao' | 'fretes_ativos'; key: string }> = [];
+  if (freight?.comercialResponsavelId && freight.comercialResponsavelId !== params.actor.id) {
+    targets.push({
+      recipientId: freight.comercialResponsavelId,
+      section: 'fretes_comercial',
+      key: 'com',
+    });
+  }
+  if (freight?.expedicaoResponsavelId && freight.expedicaoResponsavelId !== params.actor.id) {
+    targets.push({
+      recipientId: freight.expedicaoResponsavelId,
+      section: 'fretes_expedicao',
+      key: 'exp',
+    });
+  }
+
+  const monitorIds = new Set<string>();
+  if (freight?.monitoramentoResponsavelId && freight.monitoramentoResponsavelId !== params.actor.id) {
+    monitorIds.add(freight.monitoramentoResponsavelId);
+  } else {
+    for (const u of activeGetAllServerUsers()) {
+      if (u.id !== params.actor.id && canOperateMonitoring(u)) {
+        monitorIds.add(u.id);
+      }
+    }
+  }
+  for (const mid of monitorIds) {
+    targets.push({
+      recipientId: mid,
+      section: 'fretes_ativos',
+      key: `mon:${mid}`,
+    });
+  }
+
+  const eventNonce = params.receipt?.id || `${Date.now()}`;
+  for (const t of targets) {
+    pushFreightNotification({
+      recipientId: t.recipientId,
+      title,
+      subtitle,
+      dotColor: params.eventKind === 'PAYMENT_CONFIRMED' ? 'blue' : 'blue',
+      targetSection: t.section,
+      targetId: params.freightId,
+      dedupeKey: `finpay:${params.eventKind}:${params.freightId}:${eventNonce}:${t.key}`,
+    });
+  }
+}
 function saveFreightsSnapshotToNeon(): void {
   void persistStateSnapshotToNeon('rodovar-freights-state', {
     nextProtocolNumber,
@@ -1201,10 +1386,12 @@ export function sanitizeFreightForUser(
   isSharedAvailableQueueItem = false
 ): UnifiedFreightRecord {
   const canSeeCommercialValue =
-    user.accessLevel === 'ADMINISTRADOR' ||
-    user.accessLevel === 'DIRETORIA' ||
-    canAccessComercialFreights(user) ||
-    hasPagePermission(user, 'financeiro');
+    (user.accessLevel !== 'ADMINISTRADOR' && canAccessComercialFreights(user)) ||
+    canViewFinancialValuesAndStats(user);
+  const canSeeContractedValue =
+    (user.accessLevel !== 'ADMINISTRADOR' &&
+      (canAccessComercialFreights(user) || canAccessExpedicaoFreights(user))) ||
+    canViewFinancialValuesAndStats(user);
 
   if (isSharedAvailableQueueItem && user.accessLevel === 'FUNCIONARIO' && !canViewFreightTeam(user)) {
     return {
@@ -1233,7 +1420,10 @@ export function sanitizeFreightForUser(
       expedicaoResponsavelNome: null,
       monitoramentoResponsavelId: null,
       monitoramentoResponsavelNome: null,
-      valorContratadoCentavos: freight.valorContratadoCentavos,
+      valorContratadoCentavos: canSeeContractedValue
+        ? freight.valorContratadoCentavos
+        : (undefined as any),
+      ...(canSeeContractedValue ? {} : { valorOculto: true }),
       condicoesComerciais: '',
       condicoesOperacionais: freight.condicoesOperacionais,
       camposPendentesExpedicao: freight.camposPendentesExpedicao,
@@ -1263,6 +1453,10 @@ export function sanitizeFreightForUser(
   const copy: UnifiedFreightRecord = { ...freight };
   if (!canSeeCommercialValue) {
     delete copy.valorCobradoClienteCentavos;
+  }
+  if (!canSeeContractedValue) {
+    delete (copy as any).valorContratadoCentavos;
+    copy.valorOculto = true;
   }
   return copy;
 }
@@ -1352,6 +1546,7 @@ export function registerUnifiedFreightRoutes(
     ip?: string
   ) => void
 ): void {
+  activeGetAllServerUsers = getAllServerUsers;
   loadOrSeedUnifiedFreights();
   const idemFile = path.join(FREIGHTS_STORE_DIR, '_idempotency.json');
   if (fs.existsSync(idemFile)) {
@@ -1528,7 +1723,9 @@ export function registerUnifiedFreightRoutes(
       }
     }
 
-    const myNotifs = Array.from(semanticMap.values()).slice(0, 50);
+    const myNotifs = Array.from(semanticMap.values())
+      .filter((n) => shouldUserReceiveNotification(user, n))
+      .slice(0, 50);
 
     res.json({
       notifications: myNotifs,
@@ -2159,6 +2356,13 @@ export function registerUnifiedFreightRoutes(
         filteredList = filteredList.filter((f) => matchesComercialStage(f, situacao));
       } else if (area === 'EXPEDICAO') {
         filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
+      } else if (situacao === 'PENDENCIAS') {
+        filteredList = filteredList.filter(
+          (f) =>
+            f.ocorrenciasAbertasCount > 0 ||
+            f.requerReconfirmacaoOperacional ||
+            (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido)
+        );
       } else {
         filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
       }
@@ -4657,7 +4861,7 @@ export function registerUnifiedFreightRoutes(
       const idemKey = checkIdempotency(req, res, user.id);
       if (idemKey === '__HANDLED__') return;
 
-      const { title, description, severity, horarioRealEvento } = req.body || {};
+      const { title, description, severity, horarioRealEvento, attachment } = req.body || {};
       const cleanTitle = String(title || '').trim();
       const cleanDesc = String(description || '').trim();
       if (cleanTitle.length < 3) {
@@ -4673,6 +4877,60 @@ export function registerUnifiedFreightRoutes(
 
       const sp = formatSaoPauloDateTime();
       const sub = freightSubDocs.get(freight.id)!;
+
+      let occAttachment: UnifiedFreightAttachment | undefined;
+      if (attachment && typeof attachment.dataUrl === 'string' && attachment.dataUrl.includes(',')) {
+        const base64Part = attachment.dataUrl.slice(attachment.dataUrl.indexOf(',') + 1);
+        let fileBuf: Buffer;
+        try {
+          fileBuf = Buffer.from(base64Part, 'base64');
+        } catch {
+          res.status(400).json({ error: 'Falha ao decodificar o anexo da ocorrência.' });
+          return;
+        }
+        const cleanAttName = String(attachment.fileName || 'comprovante_ocorrencia.pdf')
+          .replace(/[^a-zA-Z0-9._-]/g, '_')
+          .slice(0, 120);
+        const attValidation = validateAttachmentFileBuffer(fileBuf, cleanAttName);
+        if (!attValidation.valid || !attValidation.extension || !attValidation.mimeType) {
+          res.status(400).json({
+            error: attValidation.error || 'Anexo da ocorrência inválido.',
+            code: 'INVALID_ATTACHMENT_FORMAT',
+          });
+          return;
+        }
+        ensureDirectories();
+        const storageName = `focc-${freight.id}-${crypto.randomUUID()}.${attValidation.extension}`;
+        fs.writeFileSync(path.join(FREIGHT_ATTACHMENTS_DIR, storageName), fileBuf);
+        void persistSystemAssetToNeon({
+          id: storageName,
+          slot: 'freightAttachment',
+          mimeType: attValidation.mimeType,
+          dataBase64: fileBuf.toString('base64'),
+        });
+        const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
+        const isPaymentDoc = /comprovante|pix|pagamento|adiantamento|saldo/i.test(
+          `${cleanTitle} ${cleanAttName}`
+        );
+        occAttachment = {
+          id: `fatt-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+          freightId: freight.id,
+          category: isPaymentDoc ? 'COMPROVANTE_PAGAMENTO' : 'OUTRO',
+          label: `Ocorrência: ${cleanTitle.slice(0, 60)}`,
+          fileName: cleanAttName,
+          storageName,
+          mimeType: attValidation.mimeType,
+          sizeBytes: fileBuf.length,
+          sizeLabel: sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`,
+          conferido: false,
+          uploadedById: user.id,
+          uploadedByName: user.name,
+          uploadedAtIso: sp.iso,
+          uploadedAtFormatted: sp.formatted,
+        };
+        sub.anexos.unshift(occAttachment);
+      }
+
       const occ: UnifiedFreightOccurrence = {
         id: `focc-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         freightId: freight.id,
@@ -4684,6 +4942,13 @@ export function registerUnifiedFreightRoutes(
         createdByName: user.name,
         createdAtIso: sp.iso,
         createdAtFormatted: sp.formatted,
+        ...(occAttachment
+          ? {
+              attachmentId: occAttachment.id,
+              attachmentName: occAttachment.fileName,
+              attachmentMimeType: occAttachment.mimeType,
+            }
+          : {}),
       };
       sub.ocorrencias.unshift(occ);
 
@@ -4703,7 +4968,7 @@ export function registerUnifiedFreightRoutes(
         actorName: user.name,
         actorSector,
         eventType: 'OCORRENCIA',
-        summary: `Ocorrência registrada (${safeSeverity}): ${occ.title}`,
+        summary: `Ocorrência registrada (${safeSeverity}): ${occ.title}${occAttachment ? ` • Anexo: ${occAttachment.fileName}` : ''}`,
         reason: occ.description || undefined,
         horarioRealEvento: horarioRealEvento ? String(horarioRealEvento).slice(0, 60) : sp.formatted,
       });
@@ -4743,6 +5008,18 @@ export function registerUnifiedFreightRoutes(
           targetId: freight.id,
           dedupeKey: `occ:${occ.id}:mon`,
         });
+      } else if (!freight.monitoramentoResponsavelId) {
+        for (const mon of getAllServerUsers().filter((u) => u.id !== user.id && canOperateMonitoring(u))) {
+          pushFreightNotification({
+            recipientId: mon.id,
+            title: `Ocorrência no Frete ${freight.protocol} (${safeSeverity})`,
+            subtitle: `${occ.title} — registrada por ${user.name}`,
+            dotColor: safeSeverity === 'IMPEDITIVA' ? 'red' : 'blue',
+            targetSection: 'fretes_ativos',
+            targetId: freight.id,
+            dedupeKey: `occ:${occ.id}:mon:${mon.id}`,
+          });
+        }
       }
 
       const payload = {
@@ -4750,6 +5027,7 @@ export function registerUnifiedFreightRoutes(
         occurrence: occ,
         freight: sanitizeFreightForUser(freight, user),
         ocorrencias: sub.ocorrencias,
+        anexos: sub.anexos,
         historico: sub.historico,
       };
       storeIdempotentResponse(idemKey, 201, payload);
@@ -4938,6 +5216,7 @@ export function registerUnifiedFreightRoutes(
         'MDFE',
         'RPA',
         'COMPROVANTE_ENTREGA',
+        'COMPROVANTE_PAGAMENTO',
         'ORDEM_CARREGAMENTO',
         'OUTRO',
       ];
@@ -5655,6 +5934,220 @@ export function registerUnifiedFreightRoutes(
         freight: sanitizeFreightForUser(freight, user),
         historico: sub.historico,
       });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // RESTORE FREIGHTS FROM JSON BACKUP (3.2-PRO)
+  // -------------------------------------------------------------------------
+  app.post(
+    '/api/admin/restore-freights-json-backup',
+    requireApprovedSession,
+    async (req: any, res: Response): Promise<void> => {
+      const user = req.sessionUser as Employee;
+      if (!user || user.id !== 'emp-admin-master') {
+        res.status(403).json({ error: 'Acesso restrito ao Administrador Master.' });
+        return;
+      }
+
+      const backupData = req.body as any;
+      if (!backupData || typeof backupData !== 'object') {
+        res.status(400).json({ error: 'Payload JSON inválido.' });
+        return;
+      }
+
+      const schemaVersion = backupData.schema_version || backupData.schemaVersion;
+      if (schemaVersion !== '3.2-PRO') {
+        res.status(400).json({ error: `Versão de schema incompatível: ${schemaVersion}. Esperado "3.2-PRO".` });
+        return;
+      }
+
+      const entregas = backupData.entregas || backupData.freights;
+      if (!Array.isArray(entregas)) {
+        res.status(400).json({ error: 'Coleção de entregas/fretes não encontrada no arquivo JSON.' });
+        return;
+      }
+
+      const checkOnly = Boolean(backupData.checkOnly);
+      const currentCount = freightsIndex.size;
+
+      const identifiers: string[] = [];
+      const inconsistencies: string[] = [];
+      let validCount = 0;
+
+      for (const [idx, item] of entregas.entries()) {
+        if (!item || typeof item !== 'object') {
+          inconsistencies.push(`Item #${idx + 1}: objeto inválido`);
+          continue;
+        }
+        const tracking = item.trackingCode || item.protocol || item.id || `Item #${idx + 1}`;
+        const st = String(item.status || '').toLowerCase();
+        identifiers.push(String(tracking));
+
+        if (st !== 'coletando' && st !== 'em_transito') {
+          inconsistencies.push(`Frete ${tracking}: status "${item.status}" (deve ser coletando ou em_trânsito)`);
+        } else {
+          validCount++;
+        }
+      }
+
+      if (checkOnly) {
+        res.json({
+          ok: true,
+          preview: {
+            schemaVersion,
+            totalFound: entregas.length,
+            validCount,
+            identifiers: identifiers.slice(0, 25),
+            inconsistencies,
+            currentRecordsToDelete: currentCount,
+          },
+        });
+        return;
+      }
+
+      // Safety backup of current freights
+      const safetyBackup = {
+        timestamp: new Date().toISOString(),
+        freights: Array.from(freightsIndex.values()),
+      };
+
+      try {
+        freightsIndex.clear();
+        freightSubDocs.clear();
+
+        if (isNeonConfigured && !isIsolatedTestEnv() && sql) {
+          await sql`DELETE FROM rodovar_fretes`;
+        }
+
+        let importedCount = 0;
+        for (const item of entregas) {
+          const st = String(item.status || '').toLowerCase();
+          if (st !== 'coletando' && st !== 'em_transito') continue;
+
+          const id = String(item.id || `ent-${Math.random().toString(36).substring(2, 11)}`);
+          const trackingCode = String(item.trackingCode || item.protocol || `RDV${Math.floor(1000 + Math.random() * 9000)}`);
+          const cliente = String(item.cliente || 'CLIENTE GERAL');
+          const motorista = String(item.motorista || item.motoristaNome || 'MOTORISTA GERAL');
+          const origem = String(item.origem || 'Origem');
+          const destino = String(item.destino || 'Destino');
+          const freteEmpresa = Number(item.frete_empresa || item.valorFreteEmpresa) || 0;
+          const freteMotorista = Number(item.frete_motorista || item.valorFreteMotorista) || 0;
+          const dataColeta = item.data_coleta ? String(item.data_coleta).slice(0, 10) : new Date().toISOString().slice(0, 10);
+          const observacoes = String(item.observacoes || '');
+          const historico = Array.isArray(item.historico) ? item.historico : [
+            {
+              id: 'evt-' + Math.random().toString(36).substring(2, 9),
+              timestamp: new Date().toISOString(),
+              usuario: 'master',
+              usuarionome: 'Administrador Master',
+              cargo: 'Master',
+              descricao: 'Restaurado via Backup JSON 3.2-PRO'
+            }
+          ];
+
+          const situacaoMonitoramento = st === 'coletando' ? 'NOVO_PARA_CARREGAR' : 'CARREGADO_EM_TRANSPORTE';
+
+          const newFreight: UnifiedFreightRecord = {
+            id,
+            protocol: trackingCode,
+            empresaMarca: 'RODOVAR',
+            unidadeOperacional: 'BA - Salvador' as OperationalUnit,
+            cliente,
+            clienteContato: item.tel_cliente || undefined,
+            origemCidadeUf: origem,
+            enderecoColeta: origem,
+            destinoCidadeUf: destino,
+            enderecoEntrega: destino,
+            tipoCarga: 'Carga Geral',
+            pesoKg: 0,
+            volumes: 1,
+            veiculoNecessario: 'Carreta / Truck',
+            dataColetaIso: dataColeta,
+            janelaColetaInicio: '08:00',
+            janelaColetaFim: '18:00',
+            dataEntregaPrevistaIso: item.prazo ? String(item.prazo).slice(0, 10) : dataColeta,
+            janelaEntregaInicio: '08:00',
+            janelaEntregaFim: '18:00',
+            comercialResponsavelId: item.userId || 'col-master',
+            comercialResponsavelNome: item.vendedor || 'Administrador Master',
+            expedicaoResponsavelId: 'col-master',
+            expedicaoResponsavelNome: 'Administrador Master',
+            monitoramentoResponsavelId: 'col-master',
+            monitoramentoResponsavelNome: 'Administrador Master',
+            valorCobradoClienteCentavos: Math.round(freteEmpresa * 100),
+            valorContratadoCentavos: Math.round(freteMotorista * 100),
+            condicoesComerciais: 'Restaurado via Backup 3.2-PRO',
+            condicoesOperacionais: 'Restaurado via Backup 3.2-PRO',
+            observacoes,
+            motoristaNome: motorista,
+            motoristaTelefone: item.tel_motorista || undefined,
+            favorecidoPagamento: item.favorecidoPix || undefined,
+            chavePix: item.chavePix || undefined,
+            bancoPagamento: item.bancoPix || undefined,
+            devolvidoParaCorrecao: false,
+            requerReconfirmacaoOperacional: false,
+            comprovanteEntregaConferido: false,
+            situacaoComercial: 'EM_MONITORAMENTO',
+            situacaoOperacional: 'LIBERADO_MONITORAMENTO',
+            situacaoMonitoramento,
+            situacaoFinanceira: 'PENDENTE',
+            checklistFechamento: { motoristaConfirmado: true, veiculoConfirmado: true, condicoesConferidas: true, documentosConferidos: true, videochamadaRealizada: true, ordemColetaEnviadaMotorista: true },
+            anexosCount: 0,
+            comentariosCount: 0,
+            ocorrenciasAbertasCount: 0,
+            ocorrenciasImpeditivasCount: 0,
+            checklistConcluidosCount: 6,
+            autorId: item.userId || 'col-master',
+            autorNome: item.vendedor || 'Administrador Master',
+            createdAtIso: item.created_at || new Date().toISOString(),
+            createdAtFormatted: 'Agora',
+            updatedAtIso: new Date().toISOString(),
+            updatedAtFormatted: 'Agora',
+            revision: 1,
+          };
+
+          const subDoc: FreightSubDocument = {
+            freightId: id,
+            anexos: [],
+            comentarios: [],
+            ocorrencias: [],
+            historico: historico.map((h: any) => ({
+              id: h.id || 'evt-' + Math.random().toString(36).substring(2, 9),
+              freightId: id,
+              timestamp: h.timestamp || new Date().toISOString(),
+              usuarioId: h.usuario || 'master',
+              usuarioNome: h.usuarionome || 'Administrador Master',
+              cargo: h.cargo || 'Master',
+              descricao: h.descricao || 'Restaurado via Backup',
+            })),
+          };
+
+          freightsIndex.set(id, newFreight);
+          freightSubDocs.set(id, subDoc);
+          persistFreightAndSubDoc(newFreight, subDoc);
+          importedCount++;
+        }
+
+        freightsDataVersion++;
+        res.json({
+          ok: true,
+          importedCount,
+          message: `✓ Restaurados ${importedCount} fretes com sucesso (schema 3.2-PRO).`,
+        });
+      } catch (err) {
+        console.error('Error restoring freights backup:', err);
+        // Rollback
+        freightsIndex.clear();
+        freightSubDocs.clear();
+        for (const f of safetyBackup.freights) {
+          freightsIndex.set(f.id, f);
+        }
+        res.status(500).json({
+          error: err instanceof Error ? err.message : 'Falha na transação de restauração de fretes.',
+          code: 'RESTORE_TRANSACTION_FAILED',
+        });
+      }
     }
   );
 }

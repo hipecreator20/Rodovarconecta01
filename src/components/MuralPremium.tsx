@@ -13,7 +13,7 @@ const DirectorsIcon=({size=25}:{size?:number})=><svg width={size} height={size} 
 const categories=[['Todos',LayoutGrid],['Fixados',Pin],['Importantes',AlertCircle],['Urgentes',Bell],['Comunicado Geral',Megaphone],['Recursos Humanos',Users],['Segurança',Shield],['Operacional',Truck],['Eventos',Calendar],['Diretoria',DirectorsIcon]] as const;
 const empty={title:'',summary:'',content:'',category:'Comunicado Geral',priority:'Normal',targetAudience:'Todos',requireReadConfirmation:true,pinned:false,featured:false,coverImage:'',bannerImage:'/assets/login-rodovar-sunset-v2.png',attachments:[] as any[],editNote:''};
 export function MuralPremium({currentUser,initial,onHydrated,economicMode=true}:{currentUser:Employee;initial:Announcement[];onHydrated?:(rows:Announcement[],notifications:any[])=>void;economicMode?:boolean}){
- const [rows,setRows]=useState<any[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[canPublish,setCanPublish]=useState(false);
+ const [rows,setRows]=useState<any[]>([]),[loading,setLoading]=useState(false),[error,setError]=useState(''),[canPublish,setCanPublish]=useState(false);
  const [category,setCategory]=useState('Todos'),[search,setSearch]=useState(''),[order,setOrder]=useState('recent'),[scope,setScope]=useState('active'),[page,setPage]=useState(1),[selected,setSelected]=useState(''),[slide,setSlide]=useState(0),[paused,setPaused]=useState(false),[interacting,setInteracting]=useState(false);
  useGlobalLoading(loading && rows.length === 0);
  const [editing,setEditing]=useState<any>(null),[form,setForm]=useState(empty),[busy,setBusy]=useState(false),[comment,setComment]=useState(''),[detailTab,setDetailTab]=useState('Comunicado');

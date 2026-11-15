@@ -31,7 +31,15 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import type { Employee, SystemConfig, UserSocialProfile, SocialPost, SocialComment } from '../types';
+import type {
+  Employee,
+  PortalNotificationPreferences,
+  SystemConfig,
+  UserSocialProfile,
+  SocialPost,
+  SocialComment,
+} from '../types';
+import { normalizePortalNotificationPreferences } from '../lib/permissions';
 import { emitPortalToast, inferToastTypeFromMessage } from './ui/GlobalToastViewport';
 import {
   apiFetchSocialProfile,
@@ -62,6 +70,7 @@ interface SocialProfileViewProps {
   announcements?: any[];
   events?: any[];
   requests?: any[];
+  employees?: Employee[];
   onDownloadFunctionalSheet?: (employee: Employee) => void;
 }
 
@@ -74,6 +83,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   announcements = [],
   events = [],
   requests = [],
+  employees = [],
   onDownloadFunctionalSheet,
 }) => {
   // Navigation tabs: 'social' | 'posts' | 'photos' | 'likes' | 'settings'
@@ -90,27 +100,20 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   });
   const [isSavingAccount, setIsSavingAccount] = useState(false);
 
-  const [notifPrefs, setNotifPrefs] = useState(() => {
-    const defaults = {
-      urgentAnnouncements: true,
-      requestUpdates: true,
-      slaWarnings: true,
-      calendarReminders: true,
-    };
+  const [notifPrefs, setNotifPrefs] = useState<PortalNotificationPreferences>(() => {
+    if (currentUser.notificationPreferences) {
+      return normalizePortalNotificationPreferences(currentUser.notificationPreferences);
+    }
     try {
       const saved = JSON.parse(
         localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null'
       );
-      if (saved) {
-        for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
-          if (typeof saved[key] === 'boolean') defaults[key] = saved[key];
-        }
-      }
+      return normalizePortalNotificationPreferences(saved);
     } catch {
-      // ignore storage errors
+      return normalizePortalNotificationPreferences();
     }
-    return defaults;
   });
+  const [isSavingNotifPrefs, setIsSavingNotifPrefs] = useState(false);
 
   useEffect(() => {
     setAccountForm({
@@ -120,32 +123,27 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   }, [currentUser.id, currentUser.name, currentUser.phoneExt]);
 
   useEffect(() => {
-    const defaults = {
-      urgentAnnouncements: true,
-      requestUpdates: true,
-      slaWarnings: true,
-      calendarReminders: true,
-    };
+    if (currentUser.notificationPreferences) {
+      setNotifPrefs(
+        normalizePortalNotificationPreferences(currentUser.notificationPreferences)
+      );
+      return;
+    }
     try {
       const saved = JSON.parse(
         localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null'
       );
-      if (saved) {
-        for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
-          if (typeof saved[key] === 'boolean') defaults[key] = saved[key];
-        }
-      }
+      setNotifPrefs(normalizePortalNotificationPreferences(saved));
     } catch {
-      // ignore
+      setNotifPrefs(normalizePortalNotificationPreferences());
     }
-    setNotifPrefs(defaults);
-  }, [currentUser.id]);
+  }, [currentUser.id, currentUser.notificationPreferences]);
 
   // Profile data
   const [profile, setProfile] = useState<UserSocialProfile | null>(null);
   const [posts, setPosts] = useState<SocialPost[]>([]);
   const [photos, setPhotos] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Post composer state
@@ -234,6 +232,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
   useEffect(() => {
     loadProfileData();
+    const interval = setInterval(() => {
+      loadProfileData();
+    }, 5000);
+    return () => clearInterval(interval);
   }, [currentUser.id]);
 
   // Handle avatar upload
@@ -290,6 +292,18 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       setErrorMessage(
         err instanceof Error ? err.message : 'Falha ao enviar imagem de capa.'
       );
+    }
+  };
+
+  const handleDeletePhoto = async (photoUrl: string) => {
+    if (!window.confirm('Excluir esta foto da galeria?')) return;
+    try {
+      const nextPhotos = photos.filter((p) => p !== photoUrl);
+      setPhotos(nextPhotos);
+      await apiUpdateSocialProfile({ photos: nextPhotos });
+      showToast('Foto excluída com sucesso da galeria.');
+    } catch {
+      showToast('Erro ao excluir foto.');
     }
   };
 
@@ -505,7 +519,41 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     }
   };
 
-  // Save authorized account fields (Neon PUT /api/profile) and notification preferences (localStorage)
+  // Persist immediate preference toggle to Neon & localStorage
+  const persistNotificationPreferences = async (nextPrefs: PortalNotificationPreferences) => {
+    setNotifPrefs(nextPrefs);
+    setIsSavingNotifPrefs(true);
+    setErrorMessage(null);
+    try {
+      const res = await apiUpdateProfile({ notificationPreferences: nextPrefs });
+      if (!res.ok || !res.user) {
+        setErrorMessage(res.error || 'Erro ao salvar preferências de notificações.');
+        return;
+      }
+      const normalized = normalizePortalNotificationPreferences(
+        res.user.notificationPreferences || nextPrefs
+      );
+      setNotifPrefs(normalized);
+      onUpdateMyProfile?.({
+        notificationPreferences: normalized,
+      });
+      try {
+        localStorage.setItem(
+          'rodovar-profile-preferences:' + currentUser.id,
+          JSON.stringify(normalized)
+        );
+      } catch {
+        // ignore storage quota errors
+      }
+      showToast('Preferências de informações do portal atualizadas!');
+    } catch {
+      setErrorMessage('Falha de comunicação ao salvar preferências no servidor.');
+    } finally {
+      setIsSavingNotifPrefs(false);
+    }
+  };
+
+  // Save authorized account fields (Neon PUT /api/profile) and notification preferences
   const handleSaveAccountAndPrefs = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = accountForm.name.trim();
@@ -519,11 +567,16 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       const res = await apiUpdateProfile({
         name: cleanName,
         phoneExt: accountForm.phoneExt.trim(),
+        notificationPreferences: notifPrefs,
       });
       if (!res.ok || !res.user) {
         setErrorMessage(res.error || 'Erro ao salvar dados no servidor.');
         return;
       }
+      const normalizedPrefs = normalizePortalNotificationPreferences(
+        res.user.notificationPreferences || notifPrefs
+      );
+      setNotifPrefs(normalizedPrefs);
       // Keep social display name/phone synced as well
       void apiUpdateSocialProfile({
         customDisplayName: res.user.name,
@@ -537,11 +590,12 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
         avatar: res.user.avatar,
         email: res.user.email,
         login: res.user.login,
+        notificationPreferences: normalizedPrefs,
       });
       try {
         localStorage.setItem(
           'rodovar-profile-preferences:' + currentUser.id,
-          JSON.stringify(notifPrefs)
+          JSON.stringify(normalizedPrefs)
         );
       } catch {
         setErrorMessage(
@@ -557,6 +611,83 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     }
   };
 
+  const renderPostContentWithLinkPreviews = (content: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urls = content.match(urlRegex) || [];
+
+    return (
+      <div className="space-y-3">
+        <p className="text-xs sm:text-sm text-gray-800 leading-relaxed whitespace-pre-line font-normal">
+          {content.split(urlRegex).map((part, idx) => {
+            if (urlRegex.test(part)) {
+              return (
+                <a
+                  key={idx}
+                  href={part}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline font-semibold break-all"
+                >
+                  {part}
+                </a>
+              );
+            }
+            return part;
+          })}
+        </p>
+
+        {urls.map((url, uidx) => {
+          const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+          const isInstagram = url.includes('instagram.com');
+          const isTikTok = url.includes('tiktok.com');
+          const isKwai = url.includes('kwai.com');
+
+          let ytEmbedUrl = '';
+          if (isYouTube) {
+            const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+            if (match && match[1]) {
+              ytEmbedUrl = `https://www.youtube.com/embed/${match[1]}`;
+            }
+          }
+
+          if (isYouTube && ytEmbedUrl) {
+            return (
+              <div key={uidx} className="rounded-xl overflow-hidden border border-gray-200 bg-black aspect-video max-h-80 shadow-sm">
+                <iframe
+                  src={ytEmbedUrl}
+                  title="YouTube video player"
+                  className="w-full h-full border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            );
+          }
+
+          return (
+            <a
+              key={uidx}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-3 bg-gray-50 hover:bg-gray-100 rounded-xl border border-gray-200/80 transition group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-[#15191D] text-[#FFD400] flex items-center justify-center shrink-0 font-bold text-sm shadow-xs">
+                {isInstagram ? '📷' : isTikTok ? '🎵' : isKwai ? '⚡' : isYouTube ? '▶️' : '🔗'}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-gray-900 truncate group-hover:text-blue-600">
+                  {isYouTube ? 'Vídeo do YouTube — Assistir na íntegra' : isInstagram ? 'Publicação oficial do Instagram' : isTikTok ? 'Vídeo compartilhado do TikTok' : isKwai ? 'Conteúdo em vídeo do Kwai' : 'Link externo verificado'}
+                </p>
+                <p className="text-[11px] text-gray-500 truncate mt-0.5">{url}</p>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    );
+  };
+
   const effectiveAvatarSrc = resolveAvatarUrl(
     {
       ...currentUser,
@@ -565,7 +696,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     systemConfig
   );
 
-  const coverSrc = profile?.coverUrl || '/assets/banner-rodovar-conecta-highway.png';
+  const coverSrc =
+    profile?.coverUrl ||
+    (currentUser as any).coverUrl ||
+    '/assets/banner-rodovar-conecta-highway.png';
 
   const userDisplayName = profile?.customDisplayName || currentUser.name;
   const userBio =
@@ -652,7 +786,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
         {/* Profile Info Overlap */}
         <div className="px-6 pb-6 pt-0 relative">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 -mt-16 sm:-mt-20">
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mt-4 sm:mt-6">
             {/* Avatar + Main Details */}
             <div className="flex flex-col sm:flex-row items-center sm:items-end gap-5 text-center sm:text-left">
               {/* Circular Avatar */}
@@ -764,249 +898,251 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       {/* TAB A: Perfil Social & Publicações (Grid Layout) */}
       {(activeTab === 'social' || activeTab === 'posts' || activeTab === 'likes') && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          {/* Left Column (Sobre mim) */}
-          <div className="lg:col-span-4 space-y-5">
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
-                  <User className="w-4 h-4 text-[#FFD400]" />
-                  <span>Sobre mim</span>
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setIsEditProfileOpen(true)}
-                  className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
-                  title="Editar biografia e informações"
-                >
-                  <Edit3 className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Bio */}
-              <p className="text-xs text-gray-600 leading-relaxed font-normal">
-                {userBio}
-              </p>
-
-              {/* Professional Attributes List */}
-              <div className="space-y-3 pt-3 border-t border-gray-100 text-xs">
-                <div className="flex items-start gap-3 text-gray-700">
-                  <Briefcase className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-[11px] font-bold text-gray-400 block">Cargo</span>
-                    <span className="font-semibold text-gray-800">{currentUser.roleTitle || 'Comercial'}</span>
-                  </div>
+          {/* Left Column (Sobre mim) - Hidden on 'posts' tab */}
+          {activeTab !== 'posts' && (
+            <div className="lg:col-span-4 space-y-5">
+              <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
+                    <User className="w-4 h-4 text-[#FFD400]" />
+                    <span>Sobre mim</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditProfileOpen(true)}
+                    className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
+                    title="Editar biografia e informações"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
                 </div>
 
-                <div className="flex items-start gap-3 text-gray-700">
-                  <Building2 className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-[11px] font-bold text-gray-400 block">Departamento</span>
-                    <span className="font-semibold text-gray-800">{currentUser.department}</span>
-                  </div>
-                </div>
+                {/* Bio */}
+                <p className="text-xs text-gray-600 leading-relaxed font-normal">
+                  {userBio}
+                </p>
 
-                <div className="flex items-start gap-3 text-gray-700">
-                  <MapPin className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-[11px] font-bold text-gray-400 block">Localidade</span>
-                    <span className="font-semibold text-gray-800">{userLocation}</span>
+                {/* Professional Attributes List */}
+                <div className="space-y-3 pt-3 border-t border-gray-100 text-xs">
+                  <div className="flex items-start gap-3 text-gray-700">
+                    <Briefcase className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-[11px] font-bold text-gray-400 block">Cargo</span>
+                      <span className="font-semibold text-gray-800">{currentUser.roleTitle || 'Comercial'}</span>
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex items-start gap-3 text-gray-700">
-                  <Phone className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-[11px] font-bold text-gray-400 block">Telefone</span>
-                    <span className="font-semibold text-gray-800">{userPhone}</span>
+                  <div className="flex items-start gap-3 text-gray-700">
+                    <Building2 className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-[11px] font-bold text-gray-400 block">Departamento</span>
+                      <span className="font-semibold text-gray-800">{currentUser.department}</span>
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex items-start gap-3 text-gray-700">
-                  <Mail className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <span className="text-[11px] font-bold text-gray-400 block">E-mail Corporativo</span>
-                    <span className="font-semibold text-gray-800 truncate block">{currentUser.email}</span>
+                  <div className="flex items-start gap-3 text-gray-700">
+                    <MapPin className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-[11px] font-bold text-gray-400 block">Localidade</span>
+                      <span className="font-semibold text-gray-800">{userLocation}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 text-gray-700">
+                    <Phone className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-[11px] font-bold text-gray-400 block">Telefone</span>
+                      <span className="font-semibold text-gray-800">{userPhone}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 text-gray-700">
+                    <Mail className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="text-[11px] font-bold text-gray-400 block">E-mail Corporativo</span>
+                      <span className="font-semibold text-gray-800 truncate block">{currentUser.email}</span>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* Minhas Redes Sociais Card */}
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3.5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
-                  <Share2 className="w-4 h-4 text-[#FFD400]" />
-                  <span>Minhas Redes Sociais</span>
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setIsEditProfileOpen(true)}
-                  className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
-                  title="Editar redes sociais"
-                >
-                  <Edit3 className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-2.5 text-xs">
-                {profile?.socialLinks?.instagram && (
-                  <a
-                    href={profile.socialLinks.instagram}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-pink-50/50 hover:bg-pink-50 border border-pink-100 text-pink-700 font-bold transition group"
+              {/* Minhas Redes Sociais Card */}
+              <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
+                    <Share2 className="w-4 h-4 text-[#FFD400]" />
+                    <span>Minhas Redes Sociais</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditProfileOpen(true)}
+                    className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
+                    title="Editar redes sociais"
                   >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="w-5 h-5 rounded-md bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 flex items-center justify-center text-white text-[10px] font-bold">
-                        IG
-                      </span>
-                      <span className="truncate">{profile.socialLinks.instagram.replace(/^https?:\/\/(www\.)?instagram\.com\/?/, '@')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+                </div>
 
-                {profile?.socialLinks?.linkedin && (
-                  <a
-                    href={profile.socialLinks.linkedin}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/50 hover:bg-blue-50 border border-blue-100 text-blue-700 font-bold transition group"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">
-                        in
-                      </span>
-                      <span className="truncate">{profile.socialLinks.linkedin.replace(/^https?:\/\/(www\.)?linkedin\.com\/in\/?/, '')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
-
-                {profile?.socialLinks?.facebook && (
-                  <a
-                    href={profile.socialLinks.facebook}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/40 hover:bg-blue-50 border border-blue-100 text-blue-800 font-bold transition group"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="w-5 h-5 rounded-md bg-blue-700 flex items-center justify-center text-white text-[10px] font-bold">
-                        fb
-                      </span>
-                      <span className="truncate">{profile.socialLinks.facebook.replace(/^https?:\/\/(www\.)?facebook\.com\/?/, '')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
-
-                {profile?.socialLinks?.youtube && (
-                  <a
-                    href={profile.socialLinks.youtube}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-red-50/50 hover:bg-red-50 border border-red-100 text-red-700 font-bold transition group"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="w-5 h-5 rounded-md bg-red-600 flex items-center justify-center text-white text-[10px] font-bold">
-                        YT
-                      </span>
-                      <span className="truncate">{profile.socialLinks.youtube.replace(/^https?:\/\/(www\.)?youtube\.com\/?/, '')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
-
-                {profile?.socialLinks?.tiktok && (
-                  <a
-                    href={profile.socialLinks.tiktok}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-900 font-bold transition group"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="w-5 h-5 rounded-md bg-black flex items-center justify-center text-white text-[10px] font-bold">
-                        TK
-                      </span>
-                      <span className="truncate">{profile.socialLinks.tiktok.replace(/^https?:\/\/(www\.)?tiktok\.com\/?/, '')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
-
-                {profile?.socialLinks?.website && (
-                  <a
-                    href={profile.socialLinks.website}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50/50 hover:bg-emerald-50 border border-emerald-100 text-emerald-800 font-bold transition group"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <Globe className="w-4 h-4 text-emerald-600" />
-                      <span className="truncate">{profile.socialLinks.website.replace(/^https?:\/\//, '')}</span>
-                    </div>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
-                  </a>
-                )}
-
-                {!profile?.socialLinks?.instagram &&
-                  !profile?.socialLinks?.linkedin &&
-                  !profile?.socialLinks?.facebook &&
-                  !profile?.socialLinks?.youtube &&
-                  !profile?.socialLinks?.tiktok &&
-                  !profile?.socialLinks?.website && (
-                    <p className="text-gray-400 italic text-[11px] py-1 text-center">
-                      Nenhuma rede social configurada ainda.
-                    </p>
-                  )}
-              </div>
-            </div>
-
-            {/* Galeria de Fotos Widget */}
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
-                  <ImageIcon className="w-4 h-4 text-[#FFD400]" />
-                  <span>Galeria de Fotos</span>
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('photos')}
-                  className="text-xs font-bold text-amber-600 hover:text-amber-700 cursor-pointer"
-                >
-                  Ver todas
-                </button>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {photos.slice(0, 6).map((img, idx) => {
-                  const isLastWithMore = idx === 5 && photos.length > 6;
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => (isLastWithMore ? setActiveTab('photos') : setLightboxImage(img))}
-                      className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group"
+                <div className="space-y-2.5 text-xs">
+                  {profile?.socialLinks?.instagram && (
+                    <a
+                      href={profile.socialLinks.instagram}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-pink-50/50 hover:bg-pink-50 border border-pink-100 text-pink-700 font-bold transition group"
                     >
-                      <img
-                        src={img}
-                        alt={`Foto ${idx + 1}`}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover group-hover:scale-110 transition duration-300"
-                      />
-                      {isLastWithMore && (
-                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white font-extrabold text-base">
-                          +{photos.length - 5}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="w-5 h-5 rounded-md bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 flex items-center justify-center text-white text-[10px] font-bold">
+                          IG
+                        </span>
+                        <span className="truncate">{profile.socialLinks.instagram.replace(/^https?:\/\/(www\.)?instagram\.com\/?/, '@')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {profile?.socialLinks?.linkedin && (
+                    <a
+                      href={profile.socialLinks.linkedin}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/50 hover:bg-blue-50 border border-blue-100 text-blue-700 font-bold transition group"
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">
+                          in
+                        </span>
+                        <span className="truncate">{profile.socialLinks.linkedin.replace(/^https?:\/\/(www\.)?linkedin\.com\/in\/?/, '')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {profile?.socialLinks?.facebook && (
+                    <a
+                      href={profile.socialLinks.facebook}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/40 hover:bg-blue-50 border border-blue-100 text-blue-800 font-bold transition group"
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="w-5 h-5 rounded-md bg-blue-700 flex items-center justify-center text-white text-[10px] font-bold">
+                          fb
+                        </span>
+                        <span className="truncate">{profile.socialLinks.facebook.replace(/^https?:\/\/(www\.)?facebook\.com\/?/, '')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {profile?.socialLinks?.youtube && (
+                    <a
+                      href={profile.socialLinks.youtube}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-red-50/50 hover:bg-red-50 border border-red-100 text-red-700 font-bold transition group"
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="w-5 h-5 rounded-md bg-red-600 flex items-center justify-center text-white text-[10px] font-bold">
+                          YT
+                        </span>
+                        <span className="truncate">{profile.socialLinks.youtube.replace(/^https?:\/\/(www\.)?youtube\.com\/?/, '')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {profile?.socialLinks?.tiktok && (
+                    <a
+                      href={profile.socialLinks.tiktok}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-900 font-bold transition group"
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="w-5 h-5 rounded-md bg-black flex items-center justify-center text-white text-[10px] font-bold">
+                          TK
+                        </span>
+                        <span className="truncate">{profile.socialLinks.tiktok.replace(/^https?:\/\/(www\.)?tiktok\.com\/?/, '')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {profile?.socialLinks?.website && (
+                    <a
+                      href={profile.socialLinks.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50/50 hover:bg-emerald-50 border border-emerald-100 text-emerald-800 font-bold transition group"
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <Globe className="w-4 h-4 text-emerald-600" />
+                        <span className="truncate">{profile.socialLinks.website.replace(/^https?:\/\//, '')}</span>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 shrink-0" />
+                    </a>
+                  )}
+
+                  {!profile?.socialLinks?.instagram &&
+                    !profile?.socialLinks?.linkedin &&
+                    !profile?.socialLinks?.facebook &&
+                    !profile?.socialLinks?.youtube &&
+                    !profile?.socialLinks?.tiktok &&
+                    !profile?.socialLinks?.website && (
+                      <p className="text-gray-400 italic text-[11px] py-1 text-center">
+                        Nenhuma rede social configurada ainda.
+                      </p>
+                    )}
+                </div>
+              </div>
+
+              {/* Galeria de Fotos Widget */}
+              <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-extrabold text-[#080B0D] flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-[#FFD400]" />
+                    <span>Galeria de Fotos</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('photos')}
+                    className="text-xs font-bold text-amber-600 hover:text-amber-700 cursor-pointer"
+                  >
+                    Ver todas
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {photos.slice(0, 6).map((img, idx) => {
+                    const isLastWithMore = idx === 5 && photos.length > 6;
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => (isLastWithMore ? setActiveTab('photos') : setLightboxImage(img))}
+                        className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 cursor-pointer group"
+                      >
+                        <img
+                          src={img}
+                          alt={`Foto ${idx + 1}`}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover group-hover:scale-110 transition duration-300"
+                        />
+                        {isLastWithMore && (
+                          <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white font-extrabold text-base">
+                            +{photos.length - 5}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Center Column: Post Composer & Feed */}
-          <div className="lg:col-span-8 space-y-5">
+          <div className={activeTab === 'posts' ? 'lg:col-span-12 space-y-5' : 'lg:col-span-8 space-y-5'}>
             {/* Post Creator Box */}
             <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3">
               <div className="flex items-start gap-3">
@@ -1169,9 +1305,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
                       {/* Post Body Content */}
                       <div className="px-4 sm:px-5 pb-3">
-                        <p className="text-xs sm:text-sm text-gray-800 leading-relaxed whitespace-pre-line font-normal">
-                          {post.content}
-                        </p>
+                        {renderPostContentWithLinkPreviews(post.content)}
                       </div>
 
                       {/* Post Attached Images Layout (1, 2, 3 or more photos) */}
@@ -1462,6 +1596,17 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                 <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white">
                   <Maximize2 className="w-6 h-6" />
                 </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeletePhoto(img);
+                  }}
+                  className="absolute top-2 right-2 p-2 rounded-xl bg-black/70 hover:bg-red-600 text-white transition cursor-pointer shadow-md"
+                  title="Excluir foto"
+                >
+                  <Trash2 className="w-4 h-4 text-[#FFD400]" />
+                </button>
               </div>
             ))}
           </div>
@@ -1569,49 +1714,132 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
             </div>
 
             {/* Notification Preferences */}
-            <div className="pt-3 border-t border-gray-100 space-y-2.5">
-              <h3 className="text-sm font-extrabold text-[#080B0D]">
-                Preferências de Notificações
-              </h3>
+            <div className="pt-3 border-t border-gray-100 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-extrabold text-[#080B0D]">
+                    Informações e Notificações que Deseja Receber no Portal
+                  </h3>
+                  <p className="text-[11px] text-gray-500">
+                    Ative ou desative por categoria as notificações recebidas na sua conta.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isSavingNotifPrefs}
+                    onClick={() =>
+                      void persistNotificationPreferences({
+                        comunicados: true,
+                        fretesMovimentacoes: true,
+                        ocorrenciasMonitoramento: true,
+                        financeiroPagamentos: true,
+                        solicitacoesPrazos: true,
+                        agendaEventos: true,
+                      })
+                    }
+                    className="px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-100 text-[11px] font-bold text-[#080B0D] cursor-pointer disabled:opacity-50"
+                  >
+                    Ativar todas
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingNotifPrefs}
+                    onClick={() =>
+                      void persistNotificationPreferences({
+                        comunicados: false,
+                        fretesMovimentacoes: false,
+                        ocorrenciasMonitoramento: false,
+                        financeiroPagamentos: false,
+                        solicitacoesPrazos: false,
+                        agendaEventos: false,
+                      })
+                    }
+                    className="px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-100 text-[11px] font-bold text-gray-600 cursor-pointer disabled:opacity-50"
+                  >
+                    Desativar todas
+                  </button>
+                </div>
+              </div>
               <div className="space-y-2 text-xs">
-                {[
-                  {
-                    key: 'urgentAnnouncements',
-                    label: 'Alertas imediatos para Comunicados Obrigatórios e Urgentes',
-                  },
-                  {
-                    key: 'requestUpdates',
-                    label: 'Atualizações de status nas Minhas Solicitações',
-                  },
-                  {
-                    key: 'slaWarnings',
-                    label: 'Aviso preventivo de vencimento do prazo de 48 horas',
-                  },
-                  {
-                    key: 'calendarReminders',
-                    label: 'Lembretes de treinamentos e reuniões da Agenda Corporativa',
-                  },
-                ].map((item) => {
-                  const checked = notifPrefs[item.key as keyof typeof notifPrefs];
+                {(
+                  [
+                    {
+                      key: 'comunicados',
+                      title: 'Comunicados e Mural Corporativo',
+                      description:
+                        'Avisos da diretoria, comunicados obrigatórios e publicações institucionais.',
+                    },
+                    {
+                      key: 'fretesMovimentacoes',
+                      title: 'Fretes — Movimentações e Atribuições',
+                      description:
+                        'Novos fretes disponíveis, transferências de carteira, assunção e liberações.',
+                    },
+                    {
+                      key: 'ocorrenciasMonitoramento',
+                      title: 'Ocorrências e Monitoramento',
+                      description:
+                        'Ocorrências registradas em rota, atrasos, impedimentos e anexos de entrega.',
+                    },
+                    {
+                      key: 'financeiroPagamentos',
+                      title: 'Financeiro — Pagamentos e Comprovantes',
+                      description:
+                        'Confirmações de pagamento, comprovantes anexados/compartilhados e repasses.',
+                    },
+                    {
+                      key: 'solicitacoesPrazos',
+                      title: 'Solicitações Internas e Prazos',
+                      description:
+                        'Atualizações de atendimento interno, respostas e alertas de vencimento.',
+                    },
+                    {
+                      key: 'agendaEventos',
+                      title: 'Agenda Corporativa e Treinamentos',
+                      description:
+                        'Convocações para reuniões, treinamentos e lembretes de eventos.',
+                    },
+                  ] as const
+                ).map((item) => {
+                  const checked = notifPrefs[item.key];
                   return (
                     <label
                       key={item.key}
                       className="flex items-center justify-between gap-4 p-3 rounded-xl bg-[#F8FAFC] border border-gray-200/70 cursor-pointer hover:bg-gray-50 transition-colors"
                     >
-                      <span className="font-semibold text-[#15191D]">{item.label}</span>
-                      <input
-                        type="checkbox"
-                        role="switch"
-                        aria-checked={checked}
-                        checked={checked}
-                        onChange={(e) =>
-                          setNotifPrefs((prev) => ({
-                            ...prev,
-                            [item.key]: e.target.checked,
-                          }))
-                        }
-                        className="w-4 h-4 accent-[#080B0D] rounded cursor-pointer shrink-0"
-                      />
+                      <div className="min-w-0">
+                        <span className="font-bold text-[#15191D] block">{item.title}</span>
+                        <span className="text-[11px] text-gray-500 block mt-0.5">
+                          {item.description}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md ${
+                            checked
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-gray-200 text-gray-600'
+                          }`}
+                        >
+                          {checked ? 'Ativo' : 'Desativado'}
+                        </span>
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          aria-checked={checked}
+                          checked={checked}
+                          disabled={isSavingNotifPrefs}
+                          onChange={(e) => {
+                            const nextPrefs: PortalNotificationPreferences = {
+                              ...notifPrefs,
+                              [item.key]: e.target.checked,
+                            };
+                            void persistNotificationPreferences(nextPrefs);
+                          }}
+                          className="w-4 h-4 accent-[#080B0D] rounded cursor-pointer shrink-0"
+                        />
+                      </div>
                     </label>
                   );
                 })}
@@ -1632,42 +1860,6 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
               </button>
             </div>
           </form>
-
-          {/* Identificação Funcional e Credencial Corporativa */}
-          <div className="bg-white rounded-3xl p-6 border border-gray-200/90 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">
-              <div>
-                <h2 className="text-base font-extrabold text-[#080B0D]">Credencial Funcional RODOVAR</h2>
-                <p className="text-xs text-gray-500">
-                  Cartão de identificação oficial com QR Code e matrícula funcional.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCredencialModal(true)}
-                className="bg-[#080B0D] hover:bg-black text-[#FFD400] text-xs font-extrabold px-4 py-2 rounded-xl flex items-center gap-2 cursor-pointer shadow-xs self-start sm:self-auto"
-              >
-                <Download className="w-4 h-4" />
-                <span>Visualizar / Baixar Credencial</span>
-              </button>
-            </div>
-
-            {/* Quick Data Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
-                <span className="text-gray-400 font-semibold block text-[11px]">Matrícula</span>
-                <span className="font-mono font-bold text-[#080B0D] text-sm">RDV-{currentUser.id.toUpperCase()}</span>
-              </div>
-              <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
-                <span className="text-gray-400 font-semibold block text-[11px]">Nível de Acesso</span>
-                <span className="font-bold text-[#080B0D] text-sm">{currentUser.accessLevel}</span>
-              </div>
-              <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-gray-200/80">
-                <span className="text-gray-400 font-semibold block text-[11px]">Data de Admissão</span>
-                <span className="font-bold text-[#080B0D] text-sm">{currentUser.joinedAt || '01/01/2025'}</span>
-              </div>
-            </div>
-          </div>
 
           {/* Segurança da Conta & Alteração de Senha */}
           <ProfileSecurity

@@ -14,6 +14,19 @@ export function registerPolls(app:Express,guard:any,storageFile=path.join(resolv
  const isDefaultStorage = storageFile === path.join(resolveDataRoot(),'data','mural-polls.local.json');
  const polls:any[]=fs.existsSync(storageFile)?JSON.parse(fs.readFileSync(storageFile,'utf8')):[];
  if(!Array.isArray(polls))throw Error('Arquivo local de enquetes inválido.');
+ if(polls.length===0){
+  polls.push({
+   id: 'default-corporate-poll-2027',
+   question: 'Pesquisa de Satisfação Interna RODOVAR CONECTA — Como você avalia a evolução da nossa frota inteligente e operações logísticas integradas em 2027?',
+   options: ['Excelente e inovadora', 'Muito boa e eficiente', 'Em expansão constante', 'Necessita de melhorias operacionais'],
+   deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+   closed: false,
+   draft: false,
+   results: 'after',
+   votes: {},
+   authorId: 'emp-admin-master'
+  });
+ }
  if(isDefaultStorage) activePollsRef = polls;
  const save=()=>{fs.mkdirSync(path.dirname(storageFile),{recursive:true});const temporary=storageFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(polls),{mode:0o600});fs.renameSync(temporary,storageFile);if(isDefaultStorage)void persistStateSnapshotToNeon('rodovar-mural-polls',polls);};
  app.use('/api/mural-polls',(_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});

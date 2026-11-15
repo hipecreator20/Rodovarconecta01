@@ -75,7 +75,13 @@ const MeusFretesExpedicaoView = lazy(() =>
     default: m.MeusFretesExpedicaoView,
   }))
 );
-import { hasPagePermission, permittedHome, getDefaultPermissionsForDepartment } from './lib/permissions';
+import {
+  hasPagePermission,
+  permittedHome,
+  getDefaultPermissionsForDepartment,
+  normalizePortalNotificationPreferences,
+  shouldUserReceiveNotification,
+} from './lib/permissions';
 import {
   INITIAL_FREIGHTS,
   loadFreightsFromStorage,
@@ -638,6 +644,15 @@ export default function App() {
     }
   }, [employees]);
 
+  const mergeEmployees = (incoming: Employee[]) => {
+    setEmployees((prev) => {
+      const map = new Map<string, Employee>();
+      for (const e of incoming) if (e && e.id) map.set(e.id, e);
+      for (const e of prev) if (e && e.id && !map.has(e.id)) map.set(e.id, e);
+      return Array.from(map.values());
+    });
+  };
+
   useEffect(() => {
     try {
       localStorage.setItem('rodovar_conecta_announcements_v1', JSON.stringify(announcements));
@@ -728,7 +743,7 @@ export default function App() {
               .then((adminData) => {
                 if (adminData.ok) {
                   setPendingAccessRequestsCount(adminData.pendingCount);
-                  setEmployees(adminData.accounts);
+                  mergeEmployees(adminData.accounts);
                 }
               })
               .catch(() => {});
@@ -738,7 +753,7 @@ export default function App() {
                 if (r.ok) {
                   const data = await r.json();
                   if (Array.isArray(data?.employees) && data.employees.length > 0) {
-                    setEmployees(data.employees);
+                    mergeEmployees(data.employees);
                   }
                 }
               })
@@ -1227,7 +1242,7 @@ export default function App() {
           .then((adminData) => {
             if (adminData.ok) {
               setPendingAccessRequestsCount(adminData.pendingCount);
-              setEmployees(adminData.accounts);
+              mergeEmployees(adminData.accounts);
             }
           })
           .catch(() => {});
@@ -1237,7 +1252,7 @@ export default function App() {
             if (r.ok) {
               const data = await r.json();
               if (Array.isArray(data?.employees) && data.employees.length > 0) {
-                setEmployees(data.employees);
+                mergeEmployees(data.employees);
               }
             }
           })
@@ -1291,8 +1306,12 @@ export default function App() {
     }
   };
 
-  // Deduplicated and newest-first sorted notifications (Requirement 10)
-  const sortedUniqueNotifications = orderedNotifications(notifications,currentUser.id).filter(n=>hasPagePermission(currentUser,n.targetSection));
+  // Deduplicated and newest-first sorted notifications (Requirement 10 + per-user notification preferences)
+  const sortedUniqueNotifications = orderedNotifications(notifications, currentUser.id).filter(
+    (n) =>
+      hasPagePermission(currentUser, n.targetSection) &&
+      shouldUserReceiveNotification(currentUser, n)
+  );
 
   // Derived Badges
   const unreadAnnouncementsCount = announcements.filter(
@@ -2372,14 +2391,31 @@ export default function App() {
               : Boolean(updates.avatar || e.hasCustomAvatar),
           email: updates.email ? updates.email.trim().toLowerCase() : e.email,
           login: updates.login ? updates.login.trim().toLowerCase() : e.login || e.email,
+          notificationPreferences: updates.notificationPreferences
+            ? normalizePortalNotificationPreferences(updates.notificationPreferences)
+            : e.notificationPreferences,
           mustChangePassword: false,
         };
       })
     );
 
+    if (updates.notificationPreferences) {
+      void apiFetchFreightNotifications()
+        .then((fNotifs) => {
+          if (Array.isArray(fNotifs.notifications)) {
+            setNotifications((prev) =>
+              mergeIncomingNotifications(prev, fNotifs.notifications, {
+                replaceIdPrefix: 'fnotif-',
+              })
+            );
+          }
+        })
+        .catch(() => {});
+    }
+
     await recordAuditLog(
       'ALTERACAO_PROPRIO_PERFIL',
-      `Titular ${updates.name || currentUser.name} atualizou seus dados/foto de perfil (${updates.login || currentUser.email}).`
+      `Titular ${updates.name || currentUser.name} atualizou seus dados/foto/preferências de perfil (${updates.login || currentUser.email}).`
     );
   };
 
@@ -2495,7 +2531,24 @@ export default function App() {
     }
 
     void loadIncomingShare();
-  }, []);
+    const handleReCheckShare = () => {
+      const current = new URL(window.location.href);
+      if (
+        current.pathname === '/receber-comprovante' ||
+        current.searchParams.get('shared') === '1' ||
+        current.searchParams.has('shareId') ||
+        current.searchParams.has('serverShareId')
+      ) {
+        void loadIncomingShare();
+      }
+    };
+    window.addEventListener('focus', handleReCheckShare);
+    window.addEventListener('popstate', handleReCheckShare);
+    return () => {
+      window.removeEventListener('focus', handleReCheckShare);
+      window.removeEventListener('popstate', handleReCheckShare);
+    };
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isAuthenticated && pendingSharedDraft) {

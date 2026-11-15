@@ -27,6 +27,7 @@ import {
   apiVerifyFreightAttachment,
 } from '../lib/serverApi';
 import { canViewFreightTeam } from '../lib/permissions';
+import { prepareMobileUploadFile } from '../lib/mobileFileHelper';
 
 export interface FreightDocumentsManagerProps {
   freight: UnifiedFreightRecord;
@@ -55,6 +56,7 @@ const CATEGORY_LABELS: Record<FreightAttachmentCategory, string> = {
   RPA: 'RPA / Contrato Motorista',
   ORDEM_CARREGAMENTO: 'Ordem de Coleta Assinada',
   COMPROVANTE_ENTREGA: 'Comprovante de Entrega (Canhoto)',
+  COMPROVANTE_PAGAMENTO: 'Comprovante de Pagamento',
   OUTRO: 'Documento CNH / CRLV / Outro',
 };
 
@@ -166,16 +168,18 @@ export const FreightDocumentsManager: React.FC<FreightDocumentsManagerProps> = (
       );
 
       try {
-        const dataUrl = item.dataUrl || (await readFileAsDataUrl(item.file));
+        const prepared = item.dataUrl
+          ? { dataUrl: item.dataUrl, fileName: item.name }
+          : await prepareMobileUploadFile(item.file, { maxBytes: 10 * 1024 * 1024 });
         setQueue((prev) =>
-          prev.map((q) => (q.id === item.id ? { ...q, progress: 65, dataUrl } : q))
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 65, dataUrl: prepared.dataUrl } : q))
         );
 
         const res = await apiUploadFreightAttachment(freight.id, {
-          fileName: item.name,
+          fileName: prepared.fileName,
           idempotencyKey: item.id,
           category: item.category,
-          dataUrl,
+          dataUrl: prepared.dataUrl,
         });
 
         if (res.ok && res.anexos) {
@@ -327,22 +331,22 @@ export const FreightDocumentsManager: React.FC<FreightDocumentsManagerProps> = (
             </select>
 
             <input
+              id="freight-docs-manager-input"
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".pdf,image/png,image/jpeg,image/webp"
+              accept="application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic"
               onChange={handleFilesSelected}
-              className="hidden"
+              className="sr-only"
             />
 
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold px-3.5 py-1.5 rounded-lg text-xs cursor-pointer shadow-xs"
+            <label
+              htmlFor="freight-docs-manager-input"
+              className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold px-3.5 py-2 rounded-lg text-xs cursor-pointer shadow-xs min-h-[38px]"
             >
               <Plus className="w-4 h-4 stroke-[2.5]" />
-              <span>Escolher Arquivos (Multiplos)</span>
-            </button>
+              <span>Escolher Arquivos (Múltiplos)</span>
+            </label>
           </div>
         </div>
 

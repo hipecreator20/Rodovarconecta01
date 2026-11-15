@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Express } from 'express';
 import type { Employee, InternalRequest, RequestAttachment, RequestStatus } from '../types/index.ts';
-import { hasPagePermission } from '../lib/permissions.ts';
+import { hasPagePermission, shouldUserReceiveNotification } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
 import { persistStateSnapshotToNeon, persistRequestToNeon, persistSystemAssetToNeon, getSystemAssetFromNeon, flushPendingNeonWrites } from '../../neon.ts';
 
@@ -90,7 +90,7 @@ export function registerRequestQueue(app: Express, guard: any, users: () => Empl
     if (!hasPagePermission(u, 'solicitacoes')) return fail(res, 'Sem acesso à fila.', 403);
     res.setHeader('Cache-Control', 'no-store');
     const activeUsers = users().filter(person => person.active && person.approvalStatus === 'APROVADO');
-    res.json({ handlers: activeUsers.filter(person => person.accessProfile === 'RH').map(person => ({id:person.id,name:person.name})), requests: state.requests.filter(r => visible(u, r)), notifications: state.notifications.filter(n => n.recipientId === u.id && !n.dismissed), routing: {
+    res.json({ handlers: activeUsers.filter(person => person.accessProfile === 'RH').map(person => ({id:person.id,name:person.name})), requests: state.requests.filter(r => visible(u, r)), notifications: state.notifications.filter(n => n.recipientId === u.id && !n.dismissed && shouldUserReceiveNotification(u, { type: 'solicitacao', targetSection: 'solicitacoes', title: n.title })), routing: {
       rhActive: activeUsers.filter(person => person.accessProfile === 'RH').length,
       financeActive: activeUsers.filter(person => person.accessProfile === 'FINANCEIRO').length,
     } });

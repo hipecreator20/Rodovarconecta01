@@ -56,7 +56,26 @@ export interface Employee {
   phone?: string;
   role?: string;
   permissoesPaginas?: string[];
+  notificationPreferences?: PortalNotificationPreferences;
 }
+
+export interface PortalNotificationPreferences {
+  comunicados: boolean;
+  fretesMovimentacoes: boolean;
+  ocorrenciasMonitoramento: boolean;
+  financeiroPagamentos: boolean;
+  solicitacoesPrazos: boolean;
+  agendaEventos: boolean;
+}
+
+export const DEFAULT_PORTAL_NOTIFICATION_PREFERENCES: PortalNotificationPreferences = {
+  comunicados: true,
+  fretesMovimentacoes: true,
+  ocorrenciasMonitoramento: true,
+  financeiroPagamentos: true,
+  solicitacoesPrazos: true,
+  agendaEventos: true,
+};
 
 export interface AccessDecisionRecord {
   id: string;
@@ -521,7 +540,7 @@ export interface PaymentReceiptRecord {
   originalFileName: string;
   storageFileName: string;
   storageRelativePath: string;
-  mimeType: 'application/pdf' | 'image/jpeg' | 'image/png';
+  mimeType: 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
   sizeBytes: number;
   sizeLabel: string;
   sha256Hash: string;
@@ -652,6 +671,7 @@ export type FreightAttachmentCategory =
   | 'MDFE'
   | 'RPA'
   | 'COMPROVANTE_ENTREGA'
+  | 'COMPROVANTE_PAGAMENTO'
   | 'ORDEM_CARREGAMENTO'
   | 'OUTRO';
 
@@ -701,6 +721,9 @@ export interface UnifiedFreightOccurrence {
   createdByName: string;
   createdAtIso: string;
   createdAtFormatted: string;
+  attachmentId?: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
 }
 
 export type FreightHistoryEventType =
@@ -794,6 +817,7 @@ export interface UnifiedFreightRecord {
   // Valores Monetários em Centavos Inteiros
   valorCobradoClienteCentavos?: number; // Protegido por permissão comercial/financeira/admin
   valorContratadoCentavos: number;
+  valorOculto?: boolean;
   // Motorista, Transportador, Veículo e Carreta
   transportadorNome?: string;
   transportadorDocumento?: string;

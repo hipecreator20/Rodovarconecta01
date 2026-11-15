@@ -424,6 +424,7 @@ export async function apiUpdateProfile(payload: {
   phoneExt?: string;
   login?: string;
   password?: string;
+  notificationPreferences?: Partial<import('../types').PortalNotificationPreferences>;
 }): Promise<{
   ok: boolean;
   user?: Employee;
@@ -1198,6 +1199,7 @@ export async function apiRegisterFreightOccurrence(
     description?: string;
     severity: 'BAIXA' | 'MEDIA' | 'IMPEDITIVA';
     horarioRealEvento?: string;
+    attachment?: { fileName: string; dataUrl: string };
     idempotencyKey?: string;
   }
 ): Promise<{
@@ -1206,6 +1208,7 @@ export async function apiRegisterFreightOccurrence(
   freight?: UnifiedFreightRecord;
   occurrence?: UnifiedFreightOccurrence;
   ocorrencias?: UnifiedFreightOccurrence[];
+  anexos?: UnifiedFreightAttachment[];
   historico?: UnifiedFreightDetailsPayload['historico'];
   error?: string;
 }> {
@@ -1699,6 +1702,7 @@ export async function apiUpdateSocialProfile(payload: {
   location?: string;
   socialLinks?: any;
   coverUrl?: string;
+  photos?: string[];
 }): Promise<{ ok: boolean; profile?: UserSocialProfile; error?: string }> {
   try {
     const res = await fetch('/api/profile/social', {

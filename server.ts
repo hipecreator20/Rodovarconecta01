@@ -7,7 +7,7 @@ import { registerExternalRh, hydrateExternalRhFromPayload } from './src/server/e
 import { hydrateMuralPollsFromPayload } from './src/server/muralPolls.ts';
 import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
 import { registerChats, hydrateChatsFromPayload } from './src/server/chats.ts';
-import { hasPagePermission, canOperateMonitoring, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector } from './src/lib/permissions.ts';
+import { hasPagePermission, canOperateMonitoring, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector, normalizePortalNotificationPreferences } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
 import { registerRequestQueue, hydrateRequestQueueFromPayload } from './src/server/requestQueue.ts';
 import { registerAccountDeletionRoutes } from './src/server/accountLifecycle.ts';
@@ -61,6 +61,7 @@ import type {
   AccountApprovalStatus,
   AccessDecisionRecord,
   Department,
+  PortalNotificationPreferences,
   SystemConfig,
   UserRole,
   WelcomeBannerItem,
@@ -953,6 +954,7 @@ export interface ServerUserRecord {
   location: string;
   phone: string;
   permissoesPaginas: string[];
+  notificationPreferences?: PortalNotificationPreferences;
 }
 
 interface LoginLockState {
@@ -1592,6 +1594,7 @@ function sanitizeUserForClient(user: ServerUserRecord, config: SystemConfig) {
     joinedAt: user.joinedAt,
     active: user.active,
     permissoesPaginas: user.permissoesPaginas,
+    notificationPreferences: normalizePortalNotificationPreferences(user.notificationPreferences),
   };
 }
 
@@ -2081,12 +2084,13 @@ export function createExpressApp(): express.Express {
       if (req.path.startsWith('/meus-fretes') && !['GET','HEAD'].includes(req.method) && !req.path.includes('/notifications')) {
         const p = req.path, profile = user.accessProfile;
         const isManagerOrAdmin = user.accessLevel === 'ADMINISTRADOR' || user.accessLevel === 'DIRETORIA';
-        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|transfer|cancel|reactivate|reopen)$/.test(p);
+        const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|occurrences(\/[^/]+\/resolve)?|transfer|cancel|reactivate|reopen)$/.test(p);
         const permitted =
           isManagerOrAdmin ||
           (isSharedAction &&
             (profile === 'COMERCIAL' ||
               profile === 'EXPEDICAO' ||
+              profile === 'FINANCEIRO' ||
               canOperateMonitoring(user) ||
               hasPagePermission(user, 'fretes_transferir') ||
               hasPagePermission(user, 'fretes_cancelar'))) ||
@@ -2094,7 +2098,7 @@ export function createExpressApp(): express.Express {
             (p === '/meus-fretes' ||
               /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p))) ||
           (profile === 'EXPEDICAO' &&
-            /\/(claim|operational-data|operational|expedicao-action|occurrences\/[^/]+\/resolve)$/.test(p)) ||
+            /\/(claim|operational-data|operational|expedicao-action|occurrences(\/[^/]+\/resolve)?)$/.test(p)) ||
           (canOperateMonitoring(user) &&
             /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p));
         if (!permitted) {
@@ -2905,9 +2909,9 @@ export function createExpressApp(): express.Express {
       return;
     }
 
-    if (findUserByIdentifier(normLogin)) {
-      res.status(409).json({ error: 'Já existe um usuário com este login ou e-mail.' });
-      return;
+    let finalLogin = normLogin;
+    if (findUserByIdentifier(finalLogin)) {
+      finalLogin = `${normLogin}-${crypto.randomBytes(2).toString('hex')}`;
     }
 
     const { hash, salt } = hashPassword(String(password));
@@ -2928,7 +2932,7 @@ export function createExpressApp(): express.Express {
       id: `emp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
       name: cleanName,
       email: (email ? normalizeIdentifier(email) : normLogin.includes('@') ? normLogin : `${normLogin}@rodovar.com.br`),
-      login: normLogin,
+      login: finalLogin,
       passwordHash: hash,
       passwordSalt: salt,
       mustChangePassword: Boolean(mustChangePassword),
@@ -3336,7 +3340,7 @@ export function createExpressApp(): express.Express {
 
   app.put('/api/profile', requireApprovedSession, async (req: AuthenticatedRequest, res) => {
     const actor = req.sessionUser!;
-    const { name, phoneExt, login, password } = req.body || {};
+    const { name, phoneExt, login, password, notificationPreferences } = req.body || {};
 
     if (name && String(name).trim().length >= 3) {
       actor.name = String(name).trim().replace(/[<>]/g, '').slice(0, 120);
@@ -3344,6 +3348,12 @@ export function createExpressApp(): express.Express {
     if (phoneExt !== undefined) {
       actor.phoneExt = String(phoneExt).trim().slice(0, 40);
       actor.phone = actor.phoneExt;
+    }
+    if (notificationPreferences && typeof notificationPreferences === 'object') {
+      actor.notificationPreferences = normalizePortalNotificationPreferences({
+        ...(actor.notificationPreferences || {}),
+        ...notificationPreferences,
+      });
     }
     if (false && login && String(login).trim().length >= 3) {
       const nextLogin = normalizeIdentifier(login);

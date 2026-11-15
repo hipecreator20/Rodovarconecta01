@@ -45,11 +45,13 @@ import {
   Pin,
   Plus,
   Printer,
+  RefreshCw,
   Search,
   Send,
   Shield,
   ShieldCheck,
   Trash2,
+  Truck,
   Users,
   UserPlus,
   X,
@@ -69,6 +71,7 @@ import {
   EmployeeInvite,
   InternalRequest,
   MenuSection,
+  PortalNotificationPreferences,
   RequestStatus,
   SystemConfig,
 } from '../types';
@@ -78,6 +81,7 @@ import {
   AVAILABLE_MODULES,
   ALL_MODULE_IDS,
   getDefaultPermissionsForDepartment,
+  normalizePortalNotificationPreferences,
 } from '../lib/permissions';
 import { AccessReleaseTab } from './AccessReleaseTab';
 import { SystemConfigTab } from './SystemConfigTab';
@@ -305,6 +309,54 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
   const [localPendingCount, setLocalPendingCount] = useState<number>(pendingAccessRequestsCount);
   const [profileErrorMsg, setProfileErrorMsg] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState<boolean>(false);
+  const [freightRestoreModalOpen, setFreightRestoreModalOpen] = useState(false);
+  const [freightRestorePreview, setFreightRestorePreview] = useState<any>(null);
+  const [freightRestoreFileContent, setFreightRestoreFileContent] = useState<any>(null);
+  const [freightRestoreLoading, setFreightRestoreLoading] = useState(false);
+
+  const handleInspectFreightBackupJson = async (fileOrData: any) => {
+    try {
+      setExportReportToast('Analisando arquivo de backup de fretes 3.2-PRO...');
+      const res = await fetch('/api/admin/restore-freights-json-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ ...fileOrData, checkOnly: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro na análise do backup');
+      setFreightRestorePreview(data.preview);
+      setFreightRestoreFileContent(fileOrData);
+      setFreightRestoreModalOpen(true);
+      setExportReportToast(null);
+    } catch (err) {
+      setExportReportToast(err instanceof Error ? err.message : 'Erro ao processar backup JSON.');
+      setTimeout(() => setExportReportToast(null), 4000);
+    }
+  };
+
+  const handleExecuteFreightRestore = async () => {
+    try {
+      setFreightRestoreLoading(true);
+      const res = await fetch('/api/admin/restore-freights-json-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ ...freightRestoreFileContent, checkOnly: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro na restauração de fretes');
+      setFreightRestoreModalOpen(false);
+      setExportReportToast(`✓ ${data.message || 'Fretes restaurados com sucesso!'}`);
+      setTimeout(() => {
+        setExportReportToast(null);
+        window.location.reload();
+      }, 1500);
+    } catch (err) {
+      setExportReportToast(err instanceof Error ? err.message : 'Erro ao executar restauração.');
+      setTimeout(() => setExportReportToast(null), 4000);
+    } finally {
+      setFreightRestoreLoading(false);
+    }
+  };
 
   React.useEffect(() => {
     setLocalPendingCount(pendingAccessRequestsCount);
@@ -579,11 +631,29 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
     currentUser.login,
   ]);
 
-  const [notifPrefs, setNotifPrefs] = useState(() => {
-    const defaults={urgentAnnouncements:true,requestUpdates:true,slaWarnings:true,calendarReminders:true,browserPush:false};
-    try { const saved=JSON.parse(localStorage.getItem('rodovar-profile-preferences:'+currentUser.id)||'null'); if(saved) for(const key of Object.keys(defaults) as (keyof typeof defaults)[]) if(typeof saved[key]==='boolean') defaults[key]=saved[key]; } catch {}
-    return defaults;
+  const [notifPrefs, setNotifPrefs] = useState<PortalNotificationPreferences>(() => {
+    if (currentUser.notificationPreferences) {
+      return normalizePortalNotificationPreferences(currentUser.notificationPreferences);
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null');
+      return normalizePortalNotificationPreferences(saved);
+    } catch {
+      return normalizePortalNotificationPreferences();
+    }
   });
+  React.useEffect(() => {
+    if (currentUser.notificationPreferences) {
+      setNotifPrefs(normalizePortalNotificationPreferences(currentUser.notificationPreferences));
+      return;
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem('rodovar-profile-preferences:' + currentUser.id) || 'null');
+      setNotifPrefs(normalizePortalNotificationPreferences(saved));
+    } catch {
+      setNotifPrefs(normalizePortalNotificationPreferences());
+    }
+  }, [currentUser.id, currentUser.notificationPreferences]);
 
   // --- EXPORTAÇÃO GERENCIAL STATE ---
   const [exportReportToast, setExportReportToast] = useState<string | null>(null);
@@ -3768,7 +3838,6 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
       <AdministrationMaster onDrivers={()=>setShowDriverCenter(true)} employees={employees} area={masterArea} onArea={openArea}
         onCreate={()=>setShowCreateLoginModal(true)} onNavigate={onNavigate}
         onLogs={()=>openArea('reports',true)} onAudit={()=>openArea('reports',true)}
-        onWatchdog={()=>{if(window.confirm('Executar a auditoria Watchdog SLA 48h e registrar os resultados?')){handleRunSlaWatchdogAudit();openArea('reports');}}}
         onExport={kind=>{if(kind==='reads')handleExportCorporateCsvReport('leituras');else if(kind==='requests')handleExportCorporateCsvReport('sla_solicitacoes');else if(kind==='compliance')handleExportEmployeeComplianceMatrixCsv();else handleExportGovernanceJsonSnapshot();}}
         economicMode={economicMode} />
       <CorporateModal isOpen={showDriverCenter} onClose={()=>setShowDriverCenter(false)} title="Gestão de Motoristas" maxWidth="6xl"><DriverCenter admin/></CorporateModal>
@@ -3794,98 +3863,224 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
         )}
 
 {masterArea==='backups'&&<><p className="am-permission-note">Este backup contém os dados carregados pelo portal. Não inclui arquivos armazenados no servidor, sessões, credenciais de autenticação ou bases locais independentes.</p>          {/* Barra de Backup Integral (.JSON), Importação e Restauração de Dados */}
-          <div className="am-backup-panel flex flex-col gap-5">
-            <div className="text-xs text-gray-300">
-              <span className="font-extrabold text-[#FFD400]">
-                Persistência e Segurança de Dados:
-              </span>{' '}
-              Exporte ou importe o estado local do portal (.JSON). Revise o arquivo antes de restaurar.
+          <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-100 pb-5">
+              <div>
+                <h3 className="text-base font-black text-[#15191D] flex items-center gap-2">
+                  <Download className="w-5 h-5 text-[#FFD400]" />
+                  Central de Backup & Restauração de Páginas e Dados
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Exporte instantaneamente o estado completo do portal, salve páginas individuais ou restaure dados com segurança no Neon PostgreSQL.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportGovernanceJsonSnapshot}
+                  className="bg-[#15191D] hover:bg-black text-white text-xs font-extrabold px-4 py-2.5 rounded-xl inline-flex items-center gap-2 transition cursor-pointer shadow-xs"
+                >
+                  <Download className="w-4 h-4 text-[#FFD400]" />
+                  <span>Exportar Backup Completo (.JSON)</span>
+                </button>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleExportGovernanceJsonSnapshot}
-                className="bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 border border-white/15 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5 text-[#FFD400]" />
-                <span>Exportar Backup (.JSON)</span>
-              </button>
 
-              {onImportPortalBackup && (
-                <label className="bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 border border-white/15 cursor-pointer">
-                  <Folder className="w-3.5 h-3.5 text-[#FFD400]" />
-                  <span>Importar Backup (.JSON)</span>
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      if(file.size>20*1024*1024){setExportReportToast('Backup acima do limite de 20 MB.');return;}
-                      const reader = new FileReader();
-                      reader.onload = () => {
-                        try {
-                          const parsed = JSON.parse(String(reader.result));
-                          const validation = validatePortalBackup(parsed);
-                          if(!validation.valid)throw Error(validation.error);
-                          if(!window.confirm('Restaurar o estado local do portal? '+validation.summary+'. O administrador principal será preservado.'))return;
-                          const ok = onImportPortalBackup(parsed);
-                          setExportReportToast(
-                            ok
-                              ? '✓ Backup (.JSON) importado e restaurado com sucesso!'
-                              : 'Arquivo JSON inválido para restauração.'
-                          );
-                          setTimeout(() => setExportReportToast(null), 4000);
-                        } catch {
-                          setExportReportToast('Backup inválido. Verifique o formato e a integridade das coleções.');
-                          setTimeout(() => setExportReportToast(null), 4000);
-                        }
-                      };
-                      reader.readAsText(file);
-                      e.target.value = '';
-                    }}
-                    className="hidden"
-                  />
-                </label>
-              )}
-
-              {onRestorePortalDefaults &&
-                (!confirmRestoreDefaults ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Card 1: Salvar Páginas e Coleções */}
+              <div className="bg-gray-50 rounded-xl p-4 border border-gray-200/80 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wide">Exportar Páginas e Relatórios</h4>
+                  <p className="text-[11px] text-gray-500 mt-1">Baixe dados específicos de fretes, comunicados ou auditoria em formato estruturado.</p>
+                </div>
+                <div className="flex flex-col gap-2 mt-4">
                   <button
                     type="button"
-                    onClick={() => setConfirmRestoreDefaults(true)}
-                    className="bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-400/30 text-xs font-bold px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                    onClick={() => handleExportCorporateCsvReport('leituras')}
+                    className="w-full bg-white hover:bg-gray-100 text-gray-800 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 inline-flex items-center justify-between cursor-pointer transition"
                   >
-                    <History className="w-3.5 h-3.5" />
-                    <span>Restaurar Conteúdo Padrão</span>
+                    <span>Relatório de Leituras (.CSV)</span>
+                    <Download className="w-3.5 h-3.5 text-gray-400" />
                   </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 bg-red-950/80 border border-red-500/50 px-2.5 py-1 rounded-lg">
-                    <span className="text-[11px] font-bold text-red-200">Confirmar restauração?</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onRestorePortalDefaults();
-                        setConfirmRestoreDefaults(false);
-                        setExportReportToast(
-                          '✓ Conteúdo padrão restaurado (Administrador Master preservado).'
-                        );
+                  <button
+                    type="button"
+                    onClick={() => handleExportCorporateCsvReport('sla_solicitacoes')}
+                    className="w-full bg-white hover:bg-gray-100 text-gray-800 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 inline-flex items-center justify-between cursor-pointer transition"
+                  >
+                    <span>Relatório de Solicitações (.CSV)</span>
+                    <Download className="w-3.5 h-3.5 text-gray-400" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportEmployeeComplianceMatrixCsv}
+                    className="w-full bg-white hover:bg-gray-100 text-gray-800 text-xs font-bold px-3 py-2 rounded-lg border border-gray-200 inline-flex items-center justify-between cursor-pointer transition"
+                  >
+                    <span>Matriz de Conformidade (.CSV)</span>
+                    <Download className="w-3.5 h-3.5 text-gray-400" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Card de Restauração de Fretes 3.2-PRO */}
+              <div className="bg-amber-50/65 rounded-xl p-4 border border-amber-200/80 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wide flex items-center gap-1.5">
+                    <Truck className="w-4 h-4 text-amber-700" />
+                    Restaurar Fretes (3.2-PRO)
+                  </h4>
+                  <p className="text-[11px] text-amber-800/80 mt-1">Carregue o backup oficial de fretes (coletando e em trânsito) com prévia e transação segura no Neon.</p>
+                </div>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const r = await fetch('/assets/aistudio/RODOVAR_CONECTA_FRETES_COLETA_TRANSITO_2026-11-15_066ab279.json');
+                        const json = await r.json();
+                        await handleInspectFreightBackupJson(json);
+                      } catch {
+                        setExportReportToast('Erro ao carregar o arquivo de backup padrão.');
                         setTimeout(() => setExportReportToast(null), 4000);
+                      }
+                    }}
+                    className="w-full bg-[#15191D] hover:bg-black text-[#FFD400] text-xs font-extrabold px-3 py-2.5 rounded-xl inline-flex items-center justify-center gap-2 cursor-pointer transition shadow-xs"
+                  >
+                    <Download className="w-4 h-4 text-[#FFD400]" />
+                    <span>Carregar Backup (15 Fretes)</span>
+                  </button>
+
+                  <label className="w-full bg-white hover:bg-gray-100 text-gray-800 text-xs font-bold px-3 py-2.5 rounded-xl border border-gray-200 inline-flex items-center justify-center gap-2 cursor-pointer transition">
+                    <Folder className="w-4 h-4 text-gray-500" />
+                    <span>Selecionar .JSON...</span>
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          try {
+                            const parsed = JSON.parse(String(reader.result));
+                            handleInspectFreightBackupJson(parsed);
+                          } catch {
+                            setExportReportToast('Arquivo JSON inválido.');
+                            setTimeout(() => setExportReportToast(null), 4000);
+                          }
+                        };
+                        reader.readAsText(file);
+                        e.target.value = '';
                       }}
-                      className="bg-[#E5252A] hover:bg-red-700 text-white text-[11px] font-extrabold px-2 py-0.5 rounded cursor-pointer"
-                    >
-                      Sim, Restaurar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmRestoreDefaults(false)}
-                      className="text-gray-300 hover:text-white text-[11px] font-bold px-1.5 py-0.5 cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                ))}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Card 2: Importar Backup */}
+              <div className="bg-gray-50 rounded-xl p-4 border border-gray-200/80 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wide">Importar e Restaurar Backup</h4>
+                  <p className="text-[11px] text-gray-500 mt-1">Carregue um arquivo JSON de backup válido para restaurar o estado das páginas e registros.</p>
+                </div>
+                <div className="mt-4">
+                  {onImportPortalBackup && (
+                    <label className="w-full bg-[#15191D] hover:bg-black text-[#FFD400] text-xs font-extrabold px-4 py-3 rounded-xl inline-flex items-center justify-center gap-2 cursor-pointer transition shadow-xs">
+                      <Folder className="w-4 h-4 text-[#FFD400]" />
+                      <span>Selecionar Arquivo .JSON</span>
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (file.size > 20 * 1024 * 1024) {
+                            setExportReportToast('Backup acima do limite de 20 MB.');
+                            setTimeout(() => setExportReportToast(null), 4000);
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            try {
+                              const parsed = JSON.parse(String(reader.result));
+                              const validation = validatePortalBackup(parsed);
+                              if (!validation.valid) throw Error(validation.error);
+                              if (!window.confirm('Restaurar o estado do portal? ' + validation.summary + '. O administrador principal será preservado.')) return;
+                              const ok = onImportPortalBackup(parsed);
+                              setExportReportToast(
+                                ok
+                                  ? '✓ Backup (.JSON) importado e restaurado com sucesso!'
+                                  : 'Arquivo JSON inválido para restauração.'
+                              );
+                              setTimeout(() => setExportReportToast(null), 4000);
+                            } catch (err) {
+                              setExportReportToast(err instanceof Error ? err.message : 'Backup inválido. Verifique a integridade do arquivo.');
+                              setTimeout(() => setExportReportToast(null), 4000);
+                            }
+                          };
+                          reader.readAsText(file);
+                          e.target.value = '';
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+
+              {/* Card 3: Restaurar Conteúdo Padrão */}
+              <div className="bg-red-50/60 rounded-xl p-4 border border-red-200/80 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-red-900 uppercase tracking-wide">Restauração de Fábrica</h4>
+                  <p className="text-[11px] text-red-600/80 mt-1">Redefine o conteúdo padrão do portal mantendo as credenciais do Administrador Master ativas.</p>
+                </div>
+                <div className="mt-4">
+                  {onRestorePortalDefaults &&
+                    (!confirmRestoreDefaults ? (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRestoreDefaults(true)}
+                        className="w-full bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold px-4 py-3 rounded-xl inline-flex items-center justify-center gap-2 cursor-pointer transition shadow-xs"
+                      >
+                        <History className="w-4 h-4" />
+                        <span>Restaurar Conteúdo Padrão</span>
+                      </button>
+                    ) : (
+                      <div className="space-y-2 bg-red-100/80 border border-red-300 p-3 rounded-xl">
+                        <p className="text-[11px] font-bold text-red-900 text-center">Confirmar restauração?</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onRestorePortalDefaults();
+                              setConfirmRestoreDefaults(false);
+                              setExportReportToast('✓ Conteúdo padrão restaurado (Administrador Master preservado).');
+                              setTimeout(() => setExportReportToast(null), 4000);
+                            }}
+                            className="flex-1 bg-red-600 hover:bg-red-700 text-white text-[11px] font-extrabold py-2 rounded-lg cursor-pointer transition"
+                          >
+                            Sim, Restaurar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRestoreDefaults(false)}
+                            className="px-3 bg-gray-200 hover:bg-gray-300 text-gray-800 text-[11px] font-bold py-2 rounded-lg cursor-pointer transition"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
+
+            {exportReportToast && (
+              <div className="p-3 bg-[#15191D] text-[#FFD400] text-xs font-bold rounded-xl flex items-center justify-between shadow-md">
+                <span>{exportReportToast}</span>
+                <button type="button" onClick={() => setExportReportToast(null)} className="text-gray-400 hover:text-white cursor-pointer">✕</button>
+              </div>
+            )}
           </div>
         
 
@@ -5042,6 +5237,7 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
         announcements={announcements}
         events={events}
         requests={requests}
+        employees={employees}
         onDownloadFunctionalSheet={handleDownloadEmployeeFunctionalSheetTxt}
       />
     );
@@ -5225,27 +5421,40 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
         </div>
         <div className="rv-profile-notifications">
           <h2 className="text-base font-extrabold text-[#15191D] pt-2">
-            Notificações
+            Informações e Notificações do Portal
           </h2>
+          <p className="text-[11px] text-gray-500 mb-2">
+            Ative ou desative quais informações deseja receber no portal.
+          </p>
           <div className="space-y-2.5 text-xs">
-            {[
-              {
-                key: 'urgentAnnouncements',
-                label: 'Alertas imediatos para Comunicados Obrigatórios e Urgentes',
-              },
-              {
-                key: 'requestUpdates',
-                label: 'Atualizações de status nas Minhas Solicitações',
-              },
-              {
-                key: 'slaWarnings',
-                label: 'Aviso preventivo de vencimento do prazo de 48 horas',
-              },
-              {
-                key: 'calendarReminders',
-                label: 'Lembretes de treinamentos e reuniões da Agenda Corporativa',
-              },
-            ].map((item) => (
+            {(
+              [
+                {
+                  key: 'comunicados',
+                  label: 'Comunicados e Mural Corporativo',
+                },
+                {
+                  key: 'fretesMovimentacoes',
+                  label: 'Fretes — Movimentações, transferências e fila',
+                },
+                {
+                  key: 'ocorrenciasMonitoramento',
+                  label: 'Ocorrências, atrasos e atualizações de Monitoramento',
+                },
+                {
+                  key: 'financeiroPagamentos',
+                  label: 'Financeiro — Pagamentos realizados e comprovantes',
+                },
+                {
+                  key: 'solicitacoesPrazos',
+                  label: 'Solicitações Internas e alertas de prazo',
+                },
+                {
+                  key: 'agendaEventos',
+                  label: 'Agenda Corporativa e treinamentos',
+                },
+              ] as const
+            ).map((item) => (
               <label
                 key={item.key}
                 className="flex items-center justify-between p-3 rounded-lg bg-[#F3F5F7] cursor-pointer"
@@ -5254,11 +5463,29 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 <input
                   type="checkbox"
                   role="switch"
-                  aria-checked={notifPrefs[item.key as keyof typeof notifPrefs]}
-                  checked={notifPrefs[item.key as keyof typeof notifPrefs]}
-                  onChange={(e) =>
-                    setNotifPrefs({ ...notifPrefs, [item.key]: e.target.checked })
-                  }
+                  aria-checked={notifPrefs[item.key]}
+                  checked={notifPrefs[item.key]}
+                  onChange={async (e) => {
+                    const nextPrefs: PortalNotificationPreferences = {
+                      ...notifPrefs,
+                      [item.key]: e.target.checked,
+                    };
+                    setNotifPrefs(nextPrefs);
+                    const res = await apiUpdateProfile({ notificationPreferences: nextPrefs });
+                    if (res.ok && res.user) {
+                      const normalized = normalizePortalNotificationPreferences(
+                        res.user.notificationPreferences || nextPrefs
+                      );
+                      setNotifPrefs(normalized);
+                      onUpdateMyProfile?.({ notificationPreferences: normalized });
+                      try {
+                        localStorage.setItem(
+                          'rodovar-profile-preferences:' + currentUser.id,
+                          JSON.stringify(normalized)
+                        );
+                      } catch {}
+                    }
+                  }}
                   className="rounded text-[#FFD400]"
                 />
               </label>
@@ -5276,13 +5503,17 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
                 const res = await apiUpdateProfile({
                   name: myProfileForm.name,
                   phoneExt: myProfileForm.phoneExt,
+                  notificationPreferences: notifPrefs,
                 });
                 if (!res.ok) {
                   setProfileErrorMsg(res.error || 'Erro ao salvar dados no servidor.');
                   return;
                 }
-                if(res.user) onUpdateMyProfile?.({name:res.user.name,phoneExt:res.user.phoneExt,avatar:res.user.avatar,email:res.user.email,login:res.user.login});
-                try { localStorage.setItem('rodovar-profile-preferences:'+currentUser.id,JSON.stringify(notifPrefs)); } catch { setProfileErrorMsg('Dados atualizados. Não foi possível guardar as preferências neste dispositivo.'); }
+                const normalized = normalizePortalNotificationPreferences(
+                  res.user?.notificationPreferences || notifPrefs
+                );
+                if(res.user) onUpdateMyProfile?.({name:res.user.name,phoneExt:res.user.phoneExt,avatar:res.user.avatar,email:res.user.email,login:res.user.login,notificationPreferences:normalized});
+                try { localStorage.setItem('rodovar-profile-preferences:'+currentUser.id,JSON.stringify(normalized)); } catch { setProfileErrorMsg('Dados atualizados. Não foi possível guardar as preferências neste dispositivo.'); }
                 setProfileSavedToast(true);
                 setTimeout(() => setProfileSavedToast(false), 2500);
               }}
@@ -5775,6 +6006,79 @@ const ModulesViewContent: React.FC<ModulesViewProps> = ({
             </div>
           </div>
         </div></details>
+
+        <CorporateModal
+          isOpen={freightRestoreModalOpen}
+          onClose={() => setFreightRestoreModalOpen(false)}
+          title="Prévia de Restauração de Fretes (Backup 3.2-PRO)"
+          maxWidth="2xl"
+        >
+          <div className="space-y-4 text-xs text-gray-800">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900">Atenção: Substituição de Fretes</p>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  Esta operação irá excluir <strong className="font-black">{freightRestorePreview?.currentRecordsToDelete || 0} fretes atuais</strong> e restaurar <strong className="font-black">{freightRestorePreview?.validCount || 0} fretes</strong> do arquivo (versão {freightRestorePreview?.schemaVersion}). Um backup de segurança será gerado automaticamente.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
+              <div className="flex justify-between font-bold text-gray-700 border-b border-gray-200 pb-1">
+                <span>Total de registros no backup:</span>
+                <span className="text-gray-900 font-black">{freightRestorePreview?.totalFound || 0}</span>
+              </div>
+              <div className="flex justify-between font-bold text-gray-700 border-b border-gray-200 pb-1">
+                <span>Registros válidos (Coletando / Em Trânsito):</span>
+                <span className="text-emerald-700 font-black">{freightRestorePreview?.validCount || 0}</span>
+              </div>
+              <div className="flex justify-between font-bold text-gray-700">
+                <span>Registros atuais a serem substituídos:</span>
+                <span className="text-red-600 font-black">{freightRestorePreview?.currentRecordsToDelete || 0}</span>
+              </div>
+            </div>
+
+            {freightRestorePreview?.inconsistencies?.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 space-y-1">
+                <p className="font-bold text-red-900 text-[11px]">Inconsistências / Alertas encontrados:</p>
+                <ul className="list-disc list-inside text-[11px] text-red-700 space-y-0.5 max-h-24 overflow-y-auto">
+                  {freightRestorePreview.inconsistencies.map((inc: string, i: number) => (
+                    <li key={i}>{inc}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div>
+              <p className="font-bold text-gray-700 mb-1">Identificadores dos fretes no arquivo:</p>
+              <div className="bg-white border border-gray-200 rounded-xl p-2.5 max-h-36 overflow-y-auto font-mono text-[11px] text-gray-600 flex flex-wrap gap-1.5">
+                {freightRestorePreview?.identifiers?.map((id: string, idx: number) => (
+                  <span key={idx} className="bg-gray-100 px-2 py-0.5 rounded border border-gray-200">{id}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-gray-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setFreightRestoreModalOpen(false)}
+                className="bg-gray-200 hover:bg-gray-300 text-gray-800 text-xs font-bold px-4 py-2.5 rounded-xl cursor-pointer transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={freightRestoreLoading}
+                onClick={handleExecuteFreightRestore}
+                className="bg-[#E5252A] hover:bg-red-700 text-white text-xs font-extrabold px-5 py-2.5 rounded-xl inline-flex items-center gap-2 cursor-pointer transition shadow-sm disabled:opacity-50"
+              >
+                {freightRestoreLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>Confirmar e Substituir Todos os Fretes</span>
+              </button>
+            </div>
+          </div>
+        </CorporateModal>
       </div>
     );
   }

@@ -1,5 +1,10 @@
 import {financialProjection} from './financialProjection.ts';
-import {subscribeUnifiedFinance,unifiedFinanceFreights,formatSaoPauloDateTime} from './unifiedFreightEngine.ts';
+import {
+  subscribeUnifiedFinance,
+  unifiedFinanceFreights,
+  formatSaoPauloDateTime,
+  syncPaymentReceiptToUnifiedFreight,
+} from './unifiedFreightEngine.ts';
 import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -21,6 +26,7 @@ import { INITIAL_FREIGHTS, formatFileSize } from '../lib/freightDatabase.ts';
 import {
   canAccessFinanceiroFreights,
   canConfirmFreightPayment,
+  canViewFinancialValuesAndStats,
   canViewPendingPaymentsCount,
 } from '../lib/permissions.ts';
 import { resolveDataRoot } from './dataRoot.ts';
@@ -54,7 +60,7 @@ export interface StagedShareTargetRecord {
   sharedText?: string;
   sharedUrl?: string;
   fileName?: string;
-  mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png';
+  mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
   sizeBytes?: number;
   fileBase64?: string;
   errorMessage?: string;
@@ -122,8 +128,8 @@ export function validatePaymentReceiptBinary(
   originalFileName?: string
 ): {
   valid: boolean;
-  mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png';
-  extension?: 'pdf' | 'jpg' | 'png';
+  mimeType?: 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
+  extension?: 'pdf' | 'jpg' | 'png' | 'webp';
   error?: string;
   code?: string;
 } {
@@ -154,7 +160,7 @@ export function validatePaymentReceiptBinary(
   ) {
     return {
       valid: false,
-      error: 'Formato de arquivo não permitido. Envie apenas PDF, JPEG ou PNG.',
+      error: 'Formato de arquivo não permitido. Envie apenas PDF, JPEG, PNG ou WebP.',
       code: 'INVALID_FILE_TYPE',
     };
   }
@@ -164,7 +170,7 @@ export function validatePaymentReceiptBinary(
   if (headText.includes('<svg') || headText.includes('<script') || headText.includes('<!doctype html')) {
     return {
       valid: false,
-      error: 'Conteúdo de arquivo rejeitado por segurança. Envie apenas PDF, JPEG ou PNG.',
+      error: 'Conteúdo de arquivo rejeitado por segurança. Envie apenas PDF, JPEG, PNG ou WebP.',
       code: 'INVALID_FILE_TYPE',
     };
   }
@@ -213,9 +219,22 @@ export function validatePaymentReceiptBinary(
     };
   }
 
+  // 4. WebP magic bytes: RIFF....WEBP
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return {
+      valid: true,
+      mimeType: 'image/webp',
+      extension: 'webp',
+    };
+  }
+
   return {
     valid: false,
-    error: 'Tipo real do arquivo inválido. O servidor aceita apenas comprovantes em PDF, JPEG ou PNG.',
+    error: 'Tipo real do arquivo inválido. O servidor aceita apenas comprovantes em PDF, JPEG, PNG ou WebP.',
     code: 'INVALID_FILE_TYPE',
   };
 }
@@ -319,6 +338,53 @@ function enrichFreightWithReceipts(freight: FreightRecord): FreightRecord {
     saldoComprovanteId: latestSaldo?.id || freight.saldoComprovanteId,
     comprovantesList: freightReceipts,
     historicoPagamentos: freightHistory,
+  };
+}
+
+function redactReceiptForUser(r: PaymentReceiptRecord, user: Employee): PaymentReceiptRecord {
+  if (canViewFinancialValuesAndStats(user)) return r;
+  return {
+    ...r,
+    expectedAmountBRL: null as any,
+    expectedAmountCentavos: null as any,
+  };
+}
+
+function redactIntentForUser(i: PaymentIntentRecord, user: Employee): PaymentIntentRecord {
+  if (canViewFinancialValuesAndStats(user)) return i;
+  return {
+    ...i,
+    expectedAmountBRL: null as any,
+    expectedAmountCentavos: null as any,
+    chavePix: i.chavePix ? '••••••••' : '',
+  };
+}
+
+function redactHistoryForUser(h: PaymentAuditHistoryEntry, user: Employee): PaymentAuditHistoryEntry {
+  if (canViewFinancialValuesAndStats(user)) return h;
+  return {
+    ...h,
+    amountBRL: null as any,
+    summary: String(h.summary || '').replace(/R\$\s?[\d.,]+/g, 'R$ ••••••'),
+  };
+}
+
+function redactFreightFinancialsForUser(freight: FreightRecord, user: Employee): FreightRecord {
+  if (canViewFinancialValuesAndStats(user)) return freight;
+  return {
+    ...freight,
+    valorTotal: null as any,
+    valorAdiantamento: null as any,
+    valorSaldo: null as any,
+    valorFreteEmpresa: null as any,
+    valorFreteMotorista: null as any,
+    chavePix: freight.chavePix ? '••••••••' : '',
+    comprovantesList: Array.isArray(freight.comprovantesList)
+      ? freight.comprovantesList.map((r) => redactReceiptForUser(r, user))
+      : freight.comprovantesList,
+    historicoPagamentos: Array.isArray(freight.historicoPagamentos)
+      ? freight.historicoPagamentos.map((h) => redactHistoryForUser(h, user))
+      : freight.historicoPagamentos,
   };
 }
 
@@ -856,16 +922,20 @@ export function registerPaymentReceiptRoutes(
       savePaymentStore();
     }
 
-    const enrichedFreights = paymentStoreState.freights.map((f) => enrichFreightWithReceipts(f));
-    const userActiveIntents = paymentStoreState.intents.filter(
-      (i) => i.responsibleUserId === user.id && i.status === 'AGUARDANDO_COMPROVANTE'
+    const canSeeStats = canViewFinancialValuesAndStats(user);
+    const enrichedFreights = paymentStoreState.freights.map((f) =>
+      redactFreightFinancialsForUser(enrichFreightWithReceipts(f), user)
     );
+    const userActiveIntents = paymentStoreState.intents
+      .filter((i) => i.responsibleUserId === user.id && i.status === 'AGUARDANDO_COMPROVANTE')
+      .map((i) => redactIntentForUser(i, user));
 
     res.json({
       ok: true,
       freights: enrichedFreights,
       activeIntents: userActiveIntents,
       canConfirmPayment: canConfirmFreightPayment(user),
+      canViewFinancialStatsAndValues: canSeeStats,
     });
   });
 
@@ -888,7 +958,11 @@ export function registerPaymentReceiptRoutes(
       if (immutable.some(key => incoming[key] !== undefined && incoming[key] !== current[key])) {
         res.status(409).json({error:'O registro financeiro já existe. Valores e pagamentos devem ser tratados no fluxo autorizado.'});return;
       }
-      res.status(200).json({ok:true,freight:enrichFreightWithReceipts(current)});return;
+      res.status(200).json({
+        ok:true,
+        freight:redactFreightFinancialsForUser(enrichFreightWithReceipts(current), user),
+      });
+      return;
     }
     if (incoming.adiantamentoPago || incoming.saldoPago || incoming.status !== 'Pendente Adiantamento') {
       res.status(409).json({error:'Novas solicitações não podem registrar pagamento realizado.'});return;
@@ -904,8 +978,9 @@ export function registerPaymentReceiptRoutes(
 
     res.status(201).json({
       ok: true,
-      freight: enrichFreightWithReceipts(
-        paymentStoreState.freights.find((f) => f.id === incoming.id)!
+      freight: redactFreightFinancialsForUser(
+        enrichFreightWithReceipts(paymentStoreState.freights.find((f) => f.id === incoming.id)!),
+        user
       ),
     });
   });
@@ -927,6 +1002,8 @@ export function registerPaymentReceiptRoutes(
     if (patch.status === 'Pago' && current.status !== 'Pago') {
       res.status(409).json({error:'A confirmação de pagamento exige o fluxo bancário autorizado.'});return;
     }
+    const confirmedDeliveryNow =
+      typeof patch.entregaConfirmada === 'boolean' && patch.entregaConfirmada && !current.entregaConfirmada;
     // Prevent unverified automatic payment confirmation via generic PUT
     const updated: FreightRecord = {
       ...current,
@@ -941,11 +1018,21 @@ export function registerPaymentReceiptRoutes(
     };
 
     paymentStoreState.freights[existingIdx] = updated;
+    if (confirmedDeliveryNow) {
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: updated.id,
+        freightCode: updated.code,
+        cliente: updated.cliente,
+        installmentType: 'SALDO',
+        eventKind: 'DELIVERY_CONFIRMED',
+        actor: user,
+      });
+    }
     await savePaymentStoreAsync();
 
     res.json({
       ok: true,
-      freight: enrichFreightWithReceipts(updated),
+      freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(updated), user),
     });
   });
 
@@ -1074,7 +1161,7 @@ export function registerPaymentReceiptRoutes(
 
     res.status(201).json({
       ok: true,
-      intent,
+      intent: redactIntentForUser(intent, user),
       guidance: 'Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta.',
       disclaimer:
         'Preparar o pagamento não executa PIX, não acessa conta bancária e não significa pagamento realizado.',
@@ -1093,13 +1180,14 @@ export function registerPaymentReceiptRoutes(
       savePaymentStore();
     }
 
-    const eligibleIntents = paymentStoreState.intents.filter(
-      (i) => i.responsibleUserId === user.id && i.status === 'AGUARDANDO_COMPROVANTE'
-    );
+    const eligibleIntents = paymentStoreState.intents
+      .filter((i) => i.responsibleUserId === user.id && i.status === 'AGUARDANDO_COMPROVANTE')
+      .map((i) => redactIntentForUser(i, user));
 
     const recentUserIntents = paymentStoreState.intents
       .filter((i) => i.responsibleUserId === user.id)
-      .slice(0, 20);
+      .slice(0, 20)
+      .map((i) => redactIntentForUser(i, user));
 
     res.json({
       ok: true,
@@ -1151,7 +1239,7 @@ export function registerPaymentReceiptRoutes(
       });
       await savePaymentStoreAsync();
 
-      res.json({ ok: true, intent });
+      res.json({ ok: true, intent: redactIntentForUser(intent, user) });
     }
   );
 
@@ -1281,8 +1369,8 @@ export function registerPaymentReceiptRoutes(
           res.status(200).json({
             ok: true,
             idempotentReplay: true,
-            receipt: existingIdempotent,
-            freight: enrichFreightWithReceipts(freight),
+            receipt: redactReceiptForUser(existingIdempotent, user),
+            freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
             message: 'Comprovante salvo no servidor (requisição idempotente confirmada).',
           });
           return;
@@ -1442,14 +1530,32 @@ export function registerPaymentReceiptRoutes(
       );
 
       void persistPaymentReceiptToNeon(receiptRecord);
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: freight.id,
+        freightCode: freight.code,
+        cliente: freight.cliente,
+        installmentType,
+        eventKind: 'RECEIPT_UPLOADED',
+        actor: user,
+        receipt: {
+          id: receiptRecord.id,
+          title: receiptRecord.title,
+          originalFileName: receiptRecord.originalFileName,
+          storageFileName: receiptRecord.storageFileName,
+          mimeType: receiptRecord.mimeType,
+          sizeBytes: receiptRecord.sizeBytes,
+          sizeLabel: receiptRecord.sizeLabel,
+        },
+        fileBuffer,
+      });
       await savePaymentStoreAsync();
 
       res.status(201).json({
         ok: true,
-        receipt: receiptRecord,
-        freight: enrichFreightWithReceipts(freight),
+        receipt: redactReceiptForUser(receiptRecord, user),
+        freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
         message:
-          'Comprovante salvo no servidor com sucesso. A parcela encontra-se Aguardando conferência.',
+          'Comprovante anexado e salvo com sucesso! Responsável pelo frete e Monitoramento notificados.',
       });
     } catch (err: any) {
       if (err?.message === 'PAYLOAD_TOO_LARGE') {
@@ -1593,13 +1699,31 @@ export function registerPaymentReceiptRoutes(
       );
 
       void persistPaymentReceiptToNeon(receipt);
+      syncPaymentReceiptToUnifiedFreight({
+        freightId: freight.id,
+        freightCode: freight.code,
+        cliente: freight.cliente,
+        installmentType: receipt.installmentType,
+        eventKind: 'PAYMENT_CONFIRMED',
+        actor: user,
+        receipt: {
+          id: receipt.id,
+          title: receipt.title,
+          originalFileName: receipt.originalFileName,
+          storageFileName: receipt.storageFileName,
+          mimeType: receipt.mimeType,
+          sizeBytes: receipt.sizeBytes,
+          sizeLabel: receipt.sizeLabel,
+        },
+        freightPago: freight.status === 'Pago',
+      });
       await savePaymentStoreAsync();
 
       res.json({
         ok: true,
-        receipt,
-        freight: enrichFreightWithReceipts(freight),
-        message: `Pagamento de ${receipt.installmentType === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmado com sucesso por ${user.name}.`,
+        receipt: redactReceiptForUser(receipt, user),
+        freight: redactFreightFinancialsForUser(enrichFreightWithReceipts(freight), user),
+        message: `Pago — Pagamento de ${receipt.installmentType === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmado por ${user.name}. Responsável e Monitoramento notificados.`,
       });
     }
   );
@@ -1669,9 +1793,15 @@ export function registerPaymentReceiptRoutes(
       if (!user) return;
 
       const freightId = String(req.params.freightId || '');
-      const receipts = paymentStoreState.receipts.filter((r) => r.freightId === freightId);
-      const history = paymentStoreState.history.filter((h) => h.freightId === freightId);
-      const intents = paymentStoreState.intents.filter((i) => i.freightId === freightId);
+      const receipts = paymentStoreState.receipts
+        .filter((r) => r.freightId === freightId)
+        .map((r) => redactReceiptForUser(r, user));
+      const history = paymentStoreState.history
+        .filter((h) => h.freightId === freightId)
+        .map((h) => redactHistoryForUser(h, user));
+      const intents = paymentStoreState.intents
+        .filter((i) => i.freightId === freightId)
+        .map((i) => redactIntentForUser(i, user));
 
       res.json({
         ok: true,

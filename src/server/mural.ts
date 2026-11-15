@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {Express} from 'express';
-import {hasPagePermission} from '../lib/permissions.ts';
+import {hasPagePermission,shouldUserReceiveNotification} from '../lib/permissions.ts';
 import type {Announcement,Employee} from '../types/index.ts';
 import {resolveDataRoot} from './dataRoot.ts';
 import {persistAnnouncementToNeon,persistSystemAssetToNeon,getSystemAssetFromNeon} from '../../neon.ts';
@@ -33,7 +33,7 @@ export function registerMural(app:Express,guard:any,db:any,save:()=>void,initial
   void persistSystemAssetToNeon({id,slot:'mural-attachment',mimeType:mime[extension!],dataBase64:bytes.toString('base64')});
   return{id,name:String(input.name).replace(/[\r\n<>"/\\]/g,'_').slice(0,160),size:Math.ceil(bytes.length/1024)+' KB',type:extension!.toUpperCase(),mimeType:mime[extension!],hash:crypto.createHash('sha256').update(bytes).digest('hex')};
  };
- app.get('/api/mural',guard,check,(req:any,res)=>res.json({announcements:state.announcements.filter((a:any)=>visible(a,req.sessionUser)).map((a:any)=>publicRecord(a,req.sessionUser)),notifications:state.notifications.filter((n:any)=>n.recipientId===req.sessionUser.id&&!n.dismissed),canPublish:publisher(req.sessionUser)}));
+ app.get('/api/mural',guard,check,(req:any,res)=>res.json({announcements:state.announcements.filter((a:any)=>visible(a,req.sessionUser)).map((a:any)=>publicRecord(a,req.sessionUser)),notifications:state.notifications.filter((n:any)=>n.recipientId===req.sessionUser.id&&!n.dismissed&&shouldUserReceiveNotification(req.sessionUser,{type:'comunicado',targetSection:'comunicados',title:n.title,subtitle:n.subtitle})),canPublish:publisher(req.sessionUser)}));
  app.post('/api/mural/notifications/read',guard,check,(req:any,res)=>{const ids=req.body?.ids;if(!Array.isArray(ids)||ids.length>500)return fail(res,400,'Notificações inválidas.');for(const n of state.notifications.filter((n:any)=>n.recipientId===req.sessionUser.id&&ids.includes(n.id))){n.read=true;if(req.body.dismiss)n.dismissed=true;}save();res.json({ok:true});});
  app.post('/api/mural/import',guard,check,(req:any,res)=>{
   if(req.sessionUser.accessLevel!=='ADMINISTRADOR')return fail(res,403,'Importação exclusiva do administrador.');

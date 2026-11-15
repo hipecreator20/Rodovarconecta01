@@ -276,6 +276,7 @@ export async function initializeNeonSchema(): Promise<void> {
         joined_at VARCHAR(64) DEFAULT '',
         active BOOLEAN DEFAULT TRUE,
         permissoes_paginas JSONB DEFAULT '[]'::jsonb,
+        notification_preferences JSONB DEFAULT '{}'::jsonb,
         roster_activation_version INT DEFAULT 1,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -299,6 +300,7 @@ export async function initializeNeonSchema(): Promise<void> {
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS joined_at VARCHAR(64) DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS permissoes_paginas JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS notification_preferences JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS roster_activation_version INT DEFAULT 1;
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
@@ -976,6 +978,12 @@ function mapRowToServerUserRecord(row: any): any {
     : typeof row.permissoes_paginas === 'string'
     ? JSON.parse(row.permissoes_paginas || '[]')
     : [];
+  const rawPrefs =
+    row.notification_preferences && typeof row.notification_preferences === 'object'
+      ? row.notification_preferences
+      : typeof row.notification_preferences === 'string'
+      ? JSON.parse(row.notification_preferences || '{}')
+      : undefined;
   return {
     id: String(row.id),
     name: String(row.name || row.login || row.email),
@@ -1002,6 +1010,7 @@ function mapRowToServerUserRecord(row: any): any {
     joinedAt: String(row.joined_at || '28/10/2026'),
     active: row.active !== undefined && row.active !== null ? Boolean(row.active) : true,
     permissoesPaginas: permissoes,
+    ...(rawPrefs && Object.keys(rawPrefs).length > 0 ? { notificationPreferences: rawPrefs } : {}),
     rosterActivationVersion: Number(row.roster_activation_version || 1),
   };
 }
@@ -1019,13 +1028,18 @@ export function persistUserToNeon(u: any): Promise<void> {
         const roleTitle = String(u.roleTitle || u.accessProfile || 'Colaborador').slice(0, 150);
         const accessProfile = u.accessProfile ? String(u.accessProfile).slice(0, 50) : null;
         const permissoes = JSON.stringify(Array.isArray(u.permissoesPaginas) ? u.permissoesPaginas : []);
+        const notifPrefs = JSON.stringify(
+          u.notificationPreferences && typeof u.notificationPreferences === 'object'
+            ? u.notificationPreferences
+            : {}
+        );
         await dbSql`
           INSERT INTO rodovar_users (
             id, name, email, login, department, role, role_title, access_level, access_profile,
             password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
             approval_status, requested_at, approved_by, approved_at, status_reason,
             migrated_from_google, phone_ext, phone, location, joined_at, active,
-            permissoes_paginas, roster_activation_version, updated_at
+            permissoes_paginas, notification_preferences, roster_activation_version, updated_at
           ) VALUES (
             ${String(u.id)}, ${String(u.name || login)}, ${email}, ${login},
             ${String(u.department || 'Administrativo')}, ${role}, ${roleTitle},
@@ -1037,7 +1051,7 @@ export function persistUserToNeon(u: any): Promise<void> {
             ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
             ${String(u.phoneExt || '71 9 9920-2476')}, ${String(u.phone || u.phoneExt || '71 9 9920-2476')},
             ${String(u.location || 'BA - Salvador')}, ${String(u.joinedAt || '28/10/2026')},
-            ${u.active !== undefined ? Boolean(u.active) : true}, ${permissoes}::jsonb,
+            ${u.active !== undefined ? Boolean(u.active) : true}, ${permissoes}::jsonb, ${notifPrefs}::jsonb,
             ${Number(u.rosterActivationVersion || 1)}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO UPDATE SET
@@ -1066,6 +1080,7 @@ export function persistUserToNeon(u: any): Promise<void> {
             joined_at = EXCLUDED.joined_at,
             active = EXCLUDED.active,
             permissoes_paginas = EXCLUDED.permissoes_paginas,
+            notification_preferences = EXCLUDED.notification_preferences,
             roster_activation_version = EXCLUDED.roster_activation_version,
             updated_at = CURRENT_TIMESTAMP
         `;
@@ -2276,6 +2291,9 @@ export function persistNotificationToNeon(notif: {
 export async function loadNotificationsFromNeon(recipientId: string, limit = 50): Promise<any[]> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return [];
   try {
+    try {
+      await sql`ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE`;
+    } catch {}
     const rows = await sql`
       SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
               time_label AS "timeLabel", read, COALESCE(dismissed, FALSE) AS dismissed,
@@ -2289,14 +2307,31 @@ export async function loadNotificationsFromNeon(recipientId: string, limit = 50)
     `;
     return rows as any[];
   } catch (err) {
-    console.warn('Neon loadNotificationsFromNeon error:', (err as Error).message);
-    return [];
+    try {
+      const rowsFallback = await sql`
+        SELECT id, recipient_id AS "recipientId", type, dot_color AS "dotColor", title, subtitle,
+                time_label AS "timeLabel", read, FALSE AS dismissed,
+                target_section AS "targetSection", target_id AS "targetId",
+                dedupe_key AS "dedupeKey", created_at AS "createdAt"
+         FROM rodovar_notifications
+         WHERE recipient_id = ${recipientId}
+         ORDER BY created_at DESC
+         LIMIT ${limit}
+      `;
+      return rowsFallback as any[];
+    } catch (err2) {
+      console.warn('Neon loadNotificationsFromNeon error:', (err2 as Error).message);
+      return [];
+    }
   }
 }
 
 export async function loadDismissedNotificationIdsFromNeon(recipientId: string): Promise<{ ids: string[]; dedupeKeys: string[] }> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !recipientId) return { ids: [], dedupeKeys: [] };
   try {
+    try {
+      await sql`ALTER TABLE rodovar_notifications ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE`;
+    } catch {}
     const rows = await sql`
       SELECT id, dedupe_key AS "dedupeKey"
        FROM rodovar_notifications

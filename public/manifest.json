@@ -71,10 +71,16 @@
             "application/pdf",
             "image/jpeg",
             "image/png",
+            "image/webp",
+            "image/heic",
+            "image/heif",
             ".pdf",
             ".jpg",
             ".jpeg",
-            ".png"
+            ".png",
+            ".webp",
+            ".heic",
+            ".heif"
           ]
         }
       ]

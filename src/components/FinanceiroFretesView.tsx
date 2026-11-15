@@ -50,7 +50,13 @@ import {
   getFileDataFromIndexedDB,
   readFileAsDataUrl,
 } from '../lib/freightDatabase';
-import { canConfirmFreightPayment, canAccessFinanceiroFreights } from '../lib/permissions';
+import {
+  canConfirmFreightPayment,
+  canAccessFinanceiroFreights,
+  canOperateFinanceiroPayments,
+  canViewFinancialValuesAndStats,
+} from '../lib/permissions';
+import { prepareMobileUploadFile } from '../lib/mobileFileHelper';
 import { getAuthHeaders } from '../lib/serverApi';
 import {
   SharedReceiptDraft,
@@ -127,30 +133,56 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     );
   }, [currentUser.accessLevel, currentUser.department]);
 
-  // Regra de Sigilo e Proteção de Valores Financeiros:
-  // Acesso estritamente validado pelo servidor (hasPagePermission financeiro / canConfirmFreightPayment)
-  const isFinanceiroUser = useMemo(
-    () => currentUser.accessProfile === 'FINANCEIRO',
+  // Regra Estrita de Sigilo de Valores e Estatísticas Financeiras:
+  // Exclusivo para Financeiro (Petrônio) e Diretores (Vitor, Alexandre e Ricardo).
+  const canSeeFinancialStatsAndValues = useMemo(
+    () => canViewFinancialValuesAndStats(currentUser),
     [currentUser]
   );
 
   const canExecutePayment = useMemo(
-    () => canConfirmFreightPayment(currentUser),
+    () => canOperateFinanceiroPayments(currentUser),
     [currentUser]
   );
 
-  const [showMonetaryValues, setShowMonetaryValues] = useState<boolean>(true);
+  const [showMonetaryValues, setShowMonetaryValues] = useState<boolean>(
+    () => canViewFinancialValuesAndStats(currentUser)
+  );
+
+  useEffect(() => {
+    setShowMonetaryValues(canSeeFinancialStatsAndValues);
+  }, [canSeeFinancialStatsAndValues]);
 
   const formatProtectedCurrency = (val: number | string) => {
-    if (!showMonetaryValues) {
-      return 'R$ ••••••';
-    }
     const num = typeof val === 'number' ? val : Number(val) || 0;
     return formatCurrencyBRL(num);
   };
 
   // Filter Tabs
   const [activeFilter, setActiveFilter] = useState<FilterTab>('Todos');
+
+  const [financeActionBanner, setFinanceActionBanner] = useState<{
+    id: string;
+    badge: 'PAGO' | 'ANEXO' | 'ENTREGA' | 'INTENÇÃO' | 'SOLICITADO';
+    title: string;
+    detail: string;
+    tone: 'emerald' | 'amber' | 'sky';
+  } | null>(null);
+
+  const showFinanceBanner = (
+    badge: 'PAGO' | 'ANEXO' | 'ENTREGA' | 'INTENÇÃO' | 'SOLICITADO',
+    title: string,
+    detail: string,
+    tone: 'emerald' | 'amber' | 'sky' = 'emerald'
+  ) => {
+    setFinanceActionBanner({
+      id: `fin-banner-${Date.now()}`,
+      badge,
+      title,
+      detail,
+      tone,
+    });
+  };
 
   // Toast Notification (Global Portal z-[9999] — sempre acima de modais)
   const triggerToast = (title: string, subtitle?: string) => {
@@ -554,9 +586,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       onAddFreight(saved.freight);
       setShowCreateModal(false);
       resetCreateModal();
+      showFinanceBanner(
+        'SOLICITADO',
+        `Solicitação de pagamento registrada (${code})`,
+        `Cliente ${newFreight.cliente} • Valor ${formatProtectedCurrency(newFreight.valorAdiantamento)}`,
+        'sky'
+      );
       triggerToast(
         `Solicitação de Frete ${code} registrada!`,
-        `Cliente ${newFreight.cliente} • Adiantamento: ${formatCurrencyBRL(newFreight.valorAdiantamento)}`
+        `Cliente ${newFreight.cliente} • Adiantamento: ${formatProtectedCurrency(newFreight.valorAdiantamento)}`
       );
     } catch (error) {
       triggerToast('Solicitação não salva', error instanceof Error ? error.message : 'Confira a conexão e tente novamente.');
@@ -712,52 +750,21 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     if (!paymentModalFreight) return;
     const mode = paymentStepMode;
 
-    if (file.size > 10 * 1024 * 1024) {
-      const msg = 'O arquivo excede o tamanho máximo permitido de 10 MB.';
-      setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
-      setUploadErrorByInstallment((prev) => ({ ...prev, [mode]: msg }));
-      emitPortalToast({ type: 'error', title: 'Arquivo muito grande', message: msg });
-      return;
-    }
-
-    const lower = file.name.toLowerCase();
-    const isAllowed =
-      file.type === 'application/pdf' ||
-      file.type === 'image/jpeg' ||
-      file.type === 'image/png' ||
-      lower.endsWith('.pdf') ||
-      lower.endsWith('.jpg') ||
-      lower.endsWith('.jpeg') ||
-      lower.endsWith('.png');
-
-    if (!isAllowed) {
-      const msg = 'Formato inválido. Selecione apenas arquivos PDF, JPEG ou PNG.';
-      setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
-      setUploadErrorByInstallment((prev) => ({ ...prev, [mode]: msg }));
-      emitPortalToast({ type: 'error', title: 'Formato não permitido', message: msg });
-      return;
-    }
-
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const fileBase64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-      const mimeType =
-        file.type ||
-        (lower.endsWith('.pdf')
-          ? 'application/pdf'
-          : lower.endsWith('.png')
-            ? 'image/png'
-            : 'image/jpeg');
-
+      const prepared = await prepareMobileUploadFile(file, { maxBytes: 10 * 1024 * 1024 });
+      const convertedFile =
+        typeof File !== 'undefined'
+          ? new File([prepared.blob], prepared.fileName, { type: prepared.mimeType })
+          : file;
       const draftItem: InstallmentLocalDraft = {
-        file,
-        fileName: file.name,
-        mimeType,
-        sizeBytes: file.size,
-        dataUrl,
-        fileBase64,
+        file: convertedFile,
+        fileName: prepared.fileName,
+        mimeType: prepared.mimeType,
+        sizeBytes: prepared.sizeBytes,
+        dataUrl: prepared.dataUrl,
+        fileBase64: prepared.base64,
         idempotencyKey: `idem-${currentUser.id}-${paymentModalFreight.id}-${mode}-${Date.now()}`,
-        isScheduledProof: lower.includes('agendamento'),
+        isScheduledProof: prepared.fileName.toLowerCase().includes('agendamento'),
       };
 
       setDraftByInstallment((prev) => ({ ...prev, [mode]: draftItem }));
@@ -769,12 +776,25 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             ? 'AGUARDANDO_ENVIO_OFFLINE'
             : 'RECEBIDO_NO_CELULAR',
       }));
-    } catch {
+      showFinanceBanner(
+        'ANEXO',
+        `Comprovante anexado localmente (${paymentModalFreight.code})`,
+        `Arquivo "${prepared.fileName}" carregado. Toque em "Conferir e salvar" para enviar ao frete e notificar Monitoramento.`,
+        'amber'
+      );
+      emitPortalToast({
+        type: 'info',
+        title: 'Comprovante carregado',
+        message: `${prepared.fileName} pronto para envio.`,
+      });
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível ler o arquivo no dispositivo.';
       setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
-      setUploadErrorByInstallment((prev) => ({
-        ...prev,
-        [mode]: 'Não foi possível ler o arquivo no dispositivo.',
-      }));
+      setUploadErrorByInstallment((prev) => ({ ...prev, [mode]: msg }));
+      emitPortalToast({ type: 'error', title: 'Falha ao anexar arquivo', message: msg });
     }
   };
 
@@ -834,6 +854,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         ]);
       }
 
+      showFinanceBanner(
+        'INTENÇÃO',
+        `Pagamento preparado (${paymentModalFreight.code})`,
+        `Parcela ${paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} aguardando compartilhamento/anexo do comprovante.`,
+        'sky'
+      );
       triggerToast(
         `Pagamento Preparado (${paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'})`,
         'Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta.'
@@ -988,9 +1014,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         );
       }
 
+      showFinanceBanner(
+        'ANEXO',
+        `Comprovante anexado (${paymentModalFreight.code})`,
+        `Arquivo "${currentDraft.fileName}" vinculado ao frete e enviado para conferência. Responsável do frete e Monitoramento notificados.`,
+        'emerald'
+      );
       triggerToast(
         `Comprovante Salvo no Servidor (${paymentModalFreight.code})`,
-        `Arquivo "${currentDraft.fileName}" vinculado à parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} em estado "Aguardando conferência".`
+        `Arquivo "${currentDraft.fileName}" vinculado à parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'}. Responsável e Monitoramento avisados.`
       );
       await fetchServerPaymentData();
     } catch {
@@ -1062,9 +1094,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         );
       }
 
+      showFinanceBanner(
+        'PAGO',
+        `PAGO — Pagamento confirmado (${paymentModalFreight.code})`,
+        `Parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} liquidada por ${currentUser.name}. Responsável do frete e Monitoramento notificados.`,
+        'emerald'
+      );
       triggerToast(
-        `Pagamento Confirmado (${paymentModalFreight.code})!`,
-        `Parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmada por ${currentUser.name}.`
+        `Pagamento Confirmado — PAGO (${paymentModalFreight.code})!`,
+        `Parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmada por ${currentUser.name}. Responsável e Monitoramento avisados.`
       );
       await fetchServerPaymentData();
     } catch {
@@ -1101,11 +1139,17 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     };
     onUpdateFreight(
       updated,
-      `Entrega da carga confirmada para o frete ${freight.code} (${freight.cliente}). Saldo de ${formatCurrencyBRL(freight.valorSaldo)} liberado para pagamento.`
+      `Entrega da carga confirmada para o frete ${freight.code} (${freight.cliente}). Saldo de ${formatProtectedCurrency(freight.valorSaldo)} liberado para pagamento.`
+    );
+    showFinanceBanner(
+      'ENTREGA',
+      `Entrega confirmada (${freight.code})`,
+      `Saldo de ${formatProtectedCurrency(freight.valorSaldo)} liberado para pagamento.`,
+      'emerald'
     );
     triggerToast(
       `Entrega Confirmada (${freight.code})!`,
-      `O saldo de ${formatCurrencyBRL(freight.valorSaldo)} foi liberado para pagamento.`
+      `Saldo de ${formatProtectedCurrency(freight.valorSaldo)} liberado para pagamento.`
     );
   };
 
@@ -1225,21 +1269,21 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
   const activeConfirmationSummary = useMemo(() => {
     if (!paymentModalFreight) return '';
     const parcelaNome = paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo';
-    return `Salvar ${activeReceiptTitle} (${formatCurrencyBRL(activeModalAmount)}) na parcela ${parcelaNome} (${activeInstallmentId}) do Frete ${paymentModalFreight.code}`;
-  }, [paymentModalFreight, paymentStepMode, activeReceiptTitle, activeModalAmount, activeInstallmentId]);
+    return `Salvar ${activeReceiptTitle} (${formatProtectedCurrency(activeModalAmount)}) na parcela ${parcelaNome} (${activeInstallmentId}) do Frete ${paymentModalFreight.code}`;
+  }, [paymentModalFreight, paymentStepMode, activeReceiptTitle, activeModalAmount, activeInstallmentId, canSeeFinancialStatsAndValues, showMonetaryValues]);
 
   return (
-    <div className={`rv-finance space-y-4 relative rv-finance-mode-${financialLayout}`}>
+    <div className={`rv-finance space-y-4 relative overflow-x-hidden max-w-full rv-finance-mode-${financialLayout}`}>
       {/* =====================================================================
           1. BANNER ESCURO SUPERIOR (DESKTOP & MOBILE)
       ===================================================================== */}
       <div
-        className="rv-finance-header relative overflow-hidden rounded-2xl px-5 py-4 text-white shadow-md border border-white/10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3"
+        className="rv-finance-header relative overflow-hidden rounded-2xl px-4 sm:px-5 py-4 text-white shadow-md border border-white/10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3"
         style={{
           background: "linear-gradient(90deg, #061019 0%, rgba(6,16,25,0.92) 38%, rgba(6,16,25,0.48) 72%, rgba(6,16,25,0.12) 100%), url('/assets/banner-rodovar-conecta-highway.png') center right / cover no-repeat #101a24"
         }}
       >
-        <div>
+        <div className="min-w-0">
           {/* Desktop Title */}
           <h1 className="hidden md:block text-[20px] lg:text-[23px] font-black tracking-tight uppercase leading-tight">
             <span className="text-[#FACC15]">FINANCEIRO</span>{' '}
@@ -1250,27 +1294,27 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             <span className="text-[#FACC15]">FINANCEIRO</span>{' '}
             <span className="text-white">- FRETES</span>
           </h1>
-          <p className="text-xs md:text-[13.5px] text-gray-300 mt-0.5">
+          <p className="text-xs md:text-[13.5px] text-gray-300 mt-0.5 break-words">
             Acompanhamento de fretes, validação de documentos e liberação de adiantamentos/saldos.
           </p>
         </div>
 
         {/* Controles de Acesso e Sigilo */}
-        <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto shrink-0">
-          {/* Controle de Sigilo dos Totalizadores do Topo (Exclusivo Função Financeiro) */}
-          {isFinanceiroUser ? (
+        <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto shrink-0 max-w-full">
+          {/* Controle de Sigilo Estrito (Exclusivo Petrônio + Vitor, Alexandre e Ricardo) */}
+          {canSeeFinancialStatsAndValues ? (
             <button
               type="button"
               onClick={() => {
                 setShowMonetaryValues((prev) => !prev);
                 triggerToast(
-                  !showMonetaryValues ? 'Totais do Topo Visíveis' : 'Totais do Topo Ocultados',
+                  !showMonetaryValues ? 'Valores e Estatísticas Visíveis' : 'Valores e Estatísticas Ocultados',
                   !showMonetaryValues
-                    ? 'Acesso habilitado para a função Financeiro.'
-                    : 'Totalizadores superiores ocultados com segurança.'
+                    ? 'Acesso autorizado para Financeiro / Diretoria.'
+                    : 'Totalizadores e valores ocultados com segurança.'
                 );
               }}
-              title={showMonetaryValues ? 'Ocultar totais do topo' : 'Exibir totais do topo (Exclusivo Financeiro)'}
+              title={showMonetaryValues ? 'Ocultar valores e estatísticas' : 'Exibir valores e estatísticas'}
               className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold transition cursor-pointer flex items-center gap-1.5 border shadow-2xs ${
                 showMonetaryValues
                   ? 'bg-[#FACC15] text-[#080B0D] border-[#EAB308]'
@@ -1280,22 +1324,22 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               {showMonetaryValues ? (
                 <>
                   <EyeOff className="w-3.5 h-3.5" />
-                  <span>Ocultar Topo (R$)</span>
+                  <span>Ocultar Valores (R$)</span>
                 </>
               ) : (
                 <>
                   <Eye className="w-3.5 h-3.5" />
-                  <span>Exibir Topo (Financeiro)</span>
+                  <span>Exibir Valores (Autorizado)</span>
                 </>
               )}
             </button>
           ) : (
             <div
-              title="Os indicadores superiores são habilitados exclusivamente para a função Financeiro"
-              className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-white/5 border border-white/10 text-gray-400 flex items-center gap-1.5"
+              title="Valores e estatísticas financeiras são exclusivos do Financeiro (Petrônio) e Diretoria (Vitor, Alexandre e Ricardo)"
+              className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-white/5 border border-white/10 text-gray-400 flex items-center gap-1.5 max-w-full"
             >
-              <EyeOff className="w-3.5 h-3.5 text-gray-400" />
-              <span>Topo Exclusivo Financeiro</span>
+              <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span className="truncate">Valores Protegidos (Financeiro / Diretoria)</span>
             </div>
           )}
 
@@ -1325,12 +1369,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
           )}
 
           {/* Status Real da Conta Autenticada */}
-          <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-[11px]">
+          <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-[11px] max-w-full">
             <ShieldCheck className="w-3.5 h-3.5 text-[#FACC15] shrink-0" />
-            <span className="font-bold text-white">{currentUser.name.split(' ')[0]}</span>
+            <span className="font-bold text-white truncate">{currentUser.name.split(' ')[0]}</span>
             <span className="text-gray-400">•</span>
-            <span className="text-[#FFD400] font-semibold">{currentUser.department}</span>
-            {isFinanceiroUser && (
+            <span className="text-[#FFD400] font-semibold truncate">{currentUser.department}</span>
+            {canSeeFinancialStatsAndValues && (
               <span className="ml-1 bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded text-[10px]">
                 Validado
               </span>
@@ -1339,68 +1383,116 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         </div>
       </div>
 
+      {/* BANNER VISÍVEL DE FEEDBACK IMEDIATO NA TELA DO FINANCEIRO (PAGO, ANEXO, ENTREGA, ETC.) */}
+      {financeActionBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-2xl px-4 py-3 border shadow-xs flex items-start justify-between gap-3 ${
+            financeActionBanner.tone === 'emerald'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+              : financeActionBanner.tone === 'amber'
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : 'bg-sky-50 border-sky-300 text-sky-950'
+          }`}
+        >
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <span
+              className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider shrink-0 mt-0.5 ${
+                financeActionBanner.tone === 'emerald'
+                  ? 'bg-emerald-600 text-white'
+                  : financeActionBanner.tone === 'amber'
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-sky-600 text-white'
+              }`}
+            >
+              {financeActionBanner.badge}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs sm:text-sm font-black leading-snug break-words">
+                {financeActionBanner.title}
+              </p>
+              <p className="text-[11px] sm:text-xs font-medium opacity-90 mt-0.5 break-words">
+                {financeActionBanner.detail}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFinanceActionBanner(null)}
+            className="p-1.5 rounded-lg hover:bg-black/5 shrink-0 cursor-pointer"
+            title="Fechar aviso"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* =====================================================================
-          2. 4 CARDS DE KPI DINÂMICOS (CARROSSEL NO MOBILE / GRID NO DESKTOP)
+          2. 4 CARDS DE KPI DINÂMICOS (ESTATÍSTICAS VISÍVEIS APENAS PARA PETRÔNIO & DIRETORIA)
       ===================================================================== */}
-      <div className="rv-finance-kpis flex md:grid md:grid-cols-2 xl:grid-cols-4 gap-3.5 overflow-x-auto snap-x snap-mandatory pb-1 md:pb-0 -mx-1 px-1">
-        {/* Card 1: Aguardando Adiantamento (#3B2F0B / #FACC15) */}
-        <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#3B2F0B] border-2 border-[#FACC15]/50 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
-          <div>
-            <p className="text-[14px] font-extrabold text-white leading-snug">
-              Aguardando Adiantamento
-            </p>
-            <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
-              {kpis.aguardandoAdiantCount}{' '}
-              {kpis.aguardandoAdiantCount === 1 ? 'Solicitação' : 'Solicitações'}
+      {canSeeFinancialStatsAndValues ? (
+        <div className="rv-finance-kpis flex md:grid md:grid-cols-2 xl:grid-cols-4 gap-3.5 overflow-x-auto snap-x snap-mandatory pb-1 md:pb-0 -mx-1 px-1">
+          {/* Card 1: Aguardando Adiantamento (#3B2F0B / #FACC15) */}
+          <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#3B2F0B] border-2 border-[#FACC15]/50 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
+            <div>
+              <p className="text-[14px] font-extrabold text-white leading-snug">
+                Aguardando Adiantamento
+              </p>
+              <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
+                {kpis.aguardandoAdiantCount}{' '}
+                {kpis.aguardandoAdiantCount === 1 ? 'Solicitação' : 'Solicitações'}
+              </p>
+            </div>
+            <p className="text-[24px] lg:text-[26px] font-black text-[#FACC15] mt-2 tabular-nums tracking-tight">
+              {formatProtectedCurrency(kpis.aguardandoAdiantSum)}
             </p>
           </div>
-          <p className="text-[24px] lg:text-[26px] font-black text-[#FACC15] mt-2 tabular-nums tracking-tight">
-            {formatProtectedCurrency(kpis.aguardandoAdiantSum)}
-          </p>
-        </div>
 
-        {/* Card 2: Em Trânsito (Saldos Retidos) (#0F2942 / #38BDF8) */}
-        <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#0F2942] border-2 border-[#38BDF8]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
-          <div>
-            <p className="text-[14px] font-extrabold text-white leading-snug">
-              Em Trânsito (Saldos Retidos)
-            </p>
-            <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
-              {kpis.emTransitoCount} {kpis.emTransitoCount === 1 ? 'Frete' : 'Fretes'}
+          {/* Card 2: Em Trânsito (Saldos Retidos) (#0F2942 / #38BDF8) */}
+          <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#0F2942] border-2 border-[#38BDF8]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
+            <div>
+              <p className="text-[14px] font-extrabold text-white leading-snug">
+                Em Trânsito (Saldos Retidos)
+              </p>
+              <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
+                {kpis.emTransitoCount} {kpis.emTransitoCount === 1 ? 'Frete' : 'Fretes'}
+              </p>
+            </div>
+            <p className="text-[24px] lg:text-[26px] font-black text-[#38BDF8] mt-2 tabular-nums tracking-tight">
+              {formatProtectedCurrency(kpis.emTransitoSum)}
             </p>
           </div>
-          <p className="text-[24px] lg:text-[26px] font-black text-[#38BDF8] mt-2 tabular-nums tracking-tight">
-            {formatProtectedCurrency(kpis.emTransitoSum)}
-          </p>
-        </div>
 
-        {/* Card 3: Saldos Liberados (#3B154A / #E879F9) */}
-        <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#3B154A] border-2 border-[#E879F9]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
-          <div>
-            <p className="text-[14px] font-extrabold text-white leading-snug">Saldos Liberados</p>
-            <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
-              {kpis.saldosLiberadosCount}{' '}
-              {kpis.saldosLiberadosCount === 1 ? 'Frete' : 'Fretes'}
+          {/* Card 3: Saldos Liberados (#3B154A / #E879F9) */}
+          <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#3B154A] border-2 border-[#E879F9]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
+            <div>
+              <p className="text-[14px] font-extrabold text-white leading-snug">Saldos Liberados</p>
+              <p className="text-xs font-medium text-gray-200 mt-0.5 tabular-nums">
+                {kpis.saldosLiberadosCount}{' '}
+                {kpis.saldosLiberadosCount === 1 ? 'Frete' : 'Fretes'}
+              </p>
+            </div>
+            <p className="text-[24px] lg:text-[26px] font-black text-[#E879F9] mt-2 tabular-nums tracking-tight">
+              {formatProtectedCurrency(kpis.saldosLiberadosSum)}
             </p>
           </div>
-          <p className="text-[24px] lg:text-[26px] font-black text-[#E879F9] mt-2 tabular-nums tracking-tight">
-            {formatProtectedCurrency(kpis.saldosLiberadosSum)}
-          </p>
-        </div>
 
-        {/* Card 4: Pago (Mês Atual) (#0D3B26 / #4ADE80) */}
-        <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#0D3B26] border-2 border-[#4ADE80]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
-          <div>
-            <p className="text-[14px] font-extrabold text-white leading-snug">Pago (Mês Atual)</p>
-            <p className="text-xs font-medium text-emerald-200/80 mt-0.5">
-              Total liquidado no período
+          {/* Card 4: Pago (Mês Atual) (#0D3B26 / #4ADE80) */}
+          <div className="min-w-[235px] sm:min-w-[250px] md:min-w-0 snap-start bg-[#0D3B26] border-2 border-[#4ADE80]/40 rounded-2xl p-4 shadow-md flex flex-col justify-between shrink-0">
+            <div>
+              <p className="text-[14px] font-extrabold text-white leading-snug">Pago (Mês Atual)</p>
+              <p className="text-xs font-medium text-emerald-200/80 mt-0.5">
+                Total liquidado no período
+              </p>
+            </div>
+            <p className="text-[24px] lg:text-[26px] font-black text-[#4ADE80] mt-2 tabular-nums tracking-tight">
+              {formatProtectedCurrency(kpis.pagoMesSum)}
             </p>
           </div>
-          <p className="text-[24px] lg:text-[26px] font-black text-[#4ADE80] mt-2 tabular-nums tracking-tight">
-            {formatProtectedCurrency(kpis.pagoMesSum)}
-          </p>
         </div>
-      </div>
+      ) : null}
+
 
       {/* =====================================================================
           3. BARRA DE FILTROS E BOTÃO "+ SOLICITAR PAGAMENTO DE FRETE"
@@ -1612,18 +1704,18 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                         )}
                       </td>
 
-                      {/* Col 7: Valores (Visíveis na tabela para consulta) */}
+                      {/* Col 7: Valores (Protegidos conforme alçada Financeiro/Diretoria) */}
                       <td className="py-4 px-3 text-[#15191D] tabular-nums max-w-[210px]">
                         {frete.regraTipo === 'INTEGRAL_100' ? (
                           <p className="font-semibold">
-                            Total: {formatCurrencyBRL(frete.valorTotal)}
+                            Total: {formatProtectedCurrency(frete.valorTotal)}
                           </p>
                         ) : (
                           <div className="space-y-0.5 leading-snug text-xs">
                             <p>
                               <span className="font-medium">Adiantamento:</span>{' '}
                               <span className="font-bold">
-                                {formatCurrencyBRL(frete.valorAdiantamento)} (
+                                {formatProtectedCurrency(frete.valorAdiantamento)} (
                                 {frete.percentualAdiantamento}%)
                               </span>{' '}
                               /
@@ -1631,7 +1723,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                             <p>
                               <span className="font-medium">Saldo:</span>{' '}
                               <span className="font-bold">
-                                {formatCurrencyBRL(frete.valorSaldo)} ({frete.percentualSaldo}%)
+                                {formatProtectedCurrency(frete.valorSaldo)} ({frete.percentualSaldo}%)
                               </span>
                             </p>
                           </div>
@@ -1778,13 +1870,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   </span>
                 </div>
 
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-[#15191D]">{frete.cliente}</h3>
-                    <p className="text-xs text-[#15191D] font-bold mt-0.5">
+                <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-extrabold text-[#15191D] break-words">
+                      {frete.cliente}
+                    </h3>
+                    <p className="text-xs text-[#15191D] font-bold mt-0.5 break-words">
                       {frete.origem} ➔ {frete.destino}
                     </p>
-                    <p className="text-[11px] text-gray-500 font-semibold mt-0.5">
+                    <p className="text-[11px] text-gray-500 font-semibold mt-0.5 break-words">
                       Motorista: {frete.motoristaNome || frete.favorecido}
                     </p>
                   </div>
@@ -1813,21 +1907,34 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-gray-50 rounded-xl p-2.5 border border-gray-100">
-                  <div>
-                    <p className="text-[11px] text-gray-500">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] text-gray-500 break-words">
                       Coleta: {frete.dataColeta} | Entrega: {frete.dataEntrega}
                     </p>
-                    <p className="font-bold text-[#15191D] mt-0.5 tabular-nums">
+                    <p className="font-bold text-[#15191D] mt-0.5 tabular-nums break-words">
                       Regra {frete.regraLabel}: Total {formatProtectedCurrency(frete.valorTotal)}
                     </p>
-                    <p className="text-[11px] text-gray-700 tabular-nums">
+                    <p className="text-[11px] text-gray-700 tabular-nums break-words">
                       Adiant.: {formatProtectedCurrency(frete.valorAdiantamento)} • Saldo:{' '}
                       {formatProtectedCurrency(frete.valorSaldo)}
                     </p>
                   </div>
                 </div>
 
-                <div className="rv-payment-progress" aria-label="Progresso de pagamento"><progress max={frete.valorTotal || 1} value={Math.min(frete.valorTotal, (frete.adiantamentoPago ? frete.valorAdiantamento : 0) + (frete.saldoPago ? frete.valorSaldo : 0))} /><span>{frete.status}</span></div>
+                {canSeeFinancialStatsAndValues && showMonetaryValues && (
+                  <div className="rv-payment-progress" aria-label="Progresso de pagamento">
+                    <progress
+                      max={frete.valorTotal || 1}
+                      value={Math.min(
+                        frete.valorTotal,
+                        (frete.adiantamentoPago ? frete.valorAdiantamento : 0) +
+                          (frete.saldoPago ? frete.valorSaldo : 0)
+                      )}
+                    />
+                    <span>{frete.status}</span>
+                  </div>
+                )}
+
                 {/* Docs row */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {frete.docs.cte && (
@@ -1883,12 +1990,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                 </div>
 
                 {/* Mobile Action Buttons */}
-                <div className="pt-1 flex items-center gap-2">
+                <div className="pt-1 flex flex-wrap items-center gap-2">
                   {isPendingAdiant && canExecutePayment && (
                     <button
                       type="button"
                       onClick={() => openPaymentModal(frete, 'ADIANTAMENTO')}
-                      className="w-full bg-[#11151C] hover:bg-black text-[#FACC15] font-extrabold text-xs py-2.5 rounded-xl shadow-xs cursor-pointer"
+                      className="w-full min-h-[44px] bg-[#11151C] hover:bg-black text-[#FACC15] font-extrabold text-xs py-2.5 px-3 rounded-xl shadow-xs cursor-pointer"
                     >
                       Realizar Pagamento
                     </button>
@@ -1897,7 +2004,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleConfirmDelivery(frete)}
-                      className="flex-1 bg-amber-100 text-amber-950 border border-amber-300 font-extrabold text-xs py-2 rounded-xl cursor-pointer"
+                      className="flex-1 min-w-[130px] min-h-[44px] bg-amber-100 text-amber-950 border border-amber-300 font-extrabold text-xs py-2 px-2.5 rounded-xl cursor-pointer"
                     >
                       Confirmar Entrega
                     </button>
@@ -1906,18 +2013,31 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                     <button
                       type="button"
                       onClick={() => openPaymentModal(frete, 'SALDO')}
-                      className="flex-1 bg-white text-[#15191D] border border-gray-300 font-extrabold text-xs py-2 rounded-xl shadow-2xs cursor-pointer"
+                      className="flex-1 min-w-[120px] min-h-[44px] bg-white text-[#15191D] border border-gray-300 font-extrabold text-xs py-2 px-2.5 rounded-xl shadow-2xs cursor-pointer"
                     >
                       Pagar Saldo
+                    </button>
+                  )}
+                  {canExecutePayment && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShareModalDraft(null);
+                        setIsShareModalOpen(true);
+                      }}
+                      className="flex-1 min-w-[130px] min-h-[44px] bg-[#FFD400] hover:bg-yellow-400 text-[#080B0D] font-extrabold text-xs py-2 px-2.5 rounded-xl inline-flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer"
+                    >
+                      <Share2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Comprovante</span>
                     </button>
                   )}
                   <button
                     type="button"
                     onClick={() => setSelectedOrderDetails(frete)}
-                    className="flex-1 bg-[#11151C] hover:bg-black text-[#FACC15] font-extrabold text-xs py-2 rounded-xl shadow-2xs inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex-1 min-w-[130px] min-h-[44px] bg-[#11151C] hover:bg-black text-[#FACC15] font-extrabold text-xs py-2 px-2.5 rounded-xl shadow-2xs inline-flex items-center justify-center gap-1.5 cursor-pointer"
                   >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>📄 Ver Detalhes</span>
+                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                    <span>Ver Detalhes</span>
                   </button>
                 </div>
               </div>
@@ -2447,8 +2567,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   <label className="border-2 border-dashed border-gray-300 hover:border-[#15803D] rounded-xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition bg-gray-50/60">
                     <input
                       type="file"
-                      accept=".pdf,image/*"
-                      className="hidden"
+                      accept=".pdf,image/*,.webp,.heic"
+                      className="sr-only"
                       onChange={(e) => setCteFile(e.target.files?.[0] || null)}
                     />
                     {cteFile ? (
@@ -2472,8 +2592,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   <label className="border-2 border-dashed border-gray-300 hover:border-[#15803D] rounded-xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition bg-gray-50/60">
                     <input
                       type="file"
-                      accept=".pdf,image/*"
-                      className="hidden"
+                      accept=".pdf,image/*,.webp,.heic"
+                      className="sr-only"
                       onChange={(e) => setMdfeFile(e.target.files?.[0] || null)}
                     />
                     {mdfeFile ? (
@@ -2499,8 +2619,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   <label className="border-2 border-dashed border-gray-300 hover:border-[#15803D] rounded-xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition bg-gray-50/60">
                     <input
                       type="file"
-                      accept=".pdf,image/*"
-                      className="hidden"
+                      accept=".pdf,image/*,.webp,.heic"
+                      className="sr-only"
                       onChange={(e) => setRpaFile(e.target.files?.[0] || null)}
                     />
                     {rpaFile ? (
@@ -2548,13 +2668,14 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
           6. MODAL / BOTTOM SHEET "REALIZAR PAGAMENTO" (DESKTOP & MOBILE PIX + INTENÇÃO + COMPROVANTE)
       ===================================================================== */}
       {paymentModalFreight && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end md:items-center justify-center p-0 md:p-4 overflow-y-auto">
-          {/* Hidden file input shared by Desktop Dropzone & Mobile Button (accepts PDF, JPEG, PNG up to 10 MB) */}
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end md:items-center justify-center p-0 md:p-4 overflow-y-auto overflow-x-hidden">
+          {/* Accessible file input shared by Desktop Dropzone & Mobile Label/Button */}
           <input
+            id="financeiro-receipt-input"
             ref={receiptInputRef}
             type="file"
-            accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
-            className="hidden"
+            accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic"
+            className="sr-only"
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = '';
@@ -2640,7 +2761,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                         </span>
                         <span className="tabular-nums">
                           Adiantamento ({paymentModalFreight.percentualAdiantamento}%) -{' '}
-                          {formatCurrencyBRL(paymentModalFreight.valorAdiantamento)}
+                          {formatProtectedCurrency(paymentModalFreight.valorAdiantamento)}
                         </span>
                       </button>
 
@@ -2666,7 +2787,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                           </span>
                           <span className="tabular-nums">
                             Saldo ({paymentModalFreight.percentualSaldo}%) -{' '}
-                            {formatCurrencyBRL(paymentModalFreight.valorSaldo)}
+                            {formatProtectedCurrency(paymentModalFreight.valorSaldo)}
                           </span>
                         </button>
                       )}
@@ -2682,8 +2803,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       <p>
                         <span className="text-gray-600">PIX ({paymentModalFreight.tipoChavePix}):</span>
                         <br />
-                        <span className="font-extrabold tabular-nums">
-                          {paymentModalFreight.chavePix}
+                        <span className="font-extrabold tabular-nums break-all">
+                          {canSeeFinancialStatsAndValues ? paymentModalFreight.chavePix : '•••.•••.•••-••'}
                         </span>
                       </p>
                       <p>
@@ -2783,8 +2904,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       }`}
                     >
                       {copiedValue
-                        ? `✅ Valor Copiado (${formatCurrencyBRL(activeModalAmount)})`
-                        : `Copiar Valor de ${paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} (${formatCurrencyBRL(activeModalAmount)})`}
+                        ? `✅ Valor Copiado (${formatProtectedCurrency(activeModalAmount)})`
+                        : `Copiar Valor de ${paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} (${formatProtectedCurrency(activeModalAmount)})`}
                     </button>
                   </div>
                 </div>
@@ -2800,7 +2921,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                         Parcela selecionada:{' '}
                         <strong>
                           {paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} —{' '}
-                          {formatCurrencyBRL(activeModalAmount)}
+                          {formatProtectedCurrency(activeModalAmount)}
                         </strong>
                       </p>
                     </div>
@@ -2859,7 +2980,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       Anexar PDF ou imagem ({activeReceiptTitle})
                     </p>
                     <p className="text-[11px] text-gray-500 mt-0.5">
-                      Aceita PDF, JPEG ou PNG (máx. 10 MB)
+                      Aceita PDF, JPEG, PNG ou foto do celular (máx. 10 MB)
                     </p>
                   </div>
 
@@ -2990,7 +3111,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                             <span>
                               Confirmar Liquidação de{' '}
                               {paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} (
-                              {formatCurrencyBRL(activeModalAmount)})
+                              {formatProtectedCurrency(activeModalAmount)})
                             </span>
                           </button>
                         ) : (
@@ -3044,26 +3165,25 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
           ) : null}
 
           {/* -----------------------------------------------------------------
-              MOBILE BOTTOM SHEET / DRAWER (IMAGEM 3 + REQUISITOS 1 A 9)
-              Shown automatically on <768px OR when previewMobileSheetOnDesktop is toggled
+              MOBILE BOTTOM SHEET / DRAWER (CORREÇÃO COMPLETA DE MARGENS, TEXTOS E UPLOAD MOBILE)
           ----------------------------------------------------------------- */}
           <div
             className={`${
               previewMobileSheetOnDesktop ? 'block max-w-[420px]' : 'block md:hidden'
-            } w-full bg-[#22262C] text-white rounded-t-[28px] md:rounded-[28px] p-5 shadow-2xl border-t border-white/15 space-y-3.5 max-h-[92vh] overflow-y-auto`}
+            } w-full max-w-full box-border bg-[#22262C] text-white rounded-t-[28px] md:rounded-[28px] p-4 sm:p-5 shadow-2xl border-t border-white/15 space-y-3.5 max-h-[92vh] overflow-y-auto overflow-x-hidden`}
           >
             {/* Drag Handle */}
             <div className="w-12 h-1.5 bg-gray-500/70 rounded-full mx-auto -mt-1 mb-1" />
 
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <h2 className="text-xl font-black text-white uppercase leading-tight">
+            <div className="flex items-start justify-between gap-2 min-w-0">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-lg sm:text-xl font-black text-white uppercase leading-tight break-words">
                   REALIZAR PAGAMENTO
                 </h2>
-                <p className="text-lg font-extrabold text-white leading-tight mt-0.5">
+                <p className="text-base sm:text-lg font-extrabold text-white leading-tight mt-0.5 break-words">
                   {paymentModalFreight.code} - {paymentModalFreight.cliente}
                 </p>
-                <p className="text-xs text-gray-300 mt-1">
+                <p className="text-xs text-gray-300 mt-1 break-words">
                   {paymentModalFreight.origem} ➔ {paymentModalFreight.destino}
                 </p>
               </div>
@@ -3071,20 +3191,51 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setPreviewMobileSheetOnDesktop(false)}
-                  className="text-[10px] font-bold bg-white/10 hover:bg-white/20 text-[#FACC15] px-2.5 py-1 rounded-lg cursor-pointer shrink-0"
+                  className="text-[10px] font-bold bg-white/10 hover:bg-white/20 text-[#FACC15] px-2.5 py-1.5 rounded-lg cursor-pointer shrink-0"
                 >
                   Voltar Desktop
                 </button>
               )}
             </div>
 
+            {financeActionBanner && (
+              <div
+                className={`rounded-xl px-3 py-2.5 border text-xs flex items-start justify-between gap-2 ${
+                  financeActionBanner.tone === 'emerald'
+                    ? 'bg-emerald-950/80 border-emerald-400/50 text-emerald-100'
+                    : financeActionBanner.tone === 'amber'
+                      ? 'bg-amber-950/80 border-amber-400/50 text-amber-100'
+                      : 'bg-sky-950/80 border-sky-400/50 text-sky-100'
+                }`}
+              >
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-1.5 py-0.5 rounded bg-[#FACC15] text-[#080B0D] text-[10px] font-black uppercase">
+                      {financeActionBanner.badge}
+                    </span>
+                    <strong className="break-words">{financeActionBanner.title}</strong>
+                  </div>
+                  <p className="text-[11px] opacity-90 break-words leading-snug">
+                    {financeActionBanner.detail}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFinanceActionBanner(null)}
+                  className="p-1 text-white/70 hover:text-white shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* 1. Seleção Única de Parcela: Adiantamento ou Saldo */}
-            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-2">
-              <div className="flex items-center justify-between">
+            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-2 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <p className="text-xs font-extrabold text-gray-300 uppercase">
                   Parcela do Pagamento
                 </p>
-                <span className="text-[10px] font-mono text-[#FACC15] bg-white/5 px-2 py-0.5 rounded">
+                <span className="text-[10px] font-mono text-[#FACC15] bg-white/5 px-2 py-0.5 rounded break-all max-w-full">
                   {activeInstallmentId}
                 </span>
               </div>
@@ -3092,7 +3243,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handleSelectInstallmentMode('ADIANTAMENTO')}
-                  className={`flex items-center gap-2.5 text-left text-sm font-bold p-2 rounded-xl transition cursor-pointer ${
+                  className={`flex items-center gap-2.5 text-left text-xs sm:text-sm font-bold p-2.5 rounded-xl transition cursor-pointer min-h-[44px] w-full min-w-0 ${
                     paymentStepMode === 'ADIANTAMENTO'
                       ? 'bg-white/10 text-[#FACC15] border border-[#FACC15]/40'
                       : 'text-gray-300 hover:bg-white/5'
@@ -3103,9 +3254,9 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       <span className="w-2.5 h-2.5 rounded-full bg-[#FACC15]" />
                     )}
                   </span>
-                  <span className="tabular-nums">
+                  <span className="tabular-nums break-words min-w-0 flex-1">
                     Adiantamento ({paymentModalFreight.percentualAdiantamento}%) -{' '}
-                    {formatCurrencyBRL(paymentModalFreight.valorAdiantamento)}
+                    {formatProtectedCurrency(paymentModalFreight.valorAdiantamento)}
                   </span>
                 </button>
 
@@ -3113,7 +3264,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleSelectInstallmentMode('SALDO')}
-                    className={`flex items-center gap-2.5 text-left text-sm font-bold p-2 rounded-xl transition cursor-pointer ${
+                    className={`flex items-center gap-2.5 text-left text-xs sm:text-sm font-bold p-2.5 rounded-xl transition cursor-pointer min-h-[44px] w-full min-w-0 ${
                       paymentStepMode === 'SALDO'
                         ? 'bg-white/10 text-[#FACC15] border border-[#FACC15]/40'
                         : 'text-gray-300 hover:bg-white/5'
@@ -3124,9 +3275,9 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                         <span className="w-2.5 h-2.5 rounded-full bg-[#FACC15]" />
                       )}
                     </span>
-                    <span className="tabular-nums">
+                    <span className="tabular-nums break-words min-w-0 flex-1">
                       Saldo ({paymentModalFreight.percentualSaldo}%) -{' '}
-                      {formatCurrencyBRL(paymentModalFreight.valorSaldo)}
+                      {formatProtectedCurrency(paymentModalFreight.valorSaldo)}
                     </span>
                   </button>
                 )}
@@ -3134,20 +3285,20 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             </div>
 
             {/* Card Escuro: DADOS DO FAVORECIDO (MOTORISTA) */}
-            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-1 text-xs">
+            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-1 text-xs min-w-0">
               <p className="font-extrabold text-gray-200 uppercase tracking-wide text-[11px] mb-1">
                 DADOS DO FAVORECIDO (MOTORISTA)
               </p>
-              <p className="text-gray-300">
-                Nome: <span className="text-white font-bold">{paymentModalFreight.favorecido}</span>
+              <p className="text-gray-300 break-words">
+                Nome: <span className="text-white font-bold break-words">{paymentModalFreight.favorecido}</span>
               </p>
-              <p className="text-gray-300">
-                Banco: <span className="text-white font-bold">{paymentModalFreight.banco}</span>
+              <p className="text-gray-300 break-words">
+                Banco: <span className="text-white font-bold break-words">{paymentModalFreight.banco}</span>
               </p>
-              <p className="text-gray-300">
+              <p className="text-gray-300 break-words">
                 Chave {paymentModalFreight.tipoChavePix}:{' '}
-                <span className="text-white font-bold tabular-nums">
-                  {paymentModalFreight.chavePix}
+                <span className="text-white font-bold tabular-nums break-all">
+                  {canSeeFinancialStatsAndValues ? paymentModalFreight.chavePix : '•••.•••.•••-••'}
                 </span>
               </p>
             </div>
@@ -3156,7 +3307,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             <button
               type="button"
               onClick={() => handleCopyPixKey(paymentModalFreight.chavePix)}
-              className={`w-full py-3 rounded-full font-black text-sm flex items-center justify-center gap-2 shadow-lg transition cursor-pointer ${
+              className={`w-full min-h-[44px] py-3 px-4 rounded-full font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition cursor-pointer ${
                 copiedPixKey
                   ? 'bg-[#16A34A] text-white'
                   : 'bg-[#FACC15] hover:bg-[#FFD400] text-[#080B0D]'
@@ -3164,12 +3315,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             >
               {copiedPixKey ? (
                 <>
-                  <Check className="w-4 h-4 stroke-[2.8]" />
+                  <Check className="w-4 h-4 stroke-[2.8] shrink-0" />
                   <span>✅ CHAVE PIX COPIADA!</span>
                 </>
               ) : (
                 <>
-                  <Clipboard className="w-4 h-4 stroke-[2.5]" />
+                  <Clipboard className="w-4 h-4 stroke-[2.5] shrink-0" />
                   <span>COPIAR CHAVE PIX</span>
                 </>
               )}
@@ -3178,25 +3329,25 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
             <button
               type="button"
               onClick={() => handleCopyPaymentValue(activeModalAmount)}
-              className={`w-full py-2.5 rounded-full font-bold text-sm transition cursor-pointer tabular-nums ${
+              className={`w-full min-h-[44px] py-2.5 px-4 rounded-full font-bold text-xs sm:text-sm transition cursor-pointer tabular-nums leading-snug break-words text-center ${
                 copiedValue
                   ? 'bg-emerald-700 text-white'
                   : 'bg-[#5A6065] hover:bg-[#686E74] text-white'
               }`}
             >
               {copiedValue
-                ? `✅ Valor Copiado (${formatCurrencyBRL(activeModalAmount)})`
-                : `Copiar Valor (${formatCurrencyBRL(activeModalAmount)})`}
+                ? `✅ Valor Copiado (${formatProtectedCurrency(activeModalAmount)})`
+                : `Copiar Valor (${formatProtectedCurrency(activeModalAmount)})`}
             </button>
 
             {/* Requirement 8: Área de Comprovante do Drawer Mobile */}
-            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-extrabold uppercase text-[#FACC15]">
+            <div className="bg-[#15181C] rounded-2xl p-3.5 border border-white/10 space-y-3 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-extrabold uppercase text-[#FACC15] break-words min-w-0">
                   {activeReceiptTitle}:
                 </p>
-                <span className="text-xs font-black text-white tabular-nums">
-                  {formatCurrencyBRL(activeModalAmount)}
+                <span className="text-xs font-black text-white tabular-nums shrink-0">
+                  {formatProtectedCurrency(activeModalAmount)}
                 </span>
               </div>
 
@@ -3205,12 +3356,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                 type="button"
                 disabled={isPreparingIntent}
                 onClick={() => void handlePreparePaymentIntent()}
-                className="w-full py-2.5 px-4 rounded-full bg-[#080B0D] hover:bg-black text-[#FFD400] border border-[#FFD400]/60 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full min-h-[44px] py-2.5 px-4 rounded-full bg-[#080B0D] hover:bg-black text-[#FFD400] border border-[#FFD400]/60 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
               >
                 {isPreparingIntent ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                 ) : (
-                  <Clock className="w-4 h-4" />
+                  <Clock className="w-4 h-4 shrink-0" />
                 )}
                 <span>Preparar pagamento</span>
               </button>
@@ -3218,34 +3369,33 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               {/* 2. Orientação de compartilhamento */}
               <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-[11px] text-gray-200 space-y-1">
                 {activeIntentForInstallment && (
-                  <div className="flex items-center justify-between text-[10px] font-black text-[#FFD400]">
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-black text-[#FFD400]">
                     <span>● Aguardando comprovante</span>
                     <span>Válido até {activeIntentForInstallment.expiresAtFormatted}</span>
                   </div>
                 )}
-                <p className="font-semibold leading-snug">
-                  Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta.
+                <p className="font-semibold leading-snug break-words">
+                  Faça o pagamento no seu banco. Depois, compartilhe o comprovante com Rodovar Conecta ou toque em &ldquo;Anexar PDF ou imagem&rdquo; abaixo.
                 </p>
               </div>
 
-              {/* 3. Botão "Anexar PDF ou imagem" */}
-              <button
-                type="button"
-                onClick={() => receiptInputRef.current?.click()}
-                className="w-full py-2.5 px-4 rounded-full bg-[#5A6065] hover:bg-[#686E74] text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+              {/* 3. Label direta para input acessível (funciona em iOS Safari & Android WebView) */}
+              <label
+                htmlFor="financeiro-receipt-input"
+                className="w-full min-h-[44px] py-2.5 px-4 rounded-full bg-[#5A6065] hover:bg-[#686E74] text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer text-center"
               >
-                <Upload className="w-4 h-4" />
+                <Upload className="w-4 h-4 shrink-0" />
                 <span>Anexar PDF ou imagem</span>
-              </button>
+              </label>
 
               {/* 4. Estado real do envio */}
-              <div className="flex items-center justify-between text-[11px]">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px]">
                 <span className="text-gray-400">Estado do comprovante:</span>
                 {uploadStateByInstallment[paymentStepMode] === 'RECEBIDO_NO_CELULAR' && (
                   <span className="font-extrabold text-amber-400">Recebido no celular</span>
                 )}
                 {uploadStateByInstallment[paymentStepMode] === 'AGUARDANDO_ENVIO_OFFLINE' && (
-                  <span className="font-extrabold text-orange-400">
+                  <span className="font-extrabold text-orange-400 break-words">
                     Aguardando envio — ainda não salvo no servidor
                   </span>
                 )}
@@ -3265,13 +3415,13 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
 
               {/* 5. Pré-visualização do comprovante */}
               {activeDraftForInstallment ? (
-                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/40 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-amber-200 truncate pr-2">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/40 space-y-2 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                    <span className="text-xs font-bold text-amber-200 break-all min-w-0 flex-1">
                       {activeDraftForInstallment.fileName} (
                       {formatFileSize(activeDraftForInstallment.sizeBytes)})
                     </span>
-                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-400 text-black">
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-400 text-black shrink-0">
                       Rascunho
                     </span>
                   </div>
@@ -3279,19 +3429,19 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                     <img
                       src={activeDraftForInstallment.dataUrl}
                       alt="Prévia do comprovante"
-                      className="max-h-28 rounded-lg mx-auto object-contain"
+                      className="max-h-28 rounded-lg mx-auto object-contain max-w-full"
                     />
                   )}
                 </div>
               ) : activeSavedDocForInstallment ? (
-                <div className="flex items-center justify-between pt-0.5 bg-emerald-950/40 p-2.5 rounded-xl border border-emerald-500/30">
-                  <div className="min-w-0 pr-2">
-                    <span className="text-xs font-bold text-white block truncate">
+                <div className="flex items-center justify-between gap-2 pt-0.5 bg-emerald-950/40 p-2.5 rounded-xl border border-emerald-500/30 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-bold text-white block break-all">
                       {activeSavedDocForInstallment.fileName}
                     </span>
-                    <span className="text-[10px] text-emerald-300 font-semibold">
+                    <span className="text-[10px] text-emerald-300 font-semibold block break-words">
                       {activeVerificationStatus === 'PAGAMENTO_CONFIRMADO'
-                        ? 'Pagamento confirmado por usuário autorizado'
+                        ? 'PAGO — Pagamento confirmado por usuário autorizado'
                         : 'Salvo no servidor • Aguardando conferência'}
                     </span>
                   </div>
@@ -3302,14 +3452,14 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               ) : null}
 
               {uploadErrorByInstallment[paymentStepMode] && (
-                <p className="text-[11px] font-bold text-red-400">
+                <p className="text-[11px] font-bold text-red-400 break-words">
                   {uploadErrorByInstallment[paymentStepMode]}
                 </p>
               )}
 
               {/* Texto do Resumo de Confirmação Sincronizado */}
-              <div className="p-2 rounded-lg bg-black/40 border border-white/10 text-[11px] text-gray-300">
-                Resumo: <strong className="text-[#FFD400]">{activeConfirmationSummary}</strong>
+              <div className="p-2.5 rounded-lg bg-black/40 border border-white/10 text-[11px] text-gray-300 break-words leading-snug">
+                Resumo: <strong className="text-[#FFD400] break-words">{activeConfirmationSummary}</strong>
               </div>
             </div>
 
@@ -3318,7 +3468,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               type="button"
               disabled={isSavingPayment || !activeDraftForInstallment}
               onClick={() => void handleConfirmAndSavePayment()}
-              className="w-full py-3.5 rounded-full bg-[#FACC15] hover:bg-[#FFD400] disabled:opacity-50 text-[#080B0D] font-black text-sm uppercase shadow-lg transition cursor-pointer"
+              className="w-full min-h-[48px] py-3.5 px-4 rounded-full bg-[#FACC15] hover:bg-[#FFD400] disabled:opacity-50 text-[#080B0D] font-black text-xs sm:text-sm uppercase shadow-lg transition cursor-pointer leading-snug text-center"
             >
               {isSavingPayment
                 ? 'ENVIANDO PARA O SERVIDOR...'
@@ -3335,14 +3485,14 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                   type="button"
                   disabled={isConfirmingSettlement}
                   onClick={() => void handleConfirmInstallmentSettlement()}
-                  className="w-full py-3 rounded-full bg-emerald-500 hover:bg-emerald-400 text-[#080B0D] font-black text-xs uppercase shadow-md transition cursor-pointer flex items-center justify-center gap-1.5"
+                  className="w-full min-h-[48px] py-3 px-4 rounded-full bg-emerald-500 hover:bg-emerald-400 text-[#080B0D] font-black text-xs uppercase shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 leading-snug text-center"
                 >
                   {isConfirmingSettlement ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                   ) : (
-                    <UserCheck className="w-4 h-4" />
+                    <UserCheck className="w-4 h-4 shrink-0" />
                   )}
-                  <span>
+                  <span className="break-words">
                     Confirmar Liquidação ({paymentStepMode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'})
                   </span>
                 </button>
@@ -3352,7 +3502,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               <button
                 type="button"
                 onClick={() => setPaymentModalFreight(null)}
-                className="px-7 py-2 rounded-full border border-gray-500 text-white font-bold text-xs hover:bg-white/10 cursor-pointer"
+                className="min-h-[44px] px-7 py-2 rounded-full border border-gray-500 text-white font-bold text-xs hover:bg-white/10 cursor-pointer"
               >
                 Fechar
               </button>
@@ -3478,7 +3628,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       </p>
                       <p className="text-xs text-gray-600 mt-1 tabular-nums">
                         Banco: {previewDocState.freight.banco} • PIX:{' '}
-                        {previewDocState.freight.chavePix}
+                        {canSeeFinancialStatsAndValues ? previewDocState.freight.chavePix : '•••.•••.•••-••'}
                       </p>
                     </div>
                   </div>
@@ -3492,7 +3642,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                       <div>
                         <p className="text-gray-500 text-[11px]">Valor Total do Frete</p>
                         <p className="text-base font-black text-[#15191D]">
-                          {formatCurrencyBRL(previewDocState.freight.valorTotal)}
+                          {formatProtectedCurrency(previewDocState.freight.valorTotal)}
                         </p>
                       </div>
                       <div>
@@ -3500,7 +3650,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                           Adiantamento ({previewDocState.freight.percentualAdiantamento}%)
                         </p>
                         <p className="text-base font-black text-amber-700">
-                          {formatCurrencyBRL(previewDocState.freight.valorAdiantamento)}
+                          {formatProtectedCurrency(previewDocState.freight.valorAdiantamento)}
                         </p>
                       </div>
                       <div>
@@ -3508,7 +3658,7 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
                           Saldo ({previewDocState.freight.percentualSaldo}%)
                         </p>
                         <p className="text-base font-black text-blue-700">
-                          {formatCurrencyBRL(previewDocState.freight.valorSaldo)}
+                          {formatProtectedCurrency(previewDocState.freight.valorSaldo)}
                         </p>
                       </div>
                     </div>
@@ -3607,6 +3757,15 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
           if (paymentModalFreight && paymentModalFreight.id === updatedFreight.id) {
             setPaymentModalFreight(updatedFreight);
           }
+          const isPaid = savedRec.verificationStatus === 'PAGAMENTO_CONFIRMADO';
+          showFinanceBanner(
+            isPaid ? 'PAGO' : 'ANEXO',
+            isPaid
+              ? `PAGO — Comprovante confirmado (${updatedFreight.code})`
+              : `Comprovante anexado (${updatedFreight.code})`,
+            `Arquivo "${savedRec.originalFileName}" vinculado. Responsável do frete e Monitoramento notificados.`,
+            'emerald'
+          );
         }}
         onRefreshData={fetchServerPaymentData}
       />

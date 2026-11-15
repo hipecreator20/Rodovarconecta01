@@ -1,5 +1,5 @@
 /* RODOVAR CONECTA — Service Worker Oficial (PWA + Web Share Target + Atualização Controlada) */
-const SW_VERSION = '2026.10.28-v3';
+const SW_VERSION = '2026.11.15-v4';
 const CACHE_NAME = `rodovar-conecta-shell-${SW_VERSION}`;
 const IDB_NAME = 'rodovar_shared_receipts_idb';
 const IDB_VERSION = 1;
@@ -180,13 +180,24 @@ self.addEventListener('fetch', (event) => {
             fileCandidate.size > 0
           ) {
             const arrayBuffer = await fileCandidate.arrayBuffer();
+            const rawName = String(fileCandidate.name || 'comprovante_banco.pdf');
+            const lowerName = rawName.toLowerCase();
+            const inferredMime =
+              fileCandidate.type ||
+              (lowerName.endsWith('.png')
+                ? 'image/png'
+                : lowerName.endsWith('.webp')
+                ? 'image/webp'
+                : lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
+                ? 'image/jpeg'
+                : 'application/pdf');
             await saveSharedPayloadToIdb({
               id: shareId,
               createdAtIso: new Date().toISOString(),
               createdAtMs: Date.now(),
               textOnly: false,
-              fileName: fileCandidate.name || 'comprovante_banco.pdf',
-              mimeType: fileCandidate.type || 'application/pdf',
+              fileName: rawName,
+              mimeType: inferredMime,
               sizeBytes: fileCandidate.size,
               arrayBuffer,
               sharedTitle,

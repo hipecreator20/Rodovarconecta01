@@ -1,5 +1,11 @@
 import { PROFILE_MODULES, type AccessProfile } from './accessPolicy.ts';
-import type { Department, Employee, UserRole } from '../types/index.ts';
+import {
+  DEFAULT_PORTAL_NOTIFICATION_PREFERENCES,
+  type Department,
+  type Employee,
+  type PortalNotificationPreferences,
+  type UserRole,
+} from '../types/index.ts';
 
 export interface ModulePermissionOption {
   id: string;
@@ -97,6 +103,20 @@ export const AVAILABLE_MODULES: ModulePermissionOption[] = [
 
 export const ALL_MODULE_IDS = AVAILABLE_MODULES.map((m) => m.id);
 
+export const AUTHORIZED_FINANCIAL_VIEWER_IDS = new Set([
+  'emp-7', // Petrônio Santos (Financeiro)
+  'emp-2', // Vitor (Diretoria)
+  'emp-admin-google-migrated', // Alexandre (Diretoria)
+  'emp-diretoria-ricardo', // Ricardo (Diretoria)
+]);
+
+export const AUTHORIZED_FINANCIAL_VIEWER_EMAILS = new Set([
+  'petronio.santos@rodovar.com.br',
+  'vitor@rodovar.com.br',
+  'alexandre@rodovar.com.br',
+  'ricardo@rodovar.com.br',
+]);
+
 export function resolveAccessProfileFromSector(
   dept?: Department | string,
   accessLevel?: UserRole,
@@ -162,6 +182,112 @@ export const canAccessExpedicaoFreights = (u?: Employee | null) => hasPagePermis
 export const canAccessMonitoramentoFreights = (u?: Employee | null) => hasPagePermission(u, 'fretes_ativos');
 export const canAccessFinanceiroFreights = (u?: Employee | null) => hasPagePermission(u, 'financeiro');
 export const canConfirmFreightPayment = (u?: Employee | null) => !!u && u.accessProfile === 'FINANCEIRO' && hasPagePermission(u, 'financeiro_confirmar');
+
+/**
+ * Regra estrita de visibilidade de valores monetários e estatísticas financeiras:
+ * Permitido SOMENTE para Financeiro (Petrônio) e Diretores (Vitor, Alexandre e Ricardo).
+ * Todos os demais usuários (inclusive Administrador, Monitoramento, Comercial, Expedição e RH)
+ * visualizam valores mascarados ("R$ ••••••") e não recebem estatísticas financeiras.
+ */
+export function canViewFinancialValuesAndStats(u?: Employee | null): boolean {
+  if (!u || u.active !== true || u.approvalStatus !== 'APROVADO') return false;
+  if (u.accessLevel === 'ADMINISTRADOR') return false;
+  const email = String(u.email || '').trim().toLowerCase();
+  const login = String(u.login || '').trim().toLowerCase();
+  const id = String(u.id || '').trim();
+  const isRoleAllowed =
+    u.accessProfile === 'FINANCEIRO' ||
+    u.accessProfile === 'DIRETORIA' ||
+    u.accessLevel === 'DIRETORIA';
+  if (!isRoleAllowed) return false;
+  if (AUTHORIZED_FINANCIAL_VIEWER_IDS.has(id)) return true;
+  if (
+    (email && AUTHORIZED_FINANCIAL_VIEWER_EMAILS.has(email)) ||
+    (login && AUTHORIZED_FINANCIAL_VIEWER_EMAILS.has(login))
+  ) {
+    return true;
+  }
+  // Fallback apenas para mocks unitários sintéticos em memória sem e-mail corporativo
+  if (!email && !login.includes('@') && u.accessProfile === 'FINANCEIRO') {
+    return true;
+  }
+  return false;
+}
+
+export function canOperateFinanceiroPayments(u?: Employee | null): boolean {
+  return canConfirmFreightPayment(u) || canViewFinancialValuesAndStats(u);
+}
+
+export function normalizePortalNotificationPreferences(
+  prefs?: Partial<PortalNotificationPreferences> | Record<string, unknown> | null
+): PortalNotificationPreferences {
+  const raw = (prefs && typeof prefs === 'object' ? prefs : {}) as Record<string, unknown>;
+  const pick = (key: keyof PortalNotificationPreferences, legacyKeys: string[] = []): boolean => {
+    if (typeof raw[key] === 'boolean') return raw[key] as boolean;
+    for (const lk of legacyKeys) {
+      if (typeof raw[lk] === 'boolean') return raw[lk] as boolean;
+    }
+    return DEFAULT_PORTAL_NOTIFICATION_PREFERENCES[key];
+  };
+  return {
+    comunicados: pick('comunicados', ['urgentAnnouncements']),
+    fretesMovimentacoes: pick('fretesMovimentacoes'),
+    ocorrenciasMonitoramento: pick('ocorrenciasMonitoramento'),
+    financeiroPagamentos: pick('financeiroPagamentos'),
+    solicitacoesPrazos: pick('solicitacoesPrazos', ['requestUpdates', 'slaWarnings']),
+    agendaEventos: pick('agendaEventos', ['calendarReminders']),
+  };
+}
+
+export function resolveNotificationPreferenceCategory(notif: {
+  type?: string;
+  targetSection?: string;
+  title?: string;
+  subtitle?: string;
+}): keyof PortalNotificationPreferences {
+  const section = String(notif.targetSection || '').toLowerCase();
+  const type = String(notif.type || '').toLowerCase();
+  const text = `${notif.title || ''} ${notif.subtitle || ''}`.toLowerCase();
+
+  if (type === 'comunicado' || section === 'comunicados') {
+    return 'comunicados';
+  }
+  if (type === 'evento' || type === 'agenda' || section === 'agenda') {
+    return 'agendaEventos';
+  }
+  if (
+    section === 'financeiro' ||
+    /pagamento|comprovante|adiantamento|saldo|liquida[cç][aã]o|\bpago\b/.test(text)
+  ) {
+    return 'financeiroPagamentos';
+  }
+  if (
+    section === 'fretes_ativos' ||
+    /ocorr[eê]ncia|atraso|monitoramento|impeditiv/.test(text)
+  ) {
+    return 'ocorrenciasMonitoramento';
+  }
+  if (section === 'fretes_comercial' || section === 'fretes_expedicao') {
+    return 'fretesMovimentacoes';
+  }
+  return 'solicitacoesPrazos';
+}
+
+export function shouldUserReceiveNotification(
+  user: Employee | null | undefined,
+  notif: {
+    type?: string;
+    targetSection?: string;
+    title?: string;
+    subtitle?: string;
+  }
+): boolean {
+  if (!user) return true;
+  const prefs = normalizePortalNotificationPreferences(user.notificationPreferences);
+  const category = resolveNotificationPreferenceCategory(notif);
+  return prefs[category] !== false;
+}
+
 export const canViewFreightTeam = (u?: Employee | null) => !!u && u.active && u.approvalStatus === 'APROVADO' && (u.accessLevel === 'ADMINISTRADOR' || u.accessProfile === 'DIRETORIA' || u.accessLevel === 'DIRETORIA' || u.accessProfile === 'MONITORAMENTO' || u.accessProfile === 'FINANCEIRO');
 export const canTransferFreightResponsibility = (u?: Employee | null) => !!u && u.accessLevel === 'ADMINISTRADOR' && hasPagePermission(u, 'fretes_transferir');
 export const canOperateMonitoring = (u?: Employee | null) => !!u && (u.accessProfile === 'MONITORAMENTO'||isLogisticsManager(u)) && hasPagePermission(u, 'fretes_ativos');

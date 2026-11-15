@@ -59,6 +59,8 @@ import {
   formatCentavosToBrl,
   sanitizeApiErrorMessage,
 } from '../lib/serverApi';
+import { prepareMobileUploadFile } from '../lib/mobileFileHelper';
+import { canViewFinancialValuesAndStats } from '../lib/permissions';
 import { emitPortalToast, PortalToastType } from './ui/GlobalToastViewport';
 import {
   appQueryClient,
@@ -628,6 +630,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   const [occTitulo, setOccTitulo] = useState<string>('');
   const [occDescricao, setOccDescricao] = useState<string>('');
   const [occSeveridade, setOccSeveridade] = useState<'BAIXA' | 'MEDIA' | 'IMPEDITIVA'>('MEDIA');
+  const [occAttachment, setOccAttachment] = useState<{
+    fileName: string;
+    dataUrl: string;
+  } | null>(null);
   const [occBusy, setOccBusy] = useState<boolean>(false);
 
   // Attachment upload state
@@ -998,6 +1004,20 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     }
   };
 
+  const handleOccAttachmentChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const prepared = await prepareMobileUploadFile(file, { maxBytes: 10 * 1024 * 1024 });
+      setOccAttachment({ fileName: prepared.fileName, dataUrl: prepared.dataUrl });
+    } catch (err) {
+      reportError(
+        sanitizeApiErrorMessage(err, 'Não foi possível preparar o anexo da ocorrência.')
+      );
+    }
+  };
+
   const handleCreateOccurrence = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFreight || !occTitulo.trim()) return;
@@ -1007,6 +1027,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         title: occTitulo.trim(),
         description: occDescricao.trim(),
         severity: occSeveridade,
+        attachment: occAttachment || undefined,
       });
       if (!res.ok || !res.freight) {
         reportError(sanitizeApiErrorMessage(res.error, 'Erro ao registrar ocorrência.'));
@@ -1016,13 +1037,20 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       await syncAfterFreightMutation(updated, {
         ocorrencias: res.ocorrencias,
         historico: res.historico,
+        ...(res.anexos ? { anexos: res.anexos } : {}),
       });
       setOccTitulo('');
       setOccDescricao('');
-      showToast('Ocorrência de monitoramento registrada.', {
-        type: 'success',
-        title: 'Concluído',
-      });
+      setOccAttachment(null);
+      showToast(
+        occAttachment
+          ? 'Ocorrência e anexo registrados com sucesso.'
+          : 'Ocorrência de monitoramento registrada.',
+        {
+          type: 'success',
+          title: 'Concluído',
+        }
+      );
     } catch (err) {
       reportError(sanitizeApiErrorMessage(err, 'Erro ao registrar ocorrência.'));
     } finally {
@@ -1055,25 +1083,16 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
   const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedFreight) return;
-    if (file.size > 10 * 1024 * 1024) {
-      reportError('O arquivo excede o limite de 10 MB.');
-      return;
-    }
     setAttBusy(true);
     setErrorMsg(null);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('Falha ao ler arquivo.'));
-        reader.readAsDataURL(file);
-      });
+      const prepared = await prepareMobileUploadFile(file, { maxBytes: 10 * 1024 * 1024 });
 
       const res = await apiUploadFreightAttachment(selectedFreight.id, {
         category: attCategory,
-        fileName: file.name,
-        label: file.name,
-        dataUrl,
+        fileName: prepared.fileName,
+        label: prepared.fileName,
+        dataUrl: prepared.dataUrl,
       });
 
       if (!res.ok || !res.freight) {
@@ -1086,7 +1105,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         anexos: res.anexos,
         historico: res.historico,
       });
-      showToast(`Comprovante/anexo "${file.name}" enviado.`, {
+      showToast(`Comprovante/anexo "${prepared.fileName}" enviado.`, {
         type: 'success',
         title: 'Concluído',
       });
@@ -1287,17 +1306,27 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           </div>
         </button>
 
-        <div className="bg-white rounded-2xl p-3.5 border border-gray-200/80 shadow-2xs flex items-center gap-3 col-span-2 lg:col-span-1">
+        <button
+          type="button"
+          onClick={() => {
+            setPanelMode('ATIVOS');
+            setSearchQuery('');
+            setStageFilter('PENDENCIAS');
+            setActivePage(1);
+          }}
+          className="bg-white hover:bg-red-50/40 rounded-2xl p-3.5 border border-gray-200/80 hover:border-red-300 shadow-2xs flex items-center gap-3 col-span-2 lg:col-span-1 text-left transition cursor-pointer"
+          title="Visualizar fretes com pendências e ocorrências"
+        >
           <div className="w-10 h-10 rounded-xl bg-red-50 border border-red-200/60 flex items-center justify-center text-[#E5252A] shrink-0">
             <AlertCircle className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[11px] font-semibold text-gray-500">Pendências</p>
+            <p className="text-[11px] font-semibold text-gray-500">Fretes Pendentes</p>
             <p className="text-xl font-black text-[#E5252A] tabular-nums leading-tight">
               {stats.pendencias}
             </p>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* 3. FILTER BAR (CONTEXTUAL: ATIVOS vs FINALIZADOS) */}
@@ -2243,14 +2272,16 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                           {selectedFreight.placaCarreta ? `/ ${selectedFreight.placaCarreta}` : ''}
                         </p>
                       </div>
-{(currentUser.accessProfile==='FINANCEIRO'||currentUser.accessProfile==='DIRETORIA'||currentUser.accessLevel==='ADMINISTRADOR')&&(                      <div>
+{canViewFinancialValuesAndStats(currentUser) && (
+                      <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase">
                           Valor Contratado Motorista
                         </p>
                         <p className="font-black text-[#15191D]">
                           {formatCentavosToBrl(selectedFreight.valorContratadoCentavos)}
                         </p>
-                      </div>)}
+                      </div>
+)}
                       <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase">
                           Situação Financeira Independente
@@ -2311,21 +2342,22 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                         <option value="OUTRO">Outro Anexo</option>
                       </select>
                       <input
+                        id="fretes-ativos-att-input"
                         ref={fileInputRef}
                         type="file"
-                        accept=".pdf,image/*"
+                        accept="application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic"
                         onChange={handleUploadFile}
-                        className="hidden"
+                        className="sr-only"
                       />
-                      <button
-                        type="button"
-                        disabled={attBusy}
-                        onClick={() => fileInputRef.current?.click()}
-                        className="inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold px-3.5 py-1.5 rounded-lg cursor-pointer"
+                      <label
+                        htmlFor="fretes-ativos-att-input"
+                        className={`inline-flex items-center gap-1.5 bg-[#FFD400] hover:bg-[#ffdf33] text-[#080B0D] font-extrabold px-3.5 py-2 rounded-lg cursor-pointer min-h-[38px] ${
+                          attBusy ? 'opacity-60 pointer-events-none' : ''
+                        }`}
                       >
                         <Upload className="w-3.5 h-3.5" />
                         <span>{attBusy ? 'Enviando...' : 'Anexar Arquivo'}</span>
-                      </button>
+                      </label>
                     </div>
                   </div>
 
@@ -2435,13 +2467,44 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                       placeholder="Descrição detalhada da ocorrência em rota/coleta/entrega..."
                       className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white"
                     />
-                    <button
-                      type="submit"
-                      disabled={occBusy || !occTitulo.trim()}
-                      className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3.5 py-1.5 rounded-lg text-xs cursor-pointer disabled:opacity-50"
-                    >
-                      Registrar Ocorrência
-                    </button>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <input
+                          id="fretes-ativos-occ-att"
+                          type="file"
+                          accept="application/pdf,image/*,.pdf,.jpg,.jpeg,.png,.webp,.heic"
+                          onChange={(e) => void handleOccAttachmentChange(e)}
+                          className="sr-only"
+                        />
+                        <label
+                          htmlFor="fretes-ativos-occ-att"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-[#15191D] font-bold text-xs cursor-pointer min-h-[36px]"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>{occAttachment ? 'Trocar anexo' : 'Anexar foto ou PDF (opcional)'}</span>
+                        </label>
+                        {occAttachment && (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold max-w-full">
+                            <span className="truncate max-w-[180px]">{occAttachment.fileName}</span>
+                            <button
+                              type="button"
+                              onClick={() => setOccAttachment(null)}
+                              className="text-emerald-700 hover:text-red-600 cursor-pointer"
+                              title="Remover anexo"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={occBusy || !occTitulo.trim()}
+                        className="bg-[#080B0D] text-[#FFD400] font-extrabold px-3.5 py-2 rounded-lg text-xs cursor-pointer disabled:opacity-50 min-h-[38px]"
+                      >
+                        {occBusy ? 'Registrando...' : 'Registrar Ocorrência'}
+                      </button>
+                    </div>
                   </form>
 
                   {detailOcorrencias.length === 0 ? (
@@ -2462,8 +2525,8 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="flex items-center gap-1.5">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
                                 <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-white border">
                                   {occ.severity}
                                 </span>
@@ -2471,9 +2534,30 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                                   {occ.resolved ? 'RESOLVIDA' : 'ABERTA'}
                                 </span>
                               </div>
-                              <p className="font-extrabold text-[#15191D] mt-1">{occ.title}</p>
+                              <p className="font-extrabold text-[#15191D] mt-1 break-words">{occ.title}</p>
                               {occ.description && (
-                                <p className="text-gray-600 mt-0.5">{occ.description}</p>
+                                <p className="text-gray-600 mt-0.5 break-words">{occ.description}</p>
+                              )}
+                              {occ.attachmentId && (
+                                <div className="mt-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      selectedFreight &&
+                                      void apiDownloadFreightAttachment(
+                                        selectedFreight.id,
+                                        occ.attachmentId!,
+                                        occ.attachmentName || 'anexo-ocorrencia'
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-gray-300 hover:bg-gray-100 text-[#15191D] text-[11px] font-bold cursor-pointer"
+                                  >
+                                    <Download className="w-3.5 h-3.5 text-emerald-700" />
+                                    <span className="truncate max-w-[200px]">
+                                      {occ.attachmentName || 'Baixar anexo da ocorrência'}
+                                    </span>
+                                  </button>
+                                </div>
                               )}
                               <p className="text-[10px] text-gray-400 mt-1">
                                 Por {occ.createdByName} em {occ.createdAtFormatted}
