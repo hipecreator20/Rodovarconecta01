@@ -967,6 +967,8 @@ export interface SocialPost {
   authorDepartment?: string;
   content: string;
   images: string[];
+  audioUrl?: string;
+  videoUrl?: string;
   likes: string[]; // array of user IDs
   congrats?: string[]; // array of user IDs who congratulated
   comments: SocialComment[];

@@ -33,6 +33,9 @@ import {
   Smile,
   PartyPopper,
   Loader2,
+  Mic,
+  Video,
+  Square,
 } from 'lucide-react';
 import type {
   Employee,
@@ -1514,7 +1517,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   </button>
 
                   {isEmojiPickerOpen && (
-                    <div className="absolute left-0 top-full mt-1.5 z-40 w-[336px] sm:w-[408px] max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-gray-200 shadow-xl p-2 space-y-1.5">
+                    <div className="absolute left-0 top-full mt-1.5 z-40 w-[270px] bg-white rounded-xl border border-gray-200 shadow-xl p-2 space-y-1.5">
                       <div className="flex items-center justify-between px-0.5">
                         <span className="text-[11px] font-extrabold text-[#080B0D]">
                           Emoções
@@ -1527,13 +1530,13 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      <div className="flex flex-row flex-wrap items-center gap-1">
+                      <div className="grid grid-cols-6 gap-1 items-center">
                         {CORPORATE_EMOTIONS.map((emoji) => (
                           <button
                             key={emoji}
                             type="button"
                             onClick={() => handleInsertPostEmoji(emoji)}
-                            className="w-7 h-7 shrink-0 rounded-md hover:bg-amber-50 active:scale-95 text-sm flex items-center justify-center transition cursor-pointer"
+                            className="w-8 h-8 rounded-md hover:bg-amber-50 active:scale-95 text-base flex items-center justify-center transition cursor-pointer"
                             title={`Inserir ${emoji}`}
                           >
                             {emoji}
@@ -1926,7 +1929,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                               </button>
                             </div>
                             {activeCommentEmojiPostId === post.id && (
-                              <div className="absolute right-0 top-full mt-1.5 z-40 bg-white rounded-xl border border-gray-200 shadow-lg p-1.5 flex flex-row flex-wrap items-center gap-1 w-[256px] sm:w-[310px] max-w-[calc(100vw-2rem)]">
+                              <div className="absolute right-0 top-full mt-1.5 z-40 bg-white rounded-xl border border-gray-200 shadow-lg p-1.5 grid grid-cols-6 gap-1 w-[240px] max-w-[calc(100vw-2rem)]">
                                 {CORPORATE_EMOTIONS.slice(0, 18).map((emoji) => (
                                   <button
                                     key={emoji}
@@ -1938,7 +1941,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                                       }));
                                       setActiveCommentEmojiPostId(null);
                                     }}
-                                    className="w-7 h-7 shrink-0 rounded-md hover:bg-amber-50 text-sm flex items-center justify-center cursor-pointer"
+                                    className="w-8 h-8 rounded-md hover:bg-amber-50 text-base flex items-center justify-center cursor-pointer"
                                   >
                                     {emoji}
                                   </button>

@@ -1775,6 +1775,8 @@ export async function apiFetchSocialPosts(authorId?: string): Promise<{
 export async function apiCreateSocialPost(payload: {
   content: string;
   images?: string[];
+  audioUrl?: string;
+  videoUrl?: string;
   audience?: string;
 }): Promise<{ ok: boolean; post?: SocialPost; error?: string }> {
   try {
@@ -1797,7 +1799,7 @@ export async function apiCreateSocialPost(payload: {
 
 export async function apiUpdateSocialPost(
   postId: string,
-  payload: { content?: string; images?: string[]; audience?: string }
+  payload: { content?: string; images?: string[]; audioUrl?: string; videoUrl?: string; audience?: string }
 ): Promise<{ ok: boolean; post?: SocialPost; error?: string }> {
   try {
     const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}`, {

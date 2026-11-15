@@ -1804,11 +1804,7 @@ export function registerUnifiedFreightRoutes(
     }
 
     const isMonitoringPendingFreight = (f: UnifiedFreightRecord): boolean =>
-      !isCanceledFreight(f) &&
-      (f.ocorrenciasAbertasCount > 0 ||
-        Boolean(f.requerReconfirmacaoOperacional) ||
-        Boolean(f.ordemColetaPendente) ||
-        (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido));
+      !isCanceledFreight(f) && !['ENTREGUE', 'FINALIZADO'].includes(f.situacaoMonitoramento || '');
 
     // Monitoring scope counters computed BEFORE search/period/viewMode so "Ver Finalizados (N)" & KPI cards reflect full authorized scope
     const monActiveStages: MonitoringFreightStatus[] = [
@@ -1962,12 +1958,7 @@ export function registerUnifiedFreightRoutes(
       CONCLUIDO: activeExpedicaoPool.filter((f) => f.situacaoOperacional === 'CONCLUIDO').length,
       COLETAS_HOJE: activeExpedicaoPool.filter((f) => f.dataColetaIso === todaySp).length,
       PENDENCIAS: activeExpedicaoPool.filter(
-        (f) =>
-          f.ocorrenciasAbertasCount > 0 ||
-          Boolean(f.requerReconfirmacaoOperacional) ||
-          Boolean(f.devolvidoParaCorrecao) ||
-          Boolean(f.ordemColetaPendente) ||
-          (!matchesExpedicaoStage(f, 'LIBERADO_MONITORAMENTO') && f.checklistConcluidosCount < 5)
+        (f) => f.situacaoOperacional !== 'CONCLUIDO'
       ).length,
       CANCELADO: expedicaoKpiSource.filter(isCanceledFreight).length,
       DISPONIVEIS_FILA: availableToClaimCount,

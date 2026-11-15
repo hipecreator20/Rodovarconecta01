@@ -655,9 +655,9 @@ function validateSocialImageBuffer(
   // 5. POST /api/profile/posts - Create new post
   app.post('/api/profile/posts', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
-    const { content, images, audience } = req.body || {};
+    const { content, images, audioUrl, videoUrl, audience } = req.body || {};
 
-    if (!content && (!Array.isArray(images) || images.length === 0)) {
+    if (!content && (!Array.isArray(images) || images.length === 0) && !audioUrl && !videoUrl) {
       return res.status(400).json({ error: 'A publicação não pode estar vazia.' });
     }
 
@@ -708,6 +708,8 @@ function validateSocialImageBuffer(
       authorDepartment: sessionUser.department || 'Geral',
       content: cleanContent,
       images: validImages,
+      audioUrl: typeof audioUrl === 'string' ? audioUrl : undefined,
+      videoUrl: typeof videoUrl === 'string' ? videoUrl : undefined,
       likes: [],
       congrats: [],
       comments: [],
