@@ -132,13 +132,20 @@ export const MobileDeviceView: React.FC<MobileSimulatorProps> = ({
     badge?: number;
     highlight?: boolean;
   }> = [
-    {
-      id: 'comunicados' as MenuSection,
-      shortLabel: 'Mural',
-      icon: Megaphone,
-      badge: unreadAnnouncementsCount,
-      highlight: true,
-    },
+    ...(hasPagePermission(currentUser, 'inicio')
+      ? [{ id: 'inicio' as MenuSection, shortLabel: 'Início', icon: Home }]
+      : []),
+    ...(hasPagePermission(currentUser, 'comunicados')
+      ? [
+          {
+            id: 'comunicados' as MenuSection,
+            shortLabel: 'Mural',
+            icon: Megaphone,
+            badge: unreadAnnouncementsCount,
+            highlight: true,
+          },
+        ]
+      : []),
     ...(hasPagePermission(currentUser, 'fretes_comercial')
       ? [{ id: 'fretes_comercial' as MenuSection, shortLabel: 'Comercial', icon: Truck }]
       : []),

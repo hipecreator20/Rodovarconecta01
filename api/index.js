@@ -175,6 +175,9 @@ function hasPagePermission(employee, moduleId) {
   if (employee.accessLevel === "ADMINISTRADOR") return true;
   if (moduleId === "administracao" || moduleId === "fluxo_notificacoes") return false;
   if (moduleId === "fretes_ativos" && isLogisticsManager(employee)) return true;
+  if (Array.isArray(employee.permissoesPaginas) && employee.permissoesPaginas.length > 0) {
+    return employee.permissoesPaginas.includes(moduleId);
+  }
   if (moduleId === "agenda") return !!employee.accessProfile || employee.accessLevel === "DIRETORIA";
   const profile = employee.accessProfile || (employee.accessLevel === "DIRETORIA" ? "DIRETORIA" : void 0);
   return !!profile && PROFILE_MODULES[profile]?.includes(moduleId) === true;
@@ -532,7 +535,7 @@ async function flushPendingNeonWrites(timeoutMs = 15e3) {
     if (Date.now() >= deadline) break;
   }
 }
-var NEON_SCHEMA_VERSION = "2027.06.v1";
+var NEON_SCHEMA_VERSION = "2027.07.v1";
 var neonSchemaInitialized = false;
 var neonSchemaInitPromise = null;
 async function testNeonConnection() {
@@ -675,6 +678,7 @@ async function initializeNeonSchema() {
         must_change_password BOOLEAN DEFAULT TRUE,
         avatar TEXT DEFAULT '',
         has_custom_avatar BOOLEAN DEFAULT FALSE,
+        cover_url TEXT DEFAULT '',
         approval_status VARCHAR(50) DEFAULT 'APROVADO',
         requested_at VARCHAR(64),
         approved_by VARCHAR(255),
@@ -699,6 +703,7 @@ async function initializeNeonSchema() {
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS password_salt VARCHAR(255) DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS avatar TEXT DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS has_custom_avatar BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS cover_url TEXT DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APROVADO';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS requested_at VARCHAR(64);
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
@@ -895,8 +900,10 @@ async function initializeNeonSchema() {
         phone VARCHAR(50),
         location VARCHAR(100),
         social_links JSONB DEFAULT '{}'::jsonb,
+        hidden_photos JSONB DEFAULT '[]'::jsonb,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_social_profiles ADD COLUMN IF NOT EXISTS hidden_photos JSONB DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS rodovar_social_posts (
         id VARCHAR(64) PRIMARY KEY,
@@ -908,10 +915,12 @@ async function initializeNeonSchema() {
         content TEXT NOT NULL,
         images JSONB DEFAULT '[]'::jsonb,
         likes JSONB DEFAULT '[]'::jsonb,
+        congrats JSONB DEFAULT '[]'::jsonb,
         audience VARCHAR(50) DEFAULT 'P\xFAblico',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_social_posts ADD COLUMN IF NOT EXISTS congrats JSONB DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS rodovar_social_comments (
         id VARCHAR(64) PRIMARY KEY,
@@ -1381,6 +1390,7 @@ function mapRowToServerUserRecord(row) {
     ...row.access_profile ? { accessProfile: String(row.access_profile) } : {},
     avatar: String(row.avatar || ""),
     hasCustomAvatar: Boolean(row.has_custom_avatar),
+    ...row.cover_url ? { coverUrl: String(row.cover_url) } : {},
     approvalStatus: String(row.approval_status || "APROVADO"),
     requestedAt: String(row.requested_at || (/* @__PURE__ */ new Date()).toISOString()),
     ...row.approved_by ? { approvedBy: String(row.approved_by) } : {},
@@ -1403,6 +1413,7 @@ function persistUserToNeon(u) {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         const email = String(u.email || (String(u.login).includes("@") ? u.login : `${u.login}@rodovar.com.br`));
         const login = String(u.login || email);
         const role = String(u.accessProfile || u.roleTitle || "COLABORADOR").slice(0, 100);
@@ -1415,7 +1426,7 @@ function persistUserToNeon(u) {
         await dbSql`
           INSERT INTO rodovar_users (
             id, name, email, login, department, role, role_title, access_level, access_profile,
-            password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+            password_hash, password_salt, must_change_password, avatar, has_custom_avatar, cover_url,
             approval_status, requested_at, approved_by, approved_at, status_reason,
             migrated_from_google, phone_ext, phone, location, joined_at, active,
             permissoes_paginas, notification_preferences, roster_activation_version, updated_at
@@ -1424,7 +1435,7 @@ function persistUserToNeon(u) {
             ${String(u.department || "Administrativo")}, ${role}, ${roleTitle},
             ${String(u.accessLevel || "FUNCIONARIO").slice(0, 50)}, ${accessProfile},
             ${String(u.passwordHash || "managed")}, ${String(u.passwordSalt || "")},
-            ${Boolean(u.mustChangePassword)}, ${String(u.avatar || "")}, ${Boolean(u.hasCustomAvatar)},
+            ${Boolean(u.mustChangePassword)}, ${String(u.avatar || "")}, ${Boolean(u.hasCustomAvatar)}, ${String(u.coverUrl || "")},
             ${String(u.approvalStatus || "APROVADO")}, ${u.requestedAt ? String(u.requestedAt) : (/* @__PURE__ */ new Date()).toISOString()},
             ${u.approvedBy ? String(u.approvedBy) : null}, ${u.approvedAt ? String(u.approvedAt) : null},
             ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
@@ -1447,6 +1458,7 @@ function persistUserToNeon(u) {
             must_change_password = EXCLUDED.must_change_password,
             avatar = EXCLUDED.avatar,
             has_custom_avatar = EXCLUDED.has_custom_avatar,
+            cover_url = CASE WHEN EXCLUDED.cover_url <> '' THEN EXCLUDED.cover_url ELSE rodovar_users.cover_url END,
             approval_status = EXCLUDED.approval_status,
             requested_at = EXCLUDED.requested_at,
             approved_by = EXCLUDED.approved_by,
@@ -1823,6 +1835,9 @@ function persistFreightToNeon(f) {
 async function queryMonitoringFreightsFromNeon(params) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
+    if (hasPendingNeonWrites()) {
+      await flushPendingNeonWrites(4e3);
+    }
     const searchLike = params.search ? `%${params.search.toLowerCase()}%` : "";
     const offset = Math.max(0, (Math.max(1, params.page) - 1) * Math.max(1, params.limit));
     const respFilter = params.responsavelFilterId || "";
@@ -1831,36 +1846,35 @@ async function queryMonitoringFreightsFromNeon(params) {
     const [counterRows, listRows] = await Promise.all([
       sql`
         SELECT
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR')::int AS novo_para_carregar,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA')::int AS em_deslocamento_coleta,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA')::int AS no_local_coleta,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE')::int AS carregado_em_transporte,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA')::int AS no_local_entrega,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE')::int AS entregue,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO')::int AS finalizado,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS novo_para_carregar,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS em_deslocamento_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS no_local_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS carregado_em_transporte,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS no_local_entrega,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS entregue,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS finalizado,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CANCELADO' OR COALESCE(situacao_comercial, '') = 'CANCELADO' OR COALESCE(situacao_operacional, '') = 'CANCELADO')::int AS cancelado,
           COUNT(*) FILTER (
             WHERE data_coleta_iso = ${params.todaySp}
+              AND COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
               AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR','EM_DESLOCAMENTO_COLETA','NO_LOCAL_COLETA','CARREGADO_EM_TRANSPORTE','NO_LOCAL_ENTREGA')
           )::int AS coletas_hoje,
           COUNT(*) FILTER (
-            WHERE (
-              COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
-              OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
-              OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
-            )
+            WHERE COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+              AND (
+                COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+                OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+                OR COALESCE((payload->>'ordemColetaPendente')::boolean, false) = true
+                OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+              )
           )::int AS pendencias
         FROM rodovar_fretes
         WHERE payload IS NOT NULL
           AND situacao_monitoramento IS NOT NULL
           AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
-          AND (
-            ${params.includeCanceled}::boolean = true
-            OR (
-              COALESCE(situacao_comercial, '') <> 'CANCELADO'
-              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
-              AND situacao_monitoramento <> 'CANCELADO'
-            )
-          )
           AND (
             (
               ${params.scope} = 'EQUIPE'
@@ -1908,7 +1922,7 @@ async function queryMonitoringFreightsFromNeon(params) {
           AND situacao_monitoramento IS NOT NULL
           AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
           AND (
-            ${params.includeCanceled}::boolean = true
+            (${params.includeCanceled}::boolean = true AND ${situacao} <> 'PENDENCIAS')
             OR (
               COALESCE(situacao_comercial, '') <> 'CANCELADO'
               AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
@@ -1932,7 +1946,8 @@ async function queryMonitoringFreightsFromNeon(params) {
             )
           )
           AND (
-            ${params.viewMode} = 'ALL'
+            ${situacao} = 'PENDENCIAS'
+            OR ${params.viewMode} = 'ALL'
             OR (
               ${params.viewMode} = 'ATIVOS'
               AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR', 'EM_DESLOCAMENTO_COLETA', 'NO_LOCAL_COLETA', 'CARREGADO_EM_TRANSPORTE', 'NO_LOCAL_ENTREGA')
@@ -1944,7 +1959,16 @@ async function queryMonitoringFreightsFromNeon(params) {
           )
           AND (
             ${situacao} = 'TODAS'
-            OR situacao_monitoramento = ${situacao}
+            OR (
+              ${situacao} = 'PENDENCIAS'
+              AND (
+                COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+                OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+                OR COALESCE((payload->>'ordemColetaPendente')::boolean, false) = true
+                OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+              )
+            )
+            OR (${situacao} <> 'PENDENCIAS' AND situacao_monitoramento = ${situacao})
           )
           AND (
             ${searchLike} = ''
@@ -1991,7 +2015,7 @@ async function queryMonitoringFreightsFromNeon(params) {
     ]);
     const c = counterRows[0];
     if (!c) return null;
-    const totalCheck = Number(c.novo_para_carregar || 0) + Number(c.em_deslocamento_coleta || 0) + Number(c.no_local_coleta || 0) + Number(c.carregado_em_transporte || 0) + Number(c.no_local_entrega || 0) + Number(c.entregue || 0) + Number(c.finalizado || 0);
+    const totalCheck = Number(c.novo_para_carregar || 0) + Number(c.em_deslocamento_coleta || 0) + Number(c.no_local_coleta || 0) + Number(c.carregado_em_transporte || 0) + Number(c.no_local_entrega || 0) + Number(c.entregue || 0) + Number(c.finalizado || 0) + Number(c.cancelado || 0);
     if (totalCheck === 0 && listRows.length === 0) {
       const anyPayloads = await sql`SELECT 1 FROM rodovar_fretes WHERE payload IS NOT NULL LIMIT 1`;
       if (anyPayloads.length === 0) return null;
@@ -2033,6 +2057,7 @@ async function queryMonitoringFreightsFromNeon(params) {
         ENTREGUE: Number(c.entregue || 0),
         FINALIZADO: Number(c.finalizado || 0),
         PENDENCIAS: Number(c.pendencias || 0),
+        CANCELADO: Number(c.cancelado || 0),
         COLETAS_HOJE: Number(c.coletas_hoje || 0),
         TOTAL_ATIVOS: totalAtivos,
         completedCount
@@ -2274,11 +2299,13 @@ function persistSocialProfileToNeon(p) {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
-          INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
+          INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, hidden_photos, updated_at)
           VALUES (
             ${p.userId}, ${p.coverUrl || null}, ${p.bio || null}, ${p.customDisplayName || null},
-            ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb, CURRENT_TIMESTAMP
+            ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb,
+            ${JSON.stringify(Array.isArray(p.hiddenPhotos) ? p.hiddenPhotos : [])}::jsonb, CURRENT_TIMESTAMP
           )
           ON CONFLICT (user_id) DO UPDATE SET
             cover_url = EXCLUDED.cover_url,
@@ -2287,6 +2314,7 @@ function persistSocialProfileToNeon(p) {
             phone = EXCLUDED.phone,
             location = EXCLUDED.location,
             social_links = EXCLUDED.social_links,
+            hidden_photos = EXCLUDED.hidden_photos,
             updated_at = CURRENT_TIMESTAMP
         `;
       } catch (err) {
@@ -2295,24 +2323,60 @@ function persistSocialProfileToNeon(p) {
     })()
   );
 }
+async function loadSocialProfilesFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const rows = await sql`
+      SELECT user_id AS "userId",
+             cover_url AS "coverUrl",
+             bio,
+             custom_display_name AS "customDisplayName",
+             phone,
+             location,
+             social_links AS "socialLinks",
+             hidden_photos AS "hiddenPhotos",
+             updated_at AS "updatedAt"
+      FROM rodovar_social_profiles
+    `;
+    return rows.map((r) => ({
+      userId: String(r.userId),
+      ...r.coverUrl ? { coverUrl: String(r.coverUrl) } : {},
+      ...r.bio ? { bio: String(r.bio) } : {},
+      ...r.customDisplayName ? { customDisplayName: String(r.customDisplayName) } : {},
+      ...r.phone ? { phone: String(r.phone) } : {},
+      ...r.location ? { location: String(r.location) } : {},
+      socialLinks: r.socialLinks && typeof r.socialLinks === "object" ? r.socialLinks : typeof r.socialLinks === "string" ? JSON.parse(r.socialLinks || "{}") : {},
+      hiddenPhotos: Array.isArray(r.hiddenPhotos) ? r.hiddenPhotos : typeof r.hiddenPhotos === "string" ? JSON.parse(r.hiddenPhotos || "[]") : [],
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
+    }));
+  } catch (err) {
+    console.warn("Neon loadSocialProfilesFromNeon error:", err.message);
+    return [];
+  }
+}
 function persistSocialPostToNeon(post) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !post || !post.id) return Promise.resolve();
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
-          INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
+          INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, congrats, audience, updated_at)
           VALUES (
             ${post.id}, ${post.authorId}, ${post.authorName}, ${post.authorAvatar || null},
             ${post.authorRole || null}, ${post.authorDepartment || null}, ${post.content},
             ${JSON.stringify(post.images || [])}::jsonb, ${JSON.stringify(post.likes || [])}::jsonb,
+            ${JSON.stringify(post.congrats || [])}::jsonb,
             ${post.audience || "P\xFAblico"}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO UPDATE SET
+            author_name = EXCLUDED.author_name,
+            author_avatar = COALESCE(EXCLUDED.author_avatar, rodovar_social_posts.author_avatar),
             content = EXCLUDED.content,
             images = EXCLUDED.images,
             likes = EXCLUDED.likes,
+            congrats = EXCLUDED.congrats,
             audience = EXCLUDED.audience,
             updated_at = CURRENT_TIMESTAMP
         `;
@@ -2321,6 +2385,65 @@ function persistSocialPostToNeon(post) {
       }
     })()
   );
+}
+async function loadSocialPostsFromNeon() {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const [postRows, commentRows] = await Promise.all([
+      sql`
+        SELECT id, author_id, author_name, author_avatar, author_role, author_department,
+               content, images, likes, congrats, audience, created_at, updated_at
+        FROM rodovar_social_posts
+        ORDER BY created_at DESC
+        LIMIT 200
+      `,
+      sql`
+        SELECT id, post_id, author_id, author_name, author_avatar, author_role, content, created_at
+        FROM rodovar_social_comments
+        ORDER BY created_at ASC
+      `
+    ]);
+    const commentsByPost = /* @__PURE__ */ new Map();
+    for (const c of commentRows) {
+      const pid = String(c.post_id);
+      const list = commentsByPost.get(pid) || [];
+      list.push({
+        id: String(c.id),
+        postId: pid,
+        authorId: String(c.author_id),
+        authorName: String(c.author_name || "Colaborador"),
+        authorAvatar: String(c.author_avatar || "/assets/default-avatar.png"),
+        authorRole: c.author_role ? String(c.author_role) : "Colaborador",
+        content: String(c.content || ""),
+        createdAt: c.created_at ? new Date(c.created_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
+      });
+      commentsByPost.set(pid, list);
+    }
+    return postRows.map((r) => {
+      const postComments = commentsByPost.get(String(r.id)) || [];
+      const parseArr = (val) => Array.isArray(val) ? val : typeof val === "string" ? JSON.parse(val || "[]") : [];
+      return {
+        id: String(r.id),
+        authorId: String(r.author_id),
+        authorName: String(r.author_name || "Colaborador"),
+        authorAvatar: String(r.author_avatar || "/assets/default-avatar.png"),
+        authorRole: r.author_role ? String(r.author_role) : "Colaborador",
+        authorDepartment: r.author_department ? String(r.author_department) : "Geral",
+        content: String(r.content || ""),
+        images: parseArr(r.images),
+        likes: parseArr(r.likes),
+        congrats: parseArr(r.congrats),
+        comments: postComments,
+        commentsCount: postComments.length,
+        audience: r.audience ? String(r.audience) : "P\xFAblico",
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString(),
+        updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
+      };
+    });
+  } catch (err) {
+    console.warn("Neon loadSocialPostsFromNeon error:", err.message);
+    return [];
+  }
 }
 function deleteSocialPostFromNeon(postId) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !postId) return Promise.resolve();
@@ -2344,6 +2467,7 @@ function persistSocialCommentToNeon(c) {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
           INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
           VALUES (${c.id}, ${c.postId}, ${c.authorId}, ${c.authorName}, ${c.authorAvatar || null}, ${c.authorRole || null}, ${c.content})
@@ -2369,11 +2493,12 @@ function deleteSocialCommentFromNeon(commentId) {
   );
 }
 function persistSystemAssetToNeon(asset) {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return Promise.resolve();
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return Promise.resolve(false);
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
           INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
           VALUES (${asset.id}, ${asset.slot}, ${asset.mimeType}, ${asset.dataBase64}, ${asset.width || null}, ${asset.height || null}, CURRENT_TIMESTAMP)
@@ -2385,8 +2510,10 @@ function persistSystemAssetToNeon(asset) {
             height = EXCLUDED.height,
             updated_at = CURRENT_TIMESTAMP
         `;
+        return true;
       } catch (err) {
         console.warn("Neon persistSystemAssetToNeon error:", err.message);
+        return false;
       }
     })()
   );
@@ -2394,6 +2521,7 @@ function persistSystemAssetToNeon(asset) {
 async function getSystemAssetFromNeon(id) {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !id) return null;
   try {
+    await ensureNeonReady();
     const rows = await sql`
       SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = ${id} LIMIT 1
     `;
@@ -3327,8 +3455,95 @@ function hydrateSocialProfileFromPayload(payload) {
     activeSocialState.profiles = payload.profiles;
   }
   if (Array.isArray(payload.posts)) {
-    activeSocialState.posts = payload.posts;
+    activeSocialState.posts = payload.posts.map((p) => ({
+      ...p,
+      likes: Array.isArray(p?.likes) ? p.likes : [],
+      congrats: Array.isArray(p?.congrats) ? p.congrats : [],
+      comments: Array.isArray(p?.comments) ? p.comments : []
+    }));
   }
+}
+function mergeSocialProfilesFromNeon(rows) {
+  if (!activeSocialState || !Array.isArray(rows)) return;
+  for (const row of rows) {
+    if (!row || !row.userId) continue;
+    const existing = activeSocialState.profiles[row.userId];
+    if (!existing) {
+      activeSocialState.profiles[row.userId] = {
+        userId: row.userId,
+        coverUrl: row.coverUrl || DEFAULT_COVER,
+        bio: row.bio || "",
+        customDisplayName: row.customDisplayName,
+        phone: row.phone,
+        location: row.location,
+        socialLinks: row.socialLinks || {},
+        hiddenPhotos: Array.isArray(row.hiddenPhotos) ? row.hiddenPhotos : [],
+        updatedAt: row.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
+      };
+      continue;
+    }
+    const rowTs = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    const existingTs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+    const rowIsNewer = rowTs > existingTs;
+    if (row.coverUrl && row.coverUrl !== DEFAULT_COVER && (!existing.coverUrl || existing.coverUrl === DEFAULT_COVER || rowIsNewer)) {
+      existing.coverUrl = row.coverUrl;
+    }
+    if (rowIsNewer) {
+      if (row.bio !== void 0) existing.bio = row.bio;
+      if (row.customDisplayName !== void 0) existing.customDisplayName = row.customDisplayName;
+      if (row.phone !== void 0) existing.phone = row.phone;
+      if (row.location !== void 0) existing.location = row.location;
+      if (row.socialLinks) existing.socialLinks = row.socialLinks;
+      if (Array.isArray(row.hiddenPhotos)) existing.hiddenPhotos = row.hiddenPhotos;
+      if (row.updatedAt) existing.updatedAt = row.updatedAt;
+    }
+  }
+}
+function mergeSocialPostsFromNeon(neonPosts) {
+  if (!activeSocialState || !Array.isArray(neonPosts) || neonPosts.length === 0) return;
+  const byId = /* @__PURE__ */ new Map();
+  for (const p of activeSocialState.posts) {
+    if (p && p.id) {
+      byId.set(p.id, {
+        ...p,
+        likes: Array.isArray(p.likes) ? p.likes : [],
+        congrats: Array.isArray(p.congrats) ? p.congrats : [],
+        comments: Array.isArray(p.comments) ? p.comments : []
+      });
+    }
+  }
+  for (const np of neonPosts) {
+    if (!np || !np.id) continue;
+    const existing = byId.get(np.id);
+    if (!existing) {
+      byId.set(np.id, {
+        ...np,
+        likes: Array.isArray(np.likes) ? np.likes : [],
+        congrats: Array.isArray(np.congrats) ? np.congrats : [],
+        comments: Array.isArray(np.comments) ? np.comments : []
+      });
+    } else {
+      const npTs = np.updatedAt ? new Date(np.updatedAt).getTime() : 0;
+      const exTs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+      if (npTs > exTs) {
+        byId.set(np.id, {
+          ...existing,
+          ...np,
+          likes: Array.isArray(np.likes) ? np.likes : existing.likes || [],
+          congrats: Array.isArray(np.congrats) ? np.congrats : existing.congrats || [],
+          comments: Array.isArray(np.comments) && np.comments.length >= (existing.comments || []).length ? np.comments : existing.comments || []
+        });
+      }
+    }
+  }
+  activeSocialState.posts = Array.from(byId.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
+function getSocialCoverUrlForUser(userId) {
+  if (!activeSocialState || !userId) return void 0;
+  const cover = activeSocialState.profiles[userId]?.coverUrl;
+  return cover && cover.trim() !== "" ? cover : void 0;
 }
 var DEFAULT_COVER = "/assets/banner-rodovar-conecta-highway.png";
 var INITIAL_SAMPLE_POSTS = [
@@ -3418,18 +3633,61 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     }
   }
   activeSocialState = state;
-  const persistState = () => {
+  const persistStateLocal = () => {
     try {
       fs7.mkdirSync(dataDir, { recursive: true });
       fs7.writeFileSync(socialStoreFile, JSON.stringify(state, null, 2), "utf8");
-      void persistStateSnapshotToNeon("rodovar-social", {
-        profiles: state.profiles,
-        posts: state.posts,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
     } catch (err) {
       console.warn("Social state save error:", err.message);
     }
+  };
+  const persistState = () => {
+    persistStateLocal();
+    void persistStateSnapshotToNeon("rodovar-social", {
+      profiles: state.profiles,
+      posts: state.posts,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  };
+  const persistStateAsync = async () => {
+    persistStateLocal();
+    await persistStateSnapshotToNeon("rodovar-social", {
+      profiles: state.profiles,
+      posts: state.posts,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    }).catch((err) => {
+      console.warn("Social state Neon snapshot error:", err.message);
+    });
+  };
+  const resolveLiveAvatar = (user, fallbackAvatar) => {
+    if (user?.hasCustomAvatar && user?.avatar && String(user.avatar).trim() !== "" && !String(user.avatar).includes("default-avatar.png")) {
+      return String(user.avatar).trim();
+    }
+    return fallbackAvatar && !fallbackAvatar.includes("avatar-joao") ? fallbackAvatar : "/assets/default-avatar.png";
+  };
+  const enrichPostForClient = (p) => {
+    const authorUser = dbState2?.users?.find((u) => u.id === p.authorId);
+    const authorSocial = state.profiles[p.authorId];
+    const enrichedComments = (p.comments || []).map((c) => {
+      const cUser = dbState2?.users?.find((u) => u.id === c.authorId);
+      const cSocial = state.profiles[c.authorId];
+      return {
+        ...c,
+        authorName: cSocial?.customDisplayName || cUser?.name || c.authorName,
+        authorAvatar: cUser ? resolveLiveAvatar(cUser, c.authorAvatar) : c.authorAvatar || "/assets/default-avatar.png"
+      };
+    });
+    return {
+      ...p,
+      authorName: authorSocial?.customDisplayName || authorUser?.name || p.authorName,
+      authorAvatar: authorUser ? resolveLiveAvatar(authorUser, p.authorAvatar) : p.authorAvatar || "/assets/default-avatar.png",
+      authorRole: authorUser?.roleTitle || p.authorRole,
+      authorDepartment: authorUser?.department || p.authorDepartment,
+      likes: Array.isArray(p.likes) ? p.likes : [],
+      congrats: Array.isArray(p.congrats) ? p.congrats : [],
+      comments: enrichedComments,
+      commentsCount: enrichedComments.length
+    };
   };
   const getOrCreateProfile = (userId, defaultUser) => {
     if (!state.profiles[userId]) {
@@ -3470,11 +3728,12 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     const targetUser = dbState2.users.find((u) => u.id === targetUserId) || sessionUser;
     const profile = getOrCreateProfile(targetUserId, targetUser);
     const userPosts = state.posts.filter((p) => p.authorId === targetUserId);
+    const hiddenSet = new Set(Array.isArray(profile.hiddenPhotos) ? profile.hiddenPhotos : []);
     const photos = [];
     userPosts.forEach((p) => {
       if (Array.isArray(p.images)) {
         p.images.forEach((img) => {
-          if (img && !photos.includes(img)) photos.push(img);
+          if (img && !hiddenSet.has(img) && !photos.includes(img)) photos.push(img);
         });
       }
     });
@@ -3489,7 +3748,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       "/assets/aistudio/image_0137ac6c.png"
     ];
     stockPhotos.forEach((sp) => {
-      if (photos.length < 8 && !photos.includes(sp)) {
+      if (photos.length < 8 && !hiddenSet.has(sp) && !photos.includes(sp)) {
         photos.push(sp);
       }
     });
@@ -3504,7 +3763,9 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
         roleTitle: targetUser.roleTitle,
         department: targetUser.department,
         accessLevel: targetUser.accessLevel,
-        avatar: targetUser.avatar || "/assets/avatar-joao.jpg",
+        avatar: resolveLiveAvatar(targetUser),
+        hasCustomAvatar: Boolean(targetUser.hasCustomAvatar),
+        coverUrl: profile.coverUrl || targetUser.coverUrl || DEFAULT_COVER,
         phoneExt: profile.phone || targetUser.phoneExt,
         location: profile.location || "Salvador \u2013 BA",
         joinedAt: targetUser.joinedAt,
@@ -3522,7 +3783,9 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       phone,
       location,
       socialLinks,
-      coverUrl
+      coverUrl,
+      photos: nextPhotos,
+      hiddenPhotos
     } = req.body || {};
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
     if (typeof bio === "string") profile.bio = bio.trim().slice(0, 1e3);
@@ -3545,11 +3808,36 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       }
     }
     if (typeof location === "string") profile.location = location.trim().slice(0, 100);
-    if (syncedUserRecord) {
-      void persistUserToNeon(syncedUserRecord).catch(() => {
-      });
+    if (typeof coverUrl === "string" && coverUrl.trim()) {
+      profile.coverUrl = coverUrl.trim();
+      const u = dbState2.users.find((user) => user.id === sessionUser.id);
+      if (u) {
+        u.coverUrl = profile.coverUrl;
+        syncedUserRecord = u;
+      }
     }
-    if (typeof coverUrl === "string" && coverUrl.trim()) profile.coverUrl = coverUrl.trim();
+    if (Array.isArray(hiddenPhotos)) {
+      profile.hiddenPhotos = hiddenPhotos.filter((item) => typeof item === "string");
+    } else if (Array.isArray(nextPhotos)) {
+      const keepSet = new Set(nextPhotos.filter((item) => typeof item === "string"));
+      const currentKnown = /* @__PURE__ */ new Set([
+        "/assets/aistudio/Banner_Rodovar_Conecta_na_Rodovia_24f668fa.png",
+        "/assets/aistudio/010203_5a4289e5.png",
+        "/assets/aistudio/image_58f528e8.png",
+        "/assets/aistudio/DSC00410_9423424f.JPG",
+        "/assets/aistudio/image_47dbceb5.png",
+        "/assets/aistudio/DSC00515_18c5e319.JPG",
+        "/assets/aistudio/image_4dcd4767.png",
+        "/assets/aistudio/image_0137ac6c.png"
+      ]);
+      state.posts.filter((p) => p.authorId === sessionUser.id).forEach((p) => (p.images || []).forEach((img) => currentKnown.add(img)));
+      const mergedHidden = new Set(Array.isArray(profile.hiddenPhotos) ? profile.hiddenPhotos : []);
+      currentKnown.forEach((img) => {
+        if (!keepSet.has(img)) mergedHidden.add(img);
+        else mergedHidden.delete(img);
+      });
+      profile.hiddenPhotos = Array.from(mergedHidden);
+    }
     if (socialLinks && typeof socialLinks === "object") {
       const cleanUrl = (val) => {
         const str = String(val || "").trim();
@@ -3568,9 +3856,14 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       };
     }
     profile.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    persistState();
+    await persistStateAsync();
     await persistSocialProfileToNeon(profile).catch(() => {
     });
+    if (syncedUserRecord) {
+      await persistUserToNeon(syncedUserRecord).catch(() => {
+      });
+    }
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       profile
@@ -3647,11 +3940,28 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       return res.status(400).json({ error: "Nenhuma imagem v\xE1lida enviada." });
     }
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
+    const previousCoverUrl = profile.coverUrl;
+    if (previousCoverUrl && previousCoverUrl !== targetCoverUrl && previousCoverUrl.startsWith("/uploads/cover-")) {
+      try {
+        const prevPath = path7.join(uploadsDir, path7.basename(previousCoverUrl));
+        if (fs7.existsSync(prevPath)) fs7.unlinkSync(prevPath);
+      } catch {
+      }
+    }
     profile.coverUrl = targetCoverUrl;
     profile.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    persistState();
+    const userRecord = dbState2?.users?.find((u) => u.id === sessionUser.id);
+    if (userRecord) {
+      userRecord.coverUrl = targetCoverUrl;
+    }
+    await persistStateAsync();
     await persistSocialProfileToNeon(profile).catch(() => {
     });
+    if (userRecord) {
+      await persistUserToNeon(userRecord).catch(() => {
+      });
+    }
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       coverUrl: targetCoverUrl,
@@ -3660,7 +3970,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
   });
   app.get("/api/profile/posts", guard, (req, res) => {
     const { authorId } = req.query;
-    let posts = [...state.posts];
+    let posts = state.posts.map(enrichPostForClient);
     if (authorId) {
       posts = posts.filter((p) => p.authorId === authorId);
     }
@@ -3715,12 +4025,13 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       id: `post-${Date.now()}-${crypto7.randomBytes(3).toString("hex")}`,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
-      authorAvatar: sessionUser.avatar || "/assets/avatar-joao.jpg",
+      authorAvatar: resolveLiveAvatar(sessionUser),
       authorRole: sessionUser.roleTitle || "Colaborador",
       authorDepartment: sessionUser.department || "Geral",
       content: cleanContent,
       images: validImages,
       likes: [],
+      congrats: [],
       comments: [],
       commentsCount: 0,
       audience: audience || "P\xFAblico",
@@ -3728,14 +4039,15 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     state.posts.unshift(newPost);
-    persistState();
-    void persistSocialPostToNeon(newPost);
+    await persistStateAsync();
+    await persistSocialPostToNeon(newPost);
+    await flushPendingNeonWrites();
     res.status(201).json({
       ok: true,
-      post: newPost
+      post: enrichPostForClient(newPost)
     });
   });
-  app.put("/api/profile/posts/:postId", guard, (req, res) => {
+  app.put("/api/profile/posts/:postId", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const { content, images, audience } = req.body || {};
@@ -3756,14 +4068,15 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       post.audience = audience;
     }
     post.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    persistState();
-    void persistSocialPostToNeon(post);
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
-      post
+      post: enrichPostForClient(post)
     });
   });
-  app.delete("/api/profile/posts/:postId", guard, (req, res) => {
+  app.delete("/api/profile/posts/:postId", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const postIndex = state.posts.findIndex((p) => p.id === postId);
@@ -3775,20 +4088,22 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       return res.status(403).json({ error: "Sem permiss\xE3o para excluir esta publica\xE7\xE3o." });
     }
     state.posts.splice(postIndex, 1);
-    persistState();
-    void deleteSocialPostFromNeon(postId);
+    await persistStateAsync();
+    await deleteSocialPostFromNeon(postId);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       deletedPostId: postId
     });
   });
-  app.post("/api/profile/posts/:postId/like", guard, (req, res) => {
+  app.post("/api/profile/posts/:postId/like", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const post = state.posts.find((p) => p.id === postId);
     if (!post) {
       return res.status(404).json({ error: "Publica\xE7\xE3o n\xE3o encontrada." });
     }
+    post.likes ||= [];
     const userId = sessionUser.id;
     const existingIndex = post.likes.indexOf(userId);
     let isLiked = false;
@@ -3799,8 +4114,10 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       post.likes.push(userId);
       isLiked = true;
     }
-    persistState();
-    void persistSocialPostToNeon(post);
+    post.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       isLiked,
@@ -3808,7 +4125,36 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       likes: post.likes
     });
   });
-  app.post("/api/profile/posts/:postId/comments", guard, (req, res) => {
+  app.post("/api/profile/posts/:postId/congrats", guard, async (req, res) => {
+    const sessionUser = req.sessionUser;
+    const { postId } = req.params;
+    const post = state.posts.find((p) => p.id === postId);
+    if (!post) {
+      return res.status(404).json({ error: "Publica\xE7\xE3o n\xE3o encontrada." });
+    }
+    post.congrats ||= [];
+    const userId = sessionUser.id;
+    const existingIndex = post.congrats.indexOf(userId);
+    let isCongratulated = false;
+    if (existingIndex >= 0) {
+      post.congrats.splice(existingIndex, 1);
+      isCongratulated = false;
+    } else {
+      post.congrats.push(userId);
+      isCongratulated = true;
+    }
+    post.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
+    res.json({
+      ok: true,
+      isCongratulated,
+      congratsCount: post.congrats.length,
+      congrats: post.congrats
+    });
+  });
+  app.post("/api/profile/posts/:postId/comments", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const { content } = req.body || {};
@@ -3825,7 +4171,7 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       postId,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
-      authorAvatar: sessionUser.avatar || "/assets/avatar-joao.jpg",
+      authorAvatar: resolveLiveAvatar(sessionUser),
       authorRole: sessionUser.roleTitle || "Colaborador",
       content: String(content).trim().slice(0, 1e3),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
@@ -3833,16 +4179,18 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     post.comments ||= [];
     post.comments.push(newComment);
     post.commentsCount = post.comments.length;
-    persistState();
-    void persistSocialCommentToNeon(newComment);
-    void persistSocialPostToNeon(post);
+    post.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await persistStateAsync();
+    await persistSocialCommentToNeon(newComment);
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
     res.status(201).json({
       ok: true,
       comment: newComment,
       commentsCount: post.commentsCount
     });
   });
-  app.delete("/api/profile/posts/:postId/comments/:commentId", guard, (req, res) => {
+  app.delete("/api/profile/posts/:postId/comments/:commentId", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
     const { postId, commentId } = req.params;
     const post = state.posts.find((p) => p.id === postId);
@@ -3859,9 +4207,11 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
     }
     post.comments.splice(commentIndex, 1);
     post.commentsCount = post.comments.length;
-    persistState();
-    void deleteSocialCommentFromNeon(commentId);
-    void persistSocialPostToNeon(post);
+    post.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await persistStateAsync();
+    await deleteSocialCommentFromNeon(commentId);
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
     res.json({
       ok: true,
       commentsCount: post.commentsCount
@@ -4635,7 +4985,7 @@ var freightSubDocs = /* @__PURE__ */ new Map();
 var idempotencyCache = /* @__PURE__ */ new Map();
 var activeFreightLocks = /* @__PURE__ */ new Set();
 var serverNotifications = [];
-var nextProtocolNumber = 843;
+var nextProtocolNumber = 1;
 var nextOrderSeqByBrand = {
   RODOVAR: 1,
   "VL TRANSPORTES": 1
@@ -4881,6 +5231,20 @@ function saveFreightsSnapshotToNeon() {
 }
 function hydrateUnifiedFreightsFromPayload(payload) {
   if (!payload || typeof payload !== "object") return;
+  if (payload.purgedAtIso || Array.isArray(payload.freights) && payload.freights.length === 0 && payload.authoritativeEmpty) {
+    freightsIndex.clear();
+    freightSubDocs.clear();
+    seededFromDefaultsOnly = false;
+    nextProtocolNumber = typeof payload.nextProtocolNumber === "number" && payload.nextProtocolNumber >= 1 ? payload.nextProtocolNumber : 1;
+    if (payload.nextOrderSeqByBrand && typeof payload.nextOrderSeqByBrand === "object") {
+      const rdv = Number(payload.nextOrderSeqByBrand.RODOVAR);
+      const vl = Number(payload.nextOrderSeqByBrand["VL TRANSPORTES"]);
+      if (!Number.isNaN(rdv) && rdv >= 1) nextOrderSeqByBrand.RODOVAR = rdv;
+      if (!Number.isNaN(vl) && vl >= 1) nextOrderSeqByBrand["VL TRANSPORTES"] = vl;
+    }
+    bumpFreightsDataVersion();
+    return;
+  }
   if (typeof payload.nextProtocolNumber === "number" && payload.nextProtocolNumber > nextProtocolNumber) {
     nextProtocolNumber = payload.nextProtocolNumber;
   }
@@ -5179,7 +5543,7 @@ function loadOrSeedUnifiedFreights() {
     try {
       const seq = JSON.parse(fs10.readFileSync(SEQUENCE_FILE, "utf8"));
       if (seq && typeof seq.nextProtocolNumber === "number") {
-        nextProtocolNumber = Math.max(843, seq.nextProtocolNumber);
+        nextProtocolNumber = Math.max(1, seq.nextProtocolNumber);
       }
       if (seq && seq.nextOrderSeqByBrand && typeof seq.nextOrderSeqByBrand === "object") {
         const rdv = Number(seq.nextOrderSeqByBrand.RODOVAR);
@@ -5239,414 +5603,9 @@ function loadOrSeedUnifiedFreights() {
     saveSequence(true);
     return;
   }
-  const sp = formatSaoPauloDateTime();
-  const initialRecords = [
-    {
-      freight: {
-        id: "frete-0842",
-        protocol: "#0842",
-        empresaMarca: "RODOVAR",
-        unidadeOperacional: "BA - Salvador",
-        cliente: "AMBEV S.A.",
-        clienteCnpj: "07.526.557/0001-00",
-        clienteContato: "71 9 9920-2476",
-        origemCidadeUf: "Feira de Santana - BA",
-        enderecoColeta: "Rodovia BR-116 Norte, Km 425 \u2014 CD AMBEV Feira de Santana/BA",
-        destinoCidadeUf: "Salvador - BA",
-        enderecoEntrega: "Via Urbana CIA Sul, Km 12 \u2014 Galp\xE3o Log\xEDstico RODOVAR Salvador/BA",
-        instrucoesColetaEntrega: "Apresentar motorista na portaria com 30min de anteced\xEAncia e EPI completo.",
-        tipoCarga: "Bebidas Paletizadas (PBR)",
-        pesoKg: 26500,
-        volumes: 28,
-        veiculoNecessario: "Carreta Sider 3 Eixos",
-        dataColetaIso: "2027-10-28",
-        janelaColetaInicio: "08:00",
-        janelaColetaFim: "12:00",
-        dataEntregaPrevistaIso: "2027-10-29",
-        janelaEntregaInicio: "14:00",
-        janelaEntregaFim: "18:00",
-        comercialResponsavelId: "emp-comercial-1",
-        comercialResponsavelNome: "Jeise Santana",
-        expedicaoResponsavelId: "emp-expedicao-2",
-        expedicaoResponsavelNome: "Marcos Silva",
-        monitoramentoResponsavelId: null,
-        monitoramentoResponsavelNome: null,
-        valorCobradoClienteCentavos: 89e4,
-        // R$ 8.900,00
-        valorContratadoCentavos: 6e5,
-        // R$ 6.000,00
-        transportadorNome: "Jo\xE3o Silva Transportes Rodovi\xE1rios",
-        transportadorDocumento: "097.813.375-00",
-        motoristaNome: "Jos\xE9 Carlos Pereira dos Santos",
-        motoristaCpf: "412.889.305-12",
-        motoristaTelefone: "71 9 8845-1290",
-        placaVeiculo: "RDO4A82",
-        placaCarreta: "RDO9B10",
-        condicoesPagamento: "70% Adiantamento na coleta / 30% Saldo na entrega",
-        favorecidoPagamento: "Jo\xE3o Silva Transportes Rodovi\xE1rios",
-        bancoPagamento: "260 - Nu Pagamentos S.A.",
-        tipoChavePix: "CPF/CNPJ",
-        chavePix: "097.813.375-00",
-        condicoesComerciais: "Frete dedicado CIF. Ped\xE1gio incluso na tarifa comercial.",
-        condicoesOperacionais: "Exige cinta de amarra\xE7\xE3o a cada 2 paletes e EPI completo.",
-        observacoes: "Apresentar motorista na portaria com 30min de anteced\xEAncia.",
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        situacaoComercial: "AGUARDANDO_EXPEDICAO",
-        situacaoOperacional: "EM_PREPARACAO",
-        situacaoMonitoramento: "NAO_LIBERADO",
-        situacaoFinanceira: "PENDENTE_ADIANTAMENTO",
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: false,
-          ordemColetaEnviadaMotorista: false
-        },
-        anexosCount: 0,
-        comentariosCount: 1,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 3,
-        autorId: "emp-comercial-1",
-        autorNome: "Jeise Santana",
-        createdAtIso: "2027-10-26T09:30:00.000Z",
-        createdAtFormatted: "26/10/2027 09:30",
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 1
-      },
-      sub: {
-        freightId: "frete-0842",
-        anexos: [],
-        comentarios: [
-          {
-            id: "fcom-0842-1",
-            freightId: "frete-0842",
-            authorId: "emp-comercial-1",
-            authorName: "Jeise Santana",
-            authorRole: "Executiva Comercial de Contas",
-            sector: "COMERCIAL",
-            text: "Frete contratado com a AMBEV e encaminhado \xE0 Expedi\xE7\xE3o para prepara\xE7\xE3o e libera\xE7\xE3o.",
-            createdAtIso: "2027-10-26T09:35:00.000Z",
-            createdAtFormatted: "26/10/2027 09:35"
-          }
-        ],
-        ocorrencias: [],
-        historico: [
-          {
-            id: "fhist-0842-1",
-            freightId: "frete-0842",
-            timestampIso: "2027-10-26T09:30:00.000Z",
-            timestampFormatted: "26/10/2027 09:30",
-            timeShort: "09:30",
-            actorId: "emp-comercial-1",
-            actorName: "Jeise Santana",
-            actorSector: "Comercial",
-            eventType: "CRIACAO",
-            summary: "Frete #0842 registrado no Comercial para AMBEV S.A."
-          },
-          {
-            id: "fhist-0842-2",
-            freightId: "frete-0842",
-            timestampIso: "2027-10-26T09:45:00.000Z",
-            timestampFormatted: "26/10/2027 09:45",
-            timeShort: "09:45",
-            actorId: "emp-comercial-1",
-            actorName: "Jeise Santana",
-            actorSector: "Comercial",
-            eventType: "ENVIO_EXPEDICAO",
-            summary: "Contrata\xE7\xE3o confirmada e enviada \xE0 Expedi\xE7\xE3o sob responsabilidade de Marcos Silva.",
-            newResponsibleName: "Marcos Silva"
-          }
-        ]
-      }
-    },
-    {
-      freight: {
-        id: "frete-0841",
-        protocol: "#0841",
-        empresaMarca: "VL TRANSPORTES",
-        unidadeOperacional: "SP - Guarulhos",
-        cliente: "BAHIA SUL LOG.",
-        clienteCnpj: "14.528.901/0001-88",
-        clienteContato: "11 9 9812-3340",
-        origemCidadeUf: "Vit\xF3ria da Conquista - BA",
-        enderecoColeta: "Distrito Industrial dos Imbor\xE9s, Quadra B \u2014 Terminal Sul/BA",
-        destinoCidadeUf: "Guarulhos - SP",
-        enderecoEntrega: "Av. Papa Jo\xE3o Paulo I, 4100 \u2014 CD Log\xEDstico Cumbica Guarulhos/SP",
-        instrucoesColetaEntrega: "Descarga agendada doca 14. Confirmar chegada com 2h de anteced\xEAncia.",
-        tipoCarga: "Celulose e Bobinas Industriais",
-        pesoKg: 32e3,
-        volumes: 16,
-        veiculoNecessario: "Carreta Ba\xFA Lonado LS",
-        dataColetaIso: "2027-10-25",
-        janelaColetaInicio: "14:00",
-        janelaColetaFim: "17:00",
-        coletaProgramadaEm: "25/10/2027 10:00",
-        coletaConfirmadaEm: "25/10/2027 14:40",
-        dataEntregaPrevistaIso: "2027-10-29",
-        janelaEntregaInicio: "09:00",
-        janelaEntregaFim: "16:00",
-        comercialResponsavelId: "emp-comercial-2",
-        comercialResponsavelNome: "C\xE9sar Augusto",
-        expedicaoResponsavelId: "emp-expedicao-2",
-        expedicaoResponsavelNome: "Marcos Silva",
-        monitoramentoResponsavelId: "emp-4",
-        monitoramentoResponsavelNome: "Carlos Eduardo Mendes",
-        valorCobradoClienteCentavos: 124e4,
-        // R$ 12.400,00
-        valorContratadoCentavos: 85e4,
-        // R$ 8.500,00
-        transportadorNome: "TransBahia Cargas Rodovi\xE1rias Ltda",
-        transportadorDocumento: "14.528.901/0001-88",
-        motoristaNome: "Ant\xF4nio Marcos Rocha",
-        motoristaCpf: "289.441.005-87",
-        motoristaTelefone: "77 9 9914-8821",
-        placaVeiculo: "VLT7C19",
-        placaCarreta: "VLT2D55",
-        condicoesPagamento: "80% Adiantamento / 20% Saldo contra entrega",
-        favorecidoPagamento: "TransBahia Cargas Rodovi\xE1rias Ltda",
-        bancoPagamento: "341 - Ita\xFA Unibanco S.A.",
-        tipoChavePix: "E-mail",
-        chavePix: "financeiro@transbahia.com.br",
-        condicoesComerciais: "Contrato mensal Bahia Sul. Seguro RCTR-C e RCF-DC averbados.",
-        condicoesOperacionais: "Rastreamento ativo e trava de quinta roda.",
-        observacoes: "Tr\xE2nsito normal pela BR-116.",
-        orientacoesMotorista: "Parada autorizada apenas em postos homologados pela gerenciadora.",
-        ultimaLocalizacaoInformada: "BR-116 \u2014 Altura de Governador Valadares/MG (informado pelo motorista)",
-        ultimaLocalizacaoAtualizadaEm: "28/10/2027 08:30",
-        ultimaLocalizacaoAtualizadaPor: "Carlos Eduardo Mendes",
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: "OC-RDV-0841",
-        ordemCarregamentoEmitidaEm: "25/10/2027 11:50",
-        liberadoMonitoramentoEm: "25/10/2027 12:00",
-        liberadoMonitoramentoPorId: "emp-expedicao-2",
-        liberadoMonitoramentoPorNome: "Marcos Silva",
-        situacaoComercial: "EM_MONITORAMENTO",
-        situacaoOperacional: "LIBERADO_MONITORAMENTO",
-        situacaoMonitoramento: "CARREGADO_EM_TRANSPORTE",
-        situacaoFinanceira: "ADIANTAMENTO_PAGO",
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: true,
-          videochamadaRealizadaPorId: "emp-expedicao-2",
-          videochamadaRealizadaPorNome: "Marcos Silva",
-          videochamadaRealizadaEm: "25/10/2027 11:40",
-          videochamadaObservacoes: "Motorista Ant\xF4nio validado por v\xEDdeo em frente ao cavalo VLT7C19.",
-          ordemColetaEnviadaMotorista: true,
-          ordemColetaEnviadaPorId: "emp-expedicao-2",
-          ordemColetaEnviadaPorNome: "Marcos Silva",
-          ordemColetaEnviadaEm: "25/10/2027 11:55",
-          conferidoPorId: "emp-expedicao-2",
-          conferidoPorNome: "Marcos Silva",
-          conferidoEmIso: "2027-10-25T12:00:00.000Z",
-          conferidoEmFormatado: "25/10/2027 12:00"
-        },
-        anexosCount: 0,
-        comentariosCount: 0,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 5,
-        autorId: "emp-comercial-2",
-        autorNome: "C\xE9sar Augusto",
-        createdAtIso: "2027-10-25T09:15:00.000Z",
-        createdAtFormatted: "25/10/2027 09:15",
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 2
-      },
-      sub: {
-        freightId: "frete-0841",
-        anexos: [],
-        comentarios: [],
-        ocorrencias: [],
-        historico: [
-          {
-            id: "fhist-0841-1",
-            freightId: "frete-0841",
-            timestampIso: "2027-10-25T09:15:00.000Z",
-            timestampFormatted: "25/10/2027 09:15",
-            timeShort: "09:15",
-            actorId: "emp-comercial-2",
-            actorName: "C\xE9sar Augusto",
-            actorSector: "Comercial",
-            eventType: "CRIACAO",
-            summary: "Frete #0841 registrado para BAHIA SUL LOG."
-          },
-          {
-            id: "fhist-0841-2",
-            freightId: "frete-0841",
-            timestampIso: "2027-10-25T12:00:00.000Z",
-            timestampFormatted: "25/10/2027 12:00",
-            timeShort: "12:00",
-            actorId: "emp-expedicao-2",
-            actorName: "Marcos Silva",
-            actorSector: "Expedi\xE7\xE3o",
-            eventType: "LIBERACAO_MONITORAMENTO",
-            summary: "Videochamada conclu\xEDda, Ordem de Coleta enviada ao motorista e frete liberado para Monitoramento (Carlos Eduardo Mendes).",
-            newResponsibleName: "Carlos Eduardo Mendes"
-          },
-          {
-            id: "fhist-0841-3",
-            freightId: "frete-0841",
-            timestampIso: "2027-10-25T14:40:00.000Z",
-            timestampFormatted: "25/10/2027 14:40",
-            timeShort: "14:40",
-            horarioRealEvento: "25/10/2027 14:30",
-            actorId: "emp-4",
-            actorName: "Carlos Eduardo Mendes",
-            actorSector: "Monitoramento",
-            eventType: "AVANCO_MONITORAMENTO",
-            summary: 'Etapa avan\xE7ada para "Carregado / Em transporte". Ve\xEDculo iniciou viagem.'
-          }
-        ]
-      }
-    },
-    {
-      freight: {
-        id: "frete-0840",
-        protocol: "#0840",
-        empresaMarca: "AXD",
-        unidadeOperacional: "BA - Salvador",
-        cliente: "BRASKEM S.A.",
-        clienteCnpj: "42.150.391/0001-70",
-        clienteContato: "71 3496-8000",
-        origemCidadeUf: "Cama\xE7ari - BA",
-        enderecoColeta: "Rua Eteno, 1561 \u2014 Polo Petroqu\xEDmico de Cama\xE7ari/BA",
-        destinoCidadeUf: "Recife - PE",
-        enderecoEntrega: "Rodovia BR-101 Sul, Km 82 \u2014 Distrito Industrial Recife/PE",
-        instrucoesColetaEntrega: "Obrigat\xF3rio uso de capacete, \xF3culos, bota com biqueira e camisa manga longa no Polo.",
-        tipoCarga: "Resinas Termopl\xE1sticas Ensacadas",
-        pesoKg: 28e3,
-        volumes: 22,
-        veiculoNecessario: "Carreta Graneleira / Sider",
-        dataColetaIso: "2027-10-28",
-        janelaColetaInicio: "07:30",
-        janelaColetaFim: "11:30",
-        coletaProgramadaEm: "28/10/2027 07:30",
-        dataEntregaPrevistaIso: "2027-10-30",
-        janelaEntregaInicio: "08:00",
-        janelaEntregaFim: "14:00",
-        comercialResponsavelId: "emp-comercial-1",
-        comercialResponsavelNome: "Jeise Santana",
-        expedicaoResponsavelId: "emp-expedicao-2",
-        expedicaoResponsavelNome: "Marcos Silva",
-        monitoramentoResponsavelId: "emp-4",
-        monitoramentoResponsavelNome: "Carlos Eduardo Mendes",
-        valorCobradoClienteCentavos: 168e4,
-        // R$ 16.800,00
-        valorContratadoCentavos: 12e5,
-        // R$ 12.000,00
-        transportadorNome: "Marcos Oliveira Transportes ME",
-        transportadorDocumento: "28.901.442/0001-19",
-        motoristaNome: "Marcos Oliveira da Silva",
-        motoristaCpf: "619.220.415-00",
-        motoristaTelefone: "71 9 8711-4402",
-        placaVeiculo: "AXD5E33",
-        placaCarreta: "AXD8F91",
-        condicoesPagamento: "70% Adiantamento / 30% Saldo",
-        favorecidoPagamento: "Marcos Oliveira Transportes ME",
-        bancoPagamento: "001 - Banco do Brasil S.A.",
-        tipoChavePix: "Telefone",
-        chavePix: "+55 71 99123-4567",
-        condicoesComerciais: "Opera\xE7\xE3o dedicada Polo Cama\xE7ari. Exige agendamento de janela.",
-        condicoesOperacionais: "Kit de emerg\xEAncia qu\xEDmica e lona imperme\xE1vel revisada.",
-        observacoes: "Motorista liberado pela gerenciadora de risco.",
-        orientacoesMotorista: "Apresentar Ordem de Coleta impressa ou digital na triagem Braskem.",
-        ultimaLocalizacaoInformada: "P\xE1tio de Triagem Cama\xE7ari/BA \u2014 Aguardando chamada de doca",
-        ultimaLocalizacaoAtualizadaEm: "28/10/2027 07:15",
-        ultimaLocalizacaoAtualizadaPor: "Carlos Eduardo Mendes",
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: "OC-RDV-0840",
-        ordemCarregamentoEmitidaEm: "27/10/2027 16:08",
-        liberadoMonitoramentoEm: "27/10/2027 16:10",
-        liberadoMonitoramentoPorId: "emp-expedicao-2",
-        liberadoMonitoramentoPorNome: "Marcos Silva",
-        situacaoComercial: "EM_MONITORAMENTO",
-        situacaoOperacional: "LIBERADO_MONITORAMENTO",
-        situacaoMonitoramento: "NOVO_PARA_CARREGAR",
-        situacaoFinanceira: "ADIANTAMENTO_PAGO",
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: true,
-          videochamadaRealizadaPorId: "emp-expedicao-2",
-          videochamadaRealizadaPorNome: "Marcos Silva",
-          videochamadaRealizadaEm: "27/10/2027 16:00",
-          videochamadaObservacoes: "Videochamada realizada com Marcos Oliveira. EPI e kit qu\xEDmico conferidos.",
-          ordemColetaEnviadaMotorista: true,
-          ordemColetaEnviadaPorId: "emp-expedicao-2",
-          ordemColetaEnviadaPorNome: "Marcos Silva",
-          ordemColetaEnviadaEm: "27/10/2027 16:09",
-          conferidoPorId: "emp-expedicao-2",
-          conferidoPorNome: "Marcos Silva",
-          conferidoEmIso: "2027-10-27T16:10:00.000Z",
-          conferidoEmFormatado: "27/10/2027 16:10"
-        },
-        anexosCount: 0,
-        comentariosCount: 0,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 5,
-        autorId: "emp-comercial-1",
-        autorNome: "Jeise Santana",
-        createdAtIso: "2027-10-24T11:20:00.000Z",
-        createdAtFormatted: "24/10/2027 11:20",
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 2
-      },
-      sub: {
-        freightId: "frete-0840",
-        anexos: [],
-        comentarios: [],
-        ocorrencias: [],
-        historico: [
-          {
-            id: "fhist-0840-1",
-            freightId: "frete-0840",
-            timestampIso: "2027-10-24T11:20:00.000Z",
-            timestampFormatted: "24/10/2027 11:20",
-            timeShort: "11:20",
-            actorId: "emp-comercial-1",
-            actorName: "Jeise Santana",
-            actorSector: "Comercial",
-            eventType: "CRIACAO",
-            summary: "Frete #0840 registrado para BRASKEM S.A."
-          },
-          {
-            id: "fhist-0840-2",
-            freightId: "frete-0840",
-            timestampIso: "2027-10-27T16:10:00.000Z",
-            timestampFormatted: "27/10/2027 16:10",
-            timeShort: "16:10",
-            actorId: "emp-expedicao-2",
-            actorName: "Marcos Silva",
-            actorSector: "Expedi\xE7\xE3o",
-            eventType: "LIBERACAO_MONITORAMENTO",
-            summary: "Prepara\xE7\xE3o conclu\xEDda na Expedi\xE7\xE3o e liberado para Monitoramento (Carlos Eduardo Mendes).",
-            newResponsibleName: "Carlos Eduardo Mendes"
-          }
-        ]
-      }
-    }
-  ];
-  seededFromDefaultsOnly = true;
-  for (const item of initialRecords) {
-    persistFreightAndSubDoc(item.freight, item.sub, { skipNeon: true });
-  }
+  freightsIndex.clear();
+  freightSubDocs.clear();
+  seededFromDefaultsOnly = false;
   saveSequence(true);
 }
 function validateAttachmentFileBuffer(buf, originalFileName) {
@@ -6138,6 +6097,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       CONCLUIDO: 0,
       COLETAS_HOJE: 0,
       PENDENCIAS: 0,
+      CANCELADO: 0,
       DISPONIVEIS_FILA: 0
     };
     const projectCompactFinalizedRow = (f) => ({
@@ -6247,59 +6207,9 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
     const availableToClaimCount = area === "EXPEDICAO" ? allRecords.filter(
       (f) => f.expedicaoResponsavelId === null && f.situacaoOperacional === "DISPONIVEL_FILA" && ["AGUARDANDO_EXPEDICAO", "NA_EXPEDICAO"].includes(f.situacaoComercial)
     ).length : 0;
-    if (!includeCanceled) {
-      scopedRecords = scopedRecords.filter(
-        (f) => f.situacaoComercial !== "CANCELADO" && f.situacaoOperacional !== "CANCELADO" && f.situacaoMonitoramento !== "CANCELADO"
-      );
-    }
-    const monActiveStages = [
-      "NOVO_PARA_CARREGAR",
-      "EM_DESLOCAMENTO_COLETA",
-      "NO_LOCAL_COLETA",
-      "CARREGADO_EM_TRANSPORTE",
-      "NO_LOCAL_ENTREGA"
-    ];
-    const monCompletedStages = ["ENTREGUE", "FINALIZADO"];
-    const monScopeNovo = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "NOVO_PARA_CARREGAR"
-    ).length;
-    const monScopeDesloc = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "EM_DESLOCAMENTO_COLETA"
-    ).length;
-    const monScopeNoLocalColeta = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "NO_LOCAL_COLETA"
-    ).length;
-    const monScopeTransporte = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "CARREGADO_EM_TRANSPORTE"
-    ).length;
-    const monScopeNoLocalEntrega = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "NO_LOCAL_ENTREGA"
-    ).length;
-    const monScopeEntregue = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "ENTREGUE"
-    ).length;
-    const monScopeFinalizado = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === "FINALIZADO"
-    ).length;
-    const monitoramentoCounters = {
-      NOVO_PARA_CARREGAR: monScopeNovo,
-      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
-      NO_LOCAL_COLETA: monScopeNoLocalColeta,
-      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
-      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
-      ENTREGUE: monScopeEntregue,
-      FINALIZADO: monScopeFinalizado,
-      COLETAS_HOJE: scopedRecords.filter(
-        (f) => f.dataColetaIso === todaySp && monActiveStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
-      ).length,
-      PENDENCIAS: scopedRecords.filter(
-        (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido
-      ).length,
-      TOTAL_ATIVOS: monScopeNovo + monScopeDesloc + monScopeNoLocalColeta + monScopeTransporte + monScopeNoLocalEntrega,
-      completedCount: monScopeEntregue + monScopeFinalizado
-    };
-    if (search) {
-      scopedRecords = scopedRecords.filter((f) => {
+    const isCanceledFreight = (f) => f.situacaoComercial === "CANCELADO" || f.situacaoOperacional === "CANCELADO" || f.situacaoMonitoramento === "CANCELADO";
+    const matchesSearchAndPeriod = (f) => {
+      if (search) {
         const hay = [
           f.protocol,
           f.cliente,
@@ -6314,30 +6224,79 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           f.monitoramentoResponsavelNome || "",
           f.ultimaLocalizacaoInformada || ""
         ].join(" ").toLowerCase();
-        return hay.includes(search);
-      });
-    }
-    if (periodo === "HOJE") {
-      scopedRecords = scopedRecords.filter(
-        (f) => f.dataColetaIso === todaySp || f.dataEntregaPrevistaIso === todaySp || (f.updatedAtIso || "").slice(0, 10) === todaySp
-      );
-    } else if (periodo === "SEMANA") {
-      scopedRecords = scopedRecords.filter((f) => {
+        if (!hay.includes(search)) return false;
+      }
+      if (periodo === "HOJE") {
+        return f.dataColetaIso === todaySp || f.dataEntregaPrevistaIso === todaySp || (f.updatedAtIso || "").slice(0, 10) === todaySp;
+      }
+      if (periodo === "SEMANA") {
         const refDate = f.dataColetaIso || (f.updatedAtIso || "").slice(0, 10);
         return refDate >= weekStartIso && refDate <= weekEndIso;
-      });
-    } else if (periodo === "MES") {
-      scopedRecords = scopedRecords.filter((f) => {
+      }
+      if (periodo === "MES") {
         const refDate = f.dataColetaIso || (f.updatedAtIso || "").slice(0, 10);
         return refDate.slice(0, 7) === monthPrefix;
-      });
-    } else if (periodo === "ATRASADOS") {
-      scopedRecords = scopedRecords.filter(
-        (f) => f.dataColetaIso < todaySp && !["EM_MONITORAMENTO", "EM_TRANSPORTE", "FINALIZADO", "CANCELADO"].includes(
+      }
+      if (periodo === "ATRASADOS") {
+        return f.dataColetaIso < todaySp && !["EM_MONITORAMENTO", "EM_TRANSPORTE", "FINALIZADO", "CANCELADO"].includes(
           f.situacaoComercial
-        ) || f.dataEntregaPrevistaIso < todaySp && f.situacaoComercial !== "FINALIZADO" || f.devolvidoParaCorrecao || f.requerReconfirmacaoOperacional || f.ocorrenciasAbertasCount > 0
-      );
+        ) || f.dataEntregaPrevistaIso < todaySp && f.situacaoComercial !== "FINALIZADO" || f.devolvidoParaCorrecao || f.requerReconfirmacaoOperacional || f.ocorrenciasAbertasCount > 0;
+      }
+      return true;
+    };
+    const preCancelScopedRecords = scopedRecords;
+    const preCancelFilteredForCounters = preCancelScopedRecords.filter(matchesSearchAndPeriod);
+    if (!includeCanceled) {
+      scopedRecords = scopedRecords.filter((f) => !isCanceledFreight(f));
     }
+    const isMonitoringPendingFreight = (f) => !isCanceledFreight(f) && (f.ocorrenciasAbertasCount > 0 || Boolean(f.requerReconfirmacaoOperacional) || Boolean(f.ordemColetaPendente) || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido);
+    const monActiveStages = [
+      "NOVO_PARA_CARREGAR",
+      "EM_DESLOCAMENTO_COLETA",
+      "NO_LOCAL_COLETA",
+      "CARREGADO_EM_TRANSPORTE",
+      "NO_LOCAL_ENTREGA"
+    ];
+    const monCompletedStages = ["ENTREGUE", "FINALIZADO"];
+    const nonCanceledMonScope = preCancelScopedRecords.filter((f) => !isCanceledFreight(f));
+    const monScopeNovo = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "NOVO_PARA_CARREGAR"
+    ).length;
+    const monScopeDesloc = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "EM_DESLOCAMENTO_COLETA"
+    ).length;
+    const monScopeNoLocalColeta = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "NO_LOCAL_COLETA"
+    ).length;
+    const monScopeTransporte = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "CARREGADO_EM_TRANSPORTE"
+    ).length;
+    const monScopeNoLocalEntrega = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "NO_LOCAL_ENTREGA"
+    ).length;
+    const monScopeEntregue = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "ENTREGUE"
+    ).length;
+    const monScopeFinalizado = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === "FINALIZADO"
+    ).length;
+    const monitoramentoCounters = {
+      NOVO_PARA_CARREGAR: monScopeNovo,
+      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
+      NO_LOCAL_COLETA: monScopeNoLocalColeta,
+      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
+      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
+      ENTREGUE: monScopeEntregue,
+      FINALIZADO: monScopeFinalizado,
+      COLETAS_HOJE: nonCanceledMonScope.filter(
+        (f) => f.dataColetaIso === todaySp && monActiveStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
+      ).length,
+      PENDENCIAS: nonCanceledMonScope.filter(isMonitoringPendingFreight).length,
+      CANCELADO: preCancelScopedRecords.filter(isCanceledFreight).length,
+      TOTAL_ATIVOS: monScopeNovo + monScopeDesloc + monScopeNoLocalColeta + monScopeTransporte + monScopeNoLocalEntrega,
+      completedCount: monScopeEntregue + monScopeFinalizado
+    };
+    scopedRecords = scopedRecords.filter(matchesSearchAndPeriod);
     scopedRecords.sort((a, b) => {
       if (b.updatedAtIso !== a.updatedAtIso) {
         return b.updatedAtIso.localeCompare(a.updatedAtIso);
@@ -6372,51 +6331,59 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       }
       return f.situacaoOperacional === stage;
     };
+    const activeComercialPool = scopedRecords.filter((f) => !isCanceledFreight(f));
     const comercialCounters = {
-      EM_NEGOCIACAO: scopedRecords.filter((f) => f.situacaoComercial === "EM_NEGOCIACAO").length,
-      CONTRATADO: scopedRecords.filter((f) => f.situacaoComercial === "CONTRATADO").length,
-      AGUARDANDO_EXPEDICAO: scopedRecords.filter(
+      EM_NEGOCIACAO: activeComercialPool.filter((f) => f.situacaoComercial === "EM_NEGOCIACAO").length,
+      CONTRATADO: activeComercialPool.filter((f) => f.situacaoComercial === "CONTRATADO").length,
+      AGUARDANDO_EXPEDICAO: activeComercialPool.filter(
         (f) => matchesComercialStage(f, "AGUARDANDO_EXPEDICAO")
       ).length,
-      NA_EXPEDICAO: scopedRecords.filter(
+      NA_EXPEDICAO: activeComercialPool.filter(
         (f) => matchesComercialStage(f, "AGUARDANDO_EXPEDICAO")
       ).length,
-      EM_MONITORAMENTO: scopedRecords.filter(
+      EM_MONITORAMENTO: activeComercialPool.filter(
         (f) => matchesComercialStage(f, "EM_MONITORAMENTO")
       ).length,
-      EM_TRANSPORTE: scopedRecords.filter(
+      EM_TRANSPORTE: activeComercialPool.filter(
         (f) => matchesComercialStage(f, "EM_MONITORAMENTO")
       ).length,
-      FINALIZADO: scopedRecords.filter((f) => matchesComercialStage(f, "FINALIZADO")).length,
-      CANCELADO: scopedRecords.filter((f) => f.situacaoComercial === "CANCELADO").length
+      FINALIZADO: activeComercialPool.filter((f) => matchesComercialStage(f, "FINALIZADO")).length,
+      CANCELADO: preCancelFilteredForCounters.filter(isCanceledFreight).length
     };
+    const expedicaoKpiSource = area === "EXPEDICAO" && scope === "DISPONIVEIS" ? allRecords.filter((f) => {
+      if (f.situacaoOperacional === "NAO_ENVIADO") return false;
+      if (hasTeamPerm) return f.expedicaoResponsavelId !== null;
+      return f.expedicaoResponsavelId === user.id;
+    }).filter(matchesSearchAndPeriod) : preCancelFilteredForCounters;
+    const activeExpedicaoPool = expedicaoKpiSource.filter((f) => !isCanceledFreight(f));
     const expedicaoCounters = {
-      RECEBIDO: scopedRecords.filter((f) => matchesExpedicaoStage(f, "RECEBIDO")).length,
-      EM_PREPARACAO: scopedRecords.filter((f) => matchesExpedicaoStage(f, "EM_PREPARACAO")).length,
-      LIBERADO_MONITORAMENTO: scopedRecords.filter(
+      RECEBIDO: activeExpedicaoPool.filter((f) => matchesExpedicaoStage(f, "RECEBIDO")).length,
+      EM_PREPARACAO: activeExpedicaoPool.filter((f) => matchesExpedicaoStage(f, "EM_PREPARACAO")).length,
+      LIBERADO_MONITORAMENTO: activeExpedicaoPool.filter(
         (f) => matchesExpedicaoStage(f, "LIBERADO_MONITORAMENTO")
       ).length,
-      AGUARDANDO_FECHAMENTO: scopedRecords.filter(
+      AGUARDANDO_FECHAMENTO: activeExpedicaoPool.filter(
         (f) => matchesExpedicaoStage(f, "RECEBIDO") || matchesExpedicaoStage(f, "EM_PREPARACAO")
       ).length,
-      FECHADO: scopedRecords.filter(
+      FECHADO: activeExpedicaoPool.filter(
         (f) => matchesExpedicaoStage(f, "LIBERADO_MONITORAMENTO")
       ).length,
-      AGUARDANDO_COLETA: scopedRecords.filter(
+      AGUARDANDO_COLETA: activeExpedicaoPool.filter(
         (f) => f.situacaoMonitoramento === "NOVO_PARA_CARREGAR"
       ).length,
-      EM_TRANSPORTE: scopedRecords.filter(
+      EM_TRANSPORTE: activeExpedicaoPool.filter(
         (f) => f.situacaoMonitoramento === "CARREGADO_EM_TRANSPORTE"
       ).length,
-      CONCLUIDO: scopedRecords.filter((f) => f.situacaoOperacional === "CONCLUIDO").length,
-      COLETAS_HOJE: scopedRecords.filter((f) => f.dataColetaIso === todaySp).length,
-      PENDENCIAS: scopedRecords.filter(
-        (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.devolvidoParaCorrecao || !matchesExpedicaoStage(f, "LIBERADO_MONITORAMENTO") && f.checklistConcluidosCount < 5
+      CONCLUIDO: activeExpedicaoPool.filter((f) => f.situacaoOperacional === "CONCLUIDO").length,
+      COLETAS_HOJE: activeExpedicaoPool.filter((f) => f.dataColetaIso === todaySp).length,
+      PENDENCIAS: activeExpedicaoPool.filter(
+        (f) => f.ocorrenciasAbertasCount > 0 || Boolean(f.requerReconfirmacaoOperacional) || Boolean(f.devolvidoParaCorrecao) || Boolean(f.ordemColetaPendente) || !matchesExpedicaoStage(f, "LIBERADO_MONITORAMENTO") && f.checklistConcluidosCount < 5
       ).length,
+      CANCELADO: expedicaoKpiSource.filter(isCanceledFreight).length,
       DISPONIVEIS_FILA: availableToClaimCount
     };
     let filteredList = scopedRecords;
-    if (area === "MONITORAMENTO") {
+    if (area === "MONITORAMENTO" && situacao !== "PENDENCIAS") {
       if (viewMode === "ATIVOS") {
         filteredList = filteredList.filter(
           (f) => monActiveStages.includes(f.situacaoMonitoramento || "NAO_LIBERADO")
@@ -6433,9 +6400,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       } else if (area === "EXPEDICAO") {
         filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
       } else if (situacao === "PENDENCIAS") {
-        filteredList = filteredList.filter(
-          (f) => f.ocorrenciasAbertasCount > 0 || f.requerReconfirmacaoOperacional || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido
-        );
+        filteredList = filteredList.filter(isMonitoringPendingFreight);
       } else {
         filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
       }
@@ -9621,352 +9586,6 @@ import fs11 from "fs";
 import path11 from "path";
 
 // src/lib/freightDatabase.ts
-var INITIAL_FREIGHTS = [
-  {
-    id: "frete-0842",
-    code: "#0842",
-    createdAtDate: "26/10/2026",
-    createdAtIso: "2026-10-26T09:30:00.000Z",
-    empresaMarca: "RODOVAR",
-    dataCarregamento: "26/10/2026",
-    unidadeOperacional: "BA - Salvador",
-    comercialResponsavel: "Jeise / C\xE9sar",
-    expedicaoResponsavel: "Marcos Silva",
-    cliente: "AMBEV S.A.",
-    telefoneCliente: "71 9 9920-2476",
-    motoristaNome: "Jos\xE9 Carlos Pereira dos Santos",
-    motoristaTelefone: "71 9 8845-1290",
-    emergenciaNome: "Maria Helena (Esposa)",
-    emergenciaTelefone: "71 9 9123-4567",
-    origem: "FEIRA DE SANTANA-BA - CD AMBEV",
-    destino: "SALVADOR-BA - GALP\xC3O RODOVAR",
-    dataColeta: "26/10",
-    dataEntrega: "27/10",
-    valorFreteEmpresa: 8900,
-    valorFreteMotorista: 6e3,
-    regraTipo: "70_30",
-    regraLabel: "70% / 30%",
-    percentualAdiantamento: 70,
-    percentualSaldo: 30,
-    valorTotal: 6e3,
-    valorAdiantamento: 4200,
-    valorSaldo: 1800,
-    favorecido: "Jo\xE3o Silva Transportes",
-    banco: "260 - Nu Pagamentos",
-    agencia: "0001",
-    conta: "18670000-5",
-    tipoChavePix: "CPF/CNPJ",
-    chavePix: "097.813.375-00",
-    status: "Pendente Adiantamento",
-    adiantamentoPago: false,
-    entregaConfirmada: false,
-    saldoPago: false,
-    solicitanteNome: "Carlos Mendes (Opera\xE7\xE3o Matriz)",
-    docs: {
-      cte: {
-        id: "doc-cte-0842",
-        type: "CT-e",
-        label: "CT-e",
-        fileName: "CTe_3526100842_AMBEV.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "248 KB",
-        uploadedAt: "26/10/2026 09:28",
-        uploadedBy: "Carlos Mendes"
-      },
-      mdfe: {
-        id: "doc-mdfe-0842",
-        type: "MDF-e",
-        label: "MDF-e",
-        fileName: "MDFe_Manifesto_0842_BA.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "192 KB",
-        uploadedAt: "26/10/2026 09:29",
-        uploadedBy: "Carlos Mendes"
-      },
-      rpa: {
-        id: "doc-rpa-0842",
-        type: "RPA",
-        label: "RPA",
-        fileName: "RPA_Recibo_Autonomo_0842.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "164 KB",
-        uploadedAt: "26/10/2026 09:30",
-        uploadedBy: "Carlos Mendes"
-      }
-    }
-  },
-  {
-    id: "frete-0841",
-    code: "#0841",
-    createdAtDate: "25/10/2026",
-    createdAtIso: "2026-10-25T14:15:00.000Z",
-    empresaMarca: "VL TRANSPORTES",
-    dataCarregamento: "25/10/2026",
-    unidadeOperacional: "SP - Guarulhos",
-    comercialResponsavel: "C\xE9sar Augusto",
-    expedicaoResponsavel: "Fernanda Lima",
-    cliente: "BAHIA SUL LOG.",
-    telefoneCliente: "11 9 9812-3340",
-    motoristaNome: "Ant\xF4nio Marcos Rocha",
-    motoristaTelefone: "77 9 9914-8821",
-    emergenciaNome: "Roberto Rocha (Irm\xE3o)",
-    emergenciaTelefone: "77 9 8832-1044",
-    origem: "VIT\xD3RIA DA CONQUISTA-BA - TERMINAL SUL",
-    destino: "GUARULHOS-SP - CD LOG\xCDSTICO",
-    dataColeta: "25/10",
-    dataEntrega: "29/10",
-    valorFreteEmpresa: 12400,
-    valorFreteMotorista: 8500,
-    regraTipo: "70_30",
-    regraLabel: "70% / 30%",
-    percentualAdiantamento: 70,
-    percentualSaldo: 30,
-    valorTotal: 8500,
-    valorAdiantamento: 5950,
-    valorSaldo: 2550,
-    favorecido: "TransBahia Cargas Rodovi\xE1rias Ltda",
-    banco: "341 - Ita\xFA Unibanco",
-    agencia: "1402",
-    conta: "44890-2",
-    tipoChavePix: "CPF/CNPJ",
-    chavePix: "14.528.901/0001-88",
-    status: "Pendente Saldo",
-    adiantamentoPago: true,
-    adiantamentoPagoEm: "25/10/2026 15:40",
-    adiantamentoVerificacaoStatus: "PAGAMENTO_CONFIRMADO",
-    codigoTransacaoAdiantamento: "E34100982202610251540PIX",
-    entregaConfirmada: true,
-    entregaConfirmadaEm: "26/10/2026 11:10",
-    saldoPago: false,
-    saldoVerificacaoStatus: "SEM_COMPROVANTE",
-    solicitanteNome: "Fernanda Lima (Log\xEDstica)",
-    docs: {
-      cte: {
-        id: "doc-cte-0841",
-        type: "CT-e",
-        label: "CT-e",
-        fileName: "CTe_3526100841_BAHIASUL.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "310 KB",
-        uploadedAt: "25/10/2026 14:10",
-        uploadedBy: "Fernanda Lima"
-      },
-      mdfe: {
-        id: "doc-mdfe-0841",
-        type: "MDF-e",
-        label: "MDF-e",
-        fileName: "MDFe_Manifesto_0841_SP.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "215 KB",
-        uploadedAt: "25/10/2026 14:12",
-        uploadedBy: "Fernanda Lima"
-      },
-      rpa: {
-        id: "doc-rpa-0841",
-        type: "RPA",
-        label: "RPA",
-        fileName: "RPA_Contrato_Frete_0841.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "178 KB",
-        uploadedAt: "25/10/2026 14:14",
-        uploadedBy: "Fernanda Lima"
-      },
-      comprovanteAdiantamento: {
-        id: "doc-comp-adiant-0841",
-        type: "COMPROVANTE_ADIANTAMENTO",
-        label: "Comprovante de Adiantamento",
-        fileName: "Comprovante_Adiantamento_0841.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "142 KB",
-        uploadedAt: "25/10/2026 15:40",
-        uploadedBy: "Financeiro RODOVAR"
-      }
-    }
-  },
-  {
-    id: "frete-0840",
-    code: "#0840",
-    createdAtDate: "24/10/2026",
-    createdAtIso: "2026-10-24T11:20:00.000Z",
-    empresaMarca: "AXD",
-    dataCarregamento: "24/10/2026",
-    unidadeOperacional: "BA - Salvador",
-    comercialResponsavel: "Jeise Santana",
-    expedicaoResponsavel: "Carlos Mendes",
-    cliente: "BRASKEM S.A.",
-    telefoneCliente: "71 3496-8000",
-    motoristaNome: "Marcos Oliveira da Silva",
-    motoristaTelefone: "71 9 8711-4402",
-    emergenciaNome: "Luciana Oliveira (Esposa)",
-    emergenciaTelefone: "71 9 9201-7755",
-    origem: "CAMA\xC7ARI-BA - POLO PETROQU\xCDMICO",
-    destino: "RECIFE-PE - DISTRITO INDUSTRIAL",
-    dataColeta: "24/10",
-    dataEntrega: "28/10",
-    valorFreteEmpresa: 16800,
-    valorFreteMotorista: 12e3,
-    regraTipo: "70_30",
-    regraLabel: "70% / 30%",
-    percentualAdiantamento: 70,
-    percentualSaldo: 30,
-    valorTotal: 12e3,
-    valorAdiantamento: 8400,
-    valorSaldo: 3600,
-    favorecido: "Marcos Oliveira Transportes ME",
-    banco: "001 - Banco do Brasil",
-    agencia: "3142-X",
-    conta: "99210-4",
-    tipoChavePix: "CPF/CNPJ",
-    chavePix: "28.901.442/0001-19",
-    status: "Aguardando Entrega",
-    adiantamentoPago: true,
-    adiantamentoPagoEm: "24/10/2026 13:05",
-    codigoTransacaoAdiantamento: "E00100441202610241305PIX",
-    entregaConfirmada: false,
-    saldoPago: false,
-    solicitanteNome: "Carlos Mendes (Opera\xE7\xE3o Matriz)",
-    docs: {
-      cte: {
-        id: "doc-cte-0840",
-        type: "CT-e",
-        label: "CT-e",
-        fileName: "CTe_3526100840_BRASKEM.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "285 KB",
-        uploadedAt: "24/10/2026 11:18",
-        uploadedBy: "Carlos Mendes"
-      },
-      mdfe: {
-        id: "doc-mdfe-0840",
-        type: "MDF-e",
-        label: "MDF-e",
-        fileName: "MDFe_Manifesto_0840_PE.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "198 KB",
-        uploadedAt: "24/10/2026 11:19",
-        uploadedBy: "Carlos Mendes"
-      },
-      rpa: {
-        id: "doc-rpa-0840",
-        type: "RPA",
-        label: "RPA",
-        fileName: "RPA_Motorista_0840.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "156 KB",
-        uploadedAt: "24/10/2026 11:20",
-        uploadedBy: "Carlos Mendes"
-      },
-      comprovanteAdiantamento: {
-        id: "doc-comp-adiant-0840",
-        type: "COMPROVANTE_ADIANTAMENTO",
-        label: "Comprovante de Adiantamento",
-        fileName: "Comprovante_Adiantamento_0840.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "138 KB",
-        uploadedAt: "24/10/2026 13:05",
-        uploadedBy: "Financeiro RODOVAR"
-      }
-    }
-  },
-  {
-    id: "frete-0839",
-    code: "#0839",
-    createdAtDate: "22/10/2026",
-    createdAtIso: "2026-10-22T08:45:00.000Z",
-    empresaMarca: "RODOVAR",
-    dataCarregamento: "22/10/2026",
-    unidadeOperacional: "SP - Guarulhos",
-    comercialResponsavel: "Jeise / C\xE9sar",
-    expedicaoResponsavel: "Fernanda Lima",
-    cliente: "SUZANO CELULOSE",
-    telefoneCliente: "11 3500-9900",
-    motoristaNome: "Ricardo Alves Nascimento",
-    motoristaTelefone: "11 9 8412-5560",
-    emergenciaNome: "Patr\xEDcia Alves (Esposa)",
-    emergenciaTelefone: "11 9 9102-3389",
-    origem: "MUCURI-BA - F\xC1BRICA SUZANO",
-    destino: "SANTOS-SP - TERMINAL PORTU\xC1RIO",
-    dataColeta: "22/10",
-    dataEntrega: "25/10",
-    valorFreteEmpresa: 21500,
-    valorFreteMotorista: 15400,
-    regraTipo: "70_30",
-    regraLabel: "70% / 30%",
-    percentualAdiantamento: 70,
-    percentualSaldo: 30,
-    valorTotal: 15400,
-    valorAdiantamento: 10780,
-    valorSaldo: 4620,
-    favorecido: "Expresso Atl\xE2ntico Cargas Ltda",
-    banco: "237 - Bradesco",
-    agencia: "0418",
-    conta: "77120-9",
-    tipoChavePix: "CPF/CNPJ",
-    chavePix: "04.119.882/0001-55",
-    status: "Pago",
-    adiantamentoPago: true,
-    adiantamentoPagoEm: "22/10/2026 10:15",
-    codigoTransacaoAdiantamento: "E23700811202610221015PIX",
-    entregaConfirmada: true,
-    entregaConfirmadaEm: "25/10/2026 09:30",
-    saldoPago: true,
-    saldoPagoEm: "25/10/2026 14:20",
-    codigoTransacaoSaldo: "E23700944202610251420PIX",
-    solicitanteNome: "Fernanda Lima (Log\xEDstica)",
-    docs: {
-      cte: {
-        id: "doc-cte-0839",
-        type: "CT-e",
-        label: "CT-e",
-        fileName: "CTe_3526100839_SUZANO.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "324 KB",
-        uploadedAt: "22/10/2026 08:40",
-        uploadedBy: "Fernanda Lima"
-      },
-      mdfe: {
-        id: "doc-mdfe-0839",
-        type: "MDF-e",
-        label: "MDF-e",
-        fileName: "MDFe_Manifesto_0839_SP.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "210 KB",
-        uploadedAt: "22/10/2026 08:42",
-        uploadedBy: "Fernanda Lima"
-      },
-      rpa: {
-        id: "doc-rpa-0839",
-        type: "RPA",
-        label: "RPA",
-        fileName: "RPA_Frete_0839.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "185 KB",
-        uploadedAt: "22/10/2026 08:44",
-        uploadedBy: "Fernanda Lima"
-      },
-      comprovanteAdiantamento: {
-        id: "doc-comp-adiant-0839",
-        type: "COMPROVANTE_ADIANTAMENTO",
-        label: "Comprovante de Adiantamento",
-        fileName: "Comprovante_Adiantamento_0839.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "149 KB",
-        uploadedAt: "22/10/2026 10:15",
-        uploadedBy: "Financeiro RODOVAR"
-      },
-      comprovanteSaldo: {
-        id: "doc-comp-saldo-0839",
-        type: "COMPROVANTE_SALDO",
-        label: "Comprovante de Saldo",
-        fileName: "Comprovante_Saldo_0839.pdf",
-        mimeType: "application/pdf",
-        sizeLabel: "152 KB",
-        uploadedAt: "25/10/2026 14:20",
-        uploadedBy: "Financeiro RODOVAR"
-      }
-    }
-  }
-];
 function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -9999,37 +9618,6 @@ function ensureDirectories2() {
   if (!fs11.existsSync(PAYMENT_RECEIPTS_DIR)) {
     fs11.mkdirSync(PAYMENT_RECEIPTS_DIR, { recursive: true });
   }
-}
-function createSamplePdfBuffer(title, subtitle) {
-  const content = `%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 595 842] /Contents 5 0 R >> endobj
-4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-5 0 obj << /Length 160 >> stream
-BT
-/F1 16 Tf
-50 770 Td
-(RODOVAR CONECTA - ${title.replace(/[()\\]/g, "")}) Tj
-/F1 12 Tf
-0 -28 Td
-(${subtitle.replace(/[()\\]/g, "")}) Tj
-ET
-endstream
-endobj
-xref
-0 6
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000229 00000 n 
-0000000297 00000 n 
-trailer << /Size 6 /Root 1 0 R >>
-startxref
-510
-%%EOF`;
-  return Buffer.from(content, "utf8");
 }
 function validatePaymentReceiptBinary(buf, originalFileName) {
   if (!buf || buf.length === 0) {
@@ -10098,7 +9686,7 @@ function validatePaymentReceiptBinary(buf, originalFileName) {
 }
 function hydratePaymentReceiptsFromPayload(payload) {
   if (!payload || typeof payload !== "object") return;
-  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+  if (Array.isArray(payload.freights)) {
     paymentStoreState.freights = payload.freights;
   }
   if (Array.isArray(payload.intents)) {
@@ -10223,7 +9811,7 @@ function loadOrSeedPaymentStore() {
   if (fs11.existsSync(FREIGHTS_FILE)) {
     try {
       const parsed = JSON.parse(fs11.readFileSync(FREIGHTS_FILE, "utf8"));
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         loadedFreights = parsed;
       }
     } catch {
@@ -10263,124 +9851,10 @@ function loadOrSeedPaymentStore() {
     }
   }
   if (!loadedFreights) {
-    paymentStoreState.freights = INITIAL_FREIGHTS.map((f) => ({
-      ...f,
-      adiantamentoVerificacaoStatus: f.adiantamentoPago ? "PAGAMENTO_CONFIRMADO" : "SEM_COMPROVANTE",
-      saldoVerificacaoStatus: f.saldoPago ? "PAGAMENTO_CONFIRMADO" : "SEM_COMPROVANTE"
-    }));
-    for (const f of paymentStoreState.freights) {
-      if (f.docs.comprovanteAdiantamento) {
-        const doc = f.docs.comprovanteAdiantamento;
-        const storageFileName = `seed-${f.id}-adiantamento.pdf`;
-        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
-        const pdfBuf = createSamplePdfBuffer(
-          `Comprovante de Adiantamento ${f.code}`,
-          `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorAdiantamento.toFixed(2)}`
-        );
-        if (!fs11.existsSync(absPath)) {
-          fs11.writeFileSync(absPath, pdfBuf);
-        }
-        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
-        const receiptRecord = {
-          id: doc.id,
-          freightId: f.id,
-          freightCode: f.code,
-          installmentId: `${f.id}:ADIANTAMENTO`,
-          installmentType: "ADIANTAMENTO",
-          title: "Comprovante de Adiantamento",
-          expectedAmountCentavos: Math.round(f.valorAdiantamento * 100),
-          expectedAmountBRL: f.valorAdiantamento,
-          favorecido: f.favorecido,
-          uploadedByUserId: "emp-7",
-          uploadedByUserName: doc.uploadedBy || "Financeiro RODOVAR",
-          uploadedByUserEmail: "petronio.santos@rodovar.com.br",
-          originalFileName: doc.fileName,
-          storageFileName,
-          storageRelativePath: `data/payment-receipts/${storageFileName}`,
-          mimeType: "application/pdf",
-          sizeBytes: pdfBuf.length,
-          sizeLabel: doc.sizeLabel || formatFileSize(pdfBuf.length),
-          sha256Hash,
-          idempotencyKey: `seed-idem-${doc.id}`,
-          origin: "ANEXACAO_MANUAL",
-          transactionCode: f.codigoTransacaoAdiantamento,
-          uploadStatus: "SALVO_NO_SERVIDOR",
-          verificationStatus: "PAGAMENTO_CONFIRMADO",
-          verifiedByUserId: "emp-7",
-          verifiedByUserName: "Petr\xF4nio Santos",
-          verifiedAtIso: f.createdAtIso,
-          verifiedAtFormatted: f.adiantamentoPagoEm || doc.uploadedAt,
-          serverCreatedAtIso: f.createdAtIso,
-          serverCreatedAtFormatted: doc.uploadedAt,
-          downloadUrl: `/api/pagamentos/comprovantes/${doc.id}/download`
-        };
-        if (!paymentStoreState.receipts.some((r) => r.id === receiptRecord.id)) {
-          paymentStoreState.receipts.push(receiptRecord);
-        }
-      }
-      if (f.docs.comprovanteSaldo) {
-        const doc = f.docs.comprovanteSaldo;
-        const storageFileName = `seed-${f.id}-saldo.pdf`;
-        const absPath = path11.join(PAYMENT_RECEIPTS_DIR, storageFileName);
-        const pdfBuf = createSamplePdfBuffer(
-          `Comprovante de Saldo ${f.code}`,
-          `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorSaldo.toFixed(2)}`
-        );
-        if (!fs11.existsSync(absPath)) {
-          fs11.writeFileSync(absPath, pdfBuf);
-        }
-        const sha256Hash = crypto12.createHash("sha256").update(pdfBuf).digest("hex");
-        const receiptRecord = {
-          id: doc.id,
-          freightId: f.id,
-          freightCode: f.code,
-          installmentId: `${f.id}:SALDO`,
-          installmentType: "SALDO",
-          title: "Comprovante de Saldo",
-          expectedAmountCentavos: Math.round(f.valorSaldo * 100),
-          expectedAmountBRL: f.valorSaldo,
-          favorecido: f.favorecido,
-          uploadedByUserId: "emp-7",
-          uploadedByUserName: doc.uploadedBy || "Financeiro RODOVAR",
-          uploadedByUserEmail: "petronio.santos@rodovar.com.br",
-          originalFileName: doc.fileName,
-          storageFileName,
-          storageRelativePath: `data/payment-receipts/${storageFileName}`,
-          mimeType: "application/pdf",
-          sizeBytes: pdfBuf.length,
-          sizeLabel: doc.sizeLabel || formatFileSize(pdfBuf.length),
-          sha256Hash,
-          idempotencyKey: `seed-idem-${doc.id}`,
-          origin: "ANEXACAO_MANUAL",
-          transactionCode: f.codigoTransacaoSaldo,
-          uploadStatus: "SALVO_NO_SERVIDOR",
-          verificationStatus: "PAGAMENTO_CONFIRMADO",
-          verifiedByUserId: "emp-7",
-          verifiedByUserName: "Petr\xF4nio Santos",
-          verifiedAtIso: f.createdAtIso,
-          verifiedAtFormatted: f.saldoPagoEm || doc.uploadedAt,
-          serverCreatedAtIso: f.createdAtIso,
-          serverCreatedAtFormatted: doc.uploadedAt,
-          downloadUrl: `/api/pagamentos/comprovantes/${doc.id}/download`
-        };
-        if (!paymentStoreState.receipts.some((r) => r.id === receiptRecord.id)) {
-          paymentStoreState.receipts.push(receiptRecord);
-        }
-      }
-    }
+    paymentStoreState.freights = [];
     savePaymentStore(true);
   } else {
-    paymentStoreState.freights = loadedFreights.map((f) => {
-      if (f.id === "frete-0841" && f.regraTipo === "INTEGRAL_100" && f.percentualSaldo === 30) {
-        return {
-          ...f,
-          regraTipo: "70_30",
-          regraLabel: "70% / 30%",
-          status: f.saldoPago ? "Pago" : "Pendente Saldo"
-        };
-      }
-      return f;
-    });
+    paymentStoreState.freights = loadedFreights;
   }
 }
 function appendPaymentAuditHistory(params) {
@@ -12443,12 +11917,21 @@ async function syncAllModulesFromNeonIfNeeded(force = false) {
           })
         );
       }
-      if (shouldPull("rodovar-social")) {
+      if (shouldPull("rodovar-social") || force) {
         tasks.push(
-          loadStateSnapshotFromNeon("rodovar-social").then((socialSnap) => {
-            if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
-            localNeonTimestamps["rodovar-social"] = remoteTs["rodovar-social"];
-          })
+          (async () => {
+            if (shouldPull("rodovar-social")) {
+              const socialSnap = await loadStateSnapshotFromNeon("rodovar-social");
+              if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+              localNeonTimestamps["rodovar-social"] = remoteTs["rodovar-social"];
+            }
+            const [profileRows, neonPosts] = await Promise.all([
+              loadSocialProfilesFromNeon(),
+              loadSocialPostsFromNeon()
+            ]);
+            if (profileRows.length > 0) mergeSocialProfilesFromNeon(profileRows);
+            if (neonPosts.length > 0) mergeSocialPostsFromNeon(neonPosts);
+          })()
         );
       }
       if (shouldPull("rodovar-chats")) {
@@ -12533,7 +12016,8 @@ function sanitizeUserForClient(user, config2) {
     joinedAt: user.joinedAt,
     active: user.active,
     permissoesPaginas: user.permissoesPaginas,
-    notificationPreferences: normalizePortalNotificationPreferences(user.notificationPreferences)
+    notificationPreferences: normalizePortalNotificationPreferences(user.notificationPreferences),
+    coverUrl: getSocialCoverUrlForUser(user.id) || user.coverUrl || void 0
   };
 }
 function appendAuditLog(actorId, actorName, actorRole, action, details, ip) {
@@ -13547,7 +13031,7 @@ function createExpressApp() {
         `Administrador ${admin.login} executou ${action} na conta ${targetUser.name} (${targetUser.login}) -> Situa\xE7\xE3o: ${newStatus}, Perfil: ${targetUser.accessLevel}.${cleanReason ? ` Motivo: ${cleanReason}` : ""}`,
         req.ip
       );
-      void persistUserToNeon(targetUser);
+      await persistUserToNeon(targetUser);
       await saveDatabaseAsync(dbState);
       await flushPendingNeonWrites();
       const pendingCount = dbState.users.filter((u) => u.approvalStatus === "PENDENTE").length;
@@ -13862,14 +13346,25 @@ function createExpressApp() {
       fs12.writeFileSync(filePath, validation.sanitizedBuffer);
     } catch {
     }
-    void persistSystemAssetToNeon({
-      id: fileName,
-      slot: "userAvatar",
-      mimeType: validation.mimeType || "image/jpeg",
-      dataBase64: validation.sanitizedBuffer.toString("base64"),
-      width: validation.width,
-      height: validation.height
-    });
+    if (isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonReady().catch(() => {
+      });
+      const assetSaved = await persistSystemAssetToNeon({
+        id: fileName,
+        slot: "userAvatar",
+        mimeType: validation.mimeType || "image/jpeg",
+        dataBase64: validation.sanitizedBuffer.toString("base64"),
+        width: validation.width,
+        height: validation.height
+      });
+      if (!assetSaved) {
+        res.status(500).json({
+          error: "Falha ao persistir a imagem de perfil no banco de dados Neon. Tente novamente.",
+          code: "NEON_ASSET_SAVE_FAILED"
+        });
+        return;
+      }
+    }
     if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith("/uploads/avatar-")) {
       const oldClean = targetUser.avatar.split("?")[0];
       const oldFsPath = path12.join(PUBLIC_DIR, oldClean);
@@ -13890,7 +13385,7 @@ function createExpressApp() {
       `Foto de perfil atualizada e sanitizada (${validation.mimeType}, ${validation.width}x${validation.height}px) para ${targetUser.login}.`,
       req.ip
     );
-    void persistUserToNeon(targetUser);
+    await persistUserToNeon(targetUser);
     await saveDatabaseAsync(dbState);
     await flushPendingNeonWrites();
     res.json({
@@ -13938,7 +13433,7 @@ function createExpressApp() {
         `Avatar padr\xE3o neutro restaurado para a conta ${targetUser.login}.`,
         req.ip
       );
-      void persistUserToNeon(targetUser);
+      await persistUserToNeon(targetUser);
       await saveDatabaseAsync(dbState);
       await flushPendingNeonWrites();
       res.json({
@@ -14105,7 +13600,7 @@ function createExpressApp() {
         });
       }
       const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, "").replace(/\.[^.]+$/, "");
-      const asset = await getSystemAssetFromNeon(assetId) || await getSystemAssetFromNeon(fileName);
+      const asset = await getSystemAssetFromNeon(fileName) || await getSystemAssetFromNeon(assetId);
       if (asset && asset.buffer) {
         try {
           fs12.mkdirSync(path12.dirname(diskPath), { recursive: true });
@@ -14125,8 +13620,8 @@ function createExpressApp() {
         const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-truck-yellow.png");
         if (fs12.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes("defaultAvatar") || fileName.includes("avatar")) {
-        const fallback = path12.join(PUBLIC_DIR, "assets/rodovar-avatar-default.png");
-        if (fs12.existsSync(fallback)) return res.sendFile(fallback);
+        ensureDefaultAvatarPngExists();
+        if (fs12.existsSync(DEFAULT_AVATAR_FS_PATH)) return res.sendFile(DEFAULT_AVATAR_FS_PATH);
       }
       next();
     }

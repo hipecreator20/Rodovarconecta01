@@ -83,7 +83,7 @@ export async function flushPendingNeonWrites(timeoutMs = 15000): Promise<void> {
   }
 }
 
-const NEON_SCHEMA_VERSION = '2027.06.v1';
+const NEON_SCHEMA_VERSION = '2027.07.v1';
 let neonSchemaInitialized = false;
 let neonSchemaInitPromise: Promise<void> | null = null;
 
@@ -264,6 +264,7 @@ export async function initializeNeonSchema(): Promise<void> {
         must_change_password BOOLEAN DEFAULT TRUE,
         avatar TEXT DEFAULT '',
         has_custom_avatar BOOLEAN DEFAULT FALSE,
+        cover_url TEXT DEFAULT '',
         approval_status VARCHAR(50) DEFAULT 'APROVADO',
         requested_at VARCHAR(64),
         approved_by VARCHAR(255),
@@ -288,6 +289,7 @@ export async function initializeNeonSchema(): Promise<void> {
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS password_salt VARCHAR(255) DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS avatar TEXT DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS has_custom_avatar BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS cover_url TEXT DEFAULT '';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APROVADO';
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS requested_at VARCHAR(64);
       ALTER TABLE rodovar_users ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
@@ -484,8 +486,10 @@ export async function initializeNeonSchema(): Promise<void> {
         phone VARCHAR(50),
         location VARCHAR(100),
         social_links JSONB DEFAULT '{}'::jsonb,
+        hidden_photos JSONB DEFAULT '[]'::jsonb,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_social_profiles ADD COLUMN IF NOT EXISTS hidden_photos JSONB DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS rodovar_social_posts (
         id VARCHAR(64) PRIMARY KEY,
@@ -497,10 +501,12 @@ export async function initializeNeonSchema(): Promise<void> {
         content TEXT NOT NULL,
         images JSONB DEFAULT '[]'::jsonb,
         likes JSONB DEFAULT '[]'::jsonb,
+        congrats JSONB DEFAULT '[]'::jsonb,
         audience VARCHAR(50) DEFAULT 'Público',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE rodovar_social_posts ADD COLUMN IF NOT EXISTS congrats JSONB DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS rodovar_social_comments (
         id VARCHAR(64) PRIMARY KEY,
@@ -998,6 +1004,7 @@ function mapRowToServerUserRecord(row: any): any {
     ...(row.access_profile ? { accessProfile: String(row.access_profile) } : {}),
     avatar: String(row.avatar || ''),
     hasCustomAvatar: Boolean(row.has_custom_avatar),
+    ...(row.cover_url ? { coverUrl: String(row.cover_url) } : {}),
     approvalStatus: String(row.approval_status || 'APROVADO'),
     requestedAt: String(row.requested_at || new Date().toISOString()),
     ...(row.approved_by ? { approvedBy: String(row.approved_by) } : {}),
@@ -1022,6 +1029,7 @@ export function persistUserToNeon(u: any): Promise<void> {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         const email = String(u.email || (String(u.login).includes('@') ? u.login : `${u.login}@rodovar.com.br`));
         const login = String(u.login || email);
         const role = String(u.accessProfile || u.roleTitle || 'COLABORADOR').slice(0, 100);
@@ -1036,7 +1044,7 @@ export function persistUserToNeon(u: any): Promise<void> {
         await dbSql`
           INSERT INTO rodovar_users (
             id, name, email, login, department, role, role_title, access_level, access_profile,
-            password_hash, password_salt, must_change_password, avatar, has_custom_avatar,
+            password_hash, password_salt, must_change_password, avatar, has_custom_avatar, cover_url,
             approval_status, requested_at, approved_by, approved_at, status_reason,
             migrated_from_google, phone_ext, phone, location, joined_at, active,
             permissoes_paginas, notification_preferences, roster_activation_version, updated_at
@@ -1045,7 +1053,7 @@ export function persistUserToNeon(u: any): Promise<void> {
             ${String(u.department || 'Administrativo')}, ${role}, ${roleTitle},
             ${String(u.accessLevel || 'FUNCIONARIO').slice(0, 50)}, ${accessProfile},
             ${String(u.passwordHash || 'managed')}, ${String(u.passwordSalt || '')},
-            ${Boolean(u.mustChangePassword)}, ${String(u.avatar || '')}, ${Boolean(u.hasCustomAvatar)},
+            ${Boolean(u.mustChangePassword)}, ${String(u.avatar || '')}, ${Boolean(u.hasCustomAvatar)}, ${String(u.coverUrl || '')},
             ${String(u.approvalStatus || 'APROVADO')}, ${u.requestedAt ? String(u.requestedAt) : new Date().toISOString()},
             ${u.approvedBy ? String(u.approvedBy) : null}, ${u.approvedAt ? String(u.approvedAt) : null},
             ${u.statusReason ? String(u.statusReason) : null}, ${Boolean(u.migratedFromGoogle)},
@@ -1068,6 +1076,7 @@ export function persistUserToNeon(u: any): Promise<void> {
             must_change_password = EXCLUDED.must_change_password,
             avatar = EXCLUDED.avatar,
             has_custom_avatar = EXCLUDED.has_custom_avatar,
+            cover_url = CASE WHEN EXCLUDED.cover_url <> '' THEN EXCLUDED.cover_url ELSE rodovar_users.cover_url END,
             approval_status = EXCLUDED.approval_status,
             requested_at = EXCLUDED.requested_at,
             approved_by = EXCLUDED.approved_by,
@@ -1528,6 +1537,7 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
     ENTREGUE: number;
     FINALIZADO: number;
     PENDENCIAS: number;
+    CANCELADO: number;
     COLETAS_HOJE: number;
     TOTAL_ATIVOS: number;
     completedCount: number;
@@ -1535,6 +1545,9 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
 } | null> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return null;
   try {
+    if (hasPendingNeonWrites()) {
+      await flushPendingNeonWrites(4000);
+    }
     const searchLike = params.search ? `%${params.search.toLowerCase()}%` : '';
     const offset = Math.max(0, (Math.max(1, params.page) - 1) * Math.max(1, params.limit));
     const respFilter = params.responsavelFilterId || '';
@@ -1544,36 +1557,35 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
     const [counterRows, listRows] = await Promise.all([
       sql`
         SELECT
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR')::int AS novo_para_carregar,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA')::int AS em_deslocamento_coleta,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA')::int AS no_local_coleta,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE')::int AS carregado_em_transporte,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA')::int AS no_local_entrega,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE')::int AS entregue,
-          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO')::int AS finalizado,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NOVO_PARA_CARREGAR' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS novo_para_carregar,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'EM_DESLOCAMENTO_COLETA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS em_deslocamento_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_COLETA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS no_local_coleta,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CARREGADO_EM_TRANSPORTE' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS carregado_em_transporte,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'NO_LOCAL_ENTREGA' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS no_local_entrega,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'ENTREGUE' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS entregue,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'FINALIZADO' AND COALESCE(situacao_comercial, '') <> 'CANCELADO' AND COALESCE(situacao_operacional, '') <> 'CANCELADO')::int AS finalizado,
+          COUNT(*) FILTER (WHERE situacao_monitoramento = 'CANCELADO' OR COALESCE(situacao_comercial, '') = 'CANCELADO' OR COALESCE(situacao_operacional, '') = 'CANCELADO')::int AS cancelado,
           COUNT(*) FILTER (
             WHERE data_coleta_iso = ${params.todaySp}
+              AND COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
               AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR','EM_DESLOCAMENTO_COLETA','NO_LOCAL_COLETA','CARREGADO_EM_TRANSPORTE','NO_LOCAL_ENTREGA')
           )::int AS coletas_hoje,
           COUNT(*) FILTER (
-            WHERE (
-              COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
-              OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
-              OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
-            )
+            WHERE COALESCE(situacao_comercial, '') <> 'CANCELADO'
+              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
+              AND situacao_monitoramento <> 'CANCELADO'
+              AND (
+                COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+                OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+                OR COALESCE((payload->>'ordemColetaPendente')::boolean, false) = true
+                OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+              )
           )::int AS pendencias
         FROM rodovar_fretes
         WHERE payload IS NOT NULL
           AND situacao_monitoramento IS NOT NULL
           AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
-          AND (
-            ${params.includeCanceled}::boolean = true
-            OR (
-              COALESCE(situacao_comercial, '') <> 'CANCELADO'
-              AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
-              AND situacao_monitoramento <> 'CANCELADO'
-            )
-          )
           AND (
             (
               ${params.scope} = 'EQUIPE'
@@ -1621,7 +1633,7 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
           AND situacao_monitoramento IS NOT NULL
           AND situacao_monitoramento NOT IN ('NAO_LIBERADO', 'DEVOLVIDO_EXPEDICAO')
           AND (
-            ${params.includeCanceled}::boolean = true
+            (${params.includeCanceled}::boolean = true AND ${situacao} <> 'PENDENCIAS')
             OR (
               COALESCE(situacao_comercial, '') <> 'CANCELADO'
               AND COALESCE(situacao_operacional, '') <> 'CANCELADO'
@@ -1645,7 +1657,8 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
             )
           )
           AND (
-            ${params.viewMode} = 'ALL'
+            ${situacao} = 'PENDENCIAS'
+            OR ${params.viewMode} = 'ALL'
             OR (
               ${params.viewMode} = 'ATIVOS'
               AND situacao_monitoramento IN ('NOVO_PARA_CARREGAR', 'EM_DESLOCAMENTO_COLETA', 'NO_LOCAL_COLETA', 'CARREGADO_EM_TRANSPORTE', 'NO_LOCAL_ENTREGA')
@@ -1657,7 +1670,16 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
           )
           AND (
             ${situacao} = 'TODAS'
-            OR situacao_monitoramento = ${situacao}
+            OR (
+              ${situacao} = 'PENDENCIAS'
+              AND (
+                COALESCE((payload->>'ocorrenciasAbertasCount')::int, 0) > 0
+                OR COALESCE((payload->>'requerReconfirmacaoOperacional')::boolean, false) = true
+                OR COALESCE((payload->>'ordemColetaPendente')::boolean, false) = true
+                OR (situacao_monitoramento = 'ENTREGUE' AND COALESCE((payload->>'comprovanteEntregaConferido')::boolean, false) = false)
+              )
+            )
+            OR (${situacao} <> 'PENDENCIAS' AND situacao_monitoramento = ${situacao})
           )
           AND (
             ${searchLike} = ''
@@ -1712,7 +1734,8 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
       Number(c.carregado_em_transporte || 0) +
       Number(c.no_local_entrega || 0) +
       Number(c.entregue || 0) +
-      Number(c.finalizado || 0);
+      Number(c.finalizado || 0) +
+      Number(c.cancelado || 0);
     if (totalCheck === 0 && listRows.length === 0) {
       // Check whether Neon fretes table actually has any payloads yet
       const anyPayloads = await sql`SELECT 1 FROM rodovar_fretes WHERE payload IS NOT NULL LIMIT 1`;
@@ -1763,6 +1786,7 @@ export async function queryMonitoringFreightsFromNeon(params: NeonMonitoringQuer
         ENTREGUE: Number(c.entregue || 0),
         FINALIZADO: Number(c.finalizado || 0),
         PENDENCIAS: Number(c.pendencias || 0),
+        CANCELADO: Number(c.cancelado || 0),
         COLETAS_HOJE: Number(c.coletas_hoje || 0),
         TOTAL_ATIVOS: totalAtivos,
         completedCount,
@@ -2028,17 +2052,20 @@ export function persistSocialProfileToNeon(p: {
   phone?: string;
   location?: string;
   socialLinks?: any;
+  hiddenPhotos?: string[];
 }): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !p || !p.userId) return Promise.resolve();
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
-          INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, updated_at)
+          INSERT INTO rodovar_social_profiles (user_id, cover_url, bio, custom_display_name, phone, location, social_links, hidden_photos, updated_at)
           VALUES (
             ${p.userId}, ${p.coverUrl || null}, ${p.bio || null}, ${p.customDisplayName || null},
-            ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb, CURRENT_TIMESTAMP
+            ${p.phone || null}, ${p.location || null}, ${JSON.stringify(p.socialLinks || {})}::jsonb,
+            ${JSON.stringify(Array.isArray(p.hiddenPhotos) ? p.hiddenPhotos : [])}::jsonb, CURRENT_TIMESTAMP
           )
           ON CONFLICT (user_id) DO UPDATE SET
             cover_url = EXCLUDED.cover_url,
@@ -2047,6 +2074,7 @@ export function persistSocialProfileToNeon(p: {
             phone = EXCLUDED.phone,
             location = EXCLUDED.location,
             social_links = EXCLUDED.social_links,
+            hidden_photos = EXCLUDED.hidden_photos,
             updated_at = CURRENT_TIMESTAMP
         `;
       } catch (err) {
@@ -2054,6 +2082,59 @@ export function persistSocialProfileToNeon(p: {
       }
     })()
   );
+}
+
+export async function loadSocialProfilesFromNeon(): Promise<
+  Array<{
+    userId: string;
+    coverUrl?: string;
+    bio?: string;
+    customDisplayName?: string;
+    phone?: string;
+    location?: string;
+    socialLinks?: any;
+    hiddenPhotos?: string[];
+    updatedAt?: string;
+  }>
+> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const rows = await sql`
+      SELECT user_id AS "userId",
+             cover_url AS "coverUrl",
+             bio,
+             custom_display_name AS "customDisplayName",
+             phone,
+             location,
+             social_links AS "socialLinks",
+             hidden_photos AS "hiddenPhotos",
+             updated_at AS "updatedAt"
+      FROM rodovar_social_profiles
+    `;
+    return (rows as any[]).map((r) => ({
+      userId: String(r.userId),
+      ...(r.coverUrl ? { coverUrl: String(r.coverUrl) } : {}),
+      ...(r.bio ? { bio: String(r.bio) } : {}),
+      ...(r.customDisplayName ? { customDisplayName: String(r.customDisplayName) } : {}),
+      ...(r.phone ? { phone: String(r.phone) } : {}),
+      ...(r.location ? { location: String(r.location) } : {}),
+      socialLinks:
+        r.socialLinks && typeof r.socialLinks === 'object'
+          ? r.socialLinks
+          : typeof r.socialLinks === 'string'
+            ? JSON.parse(r.socialLinks || '{}')
+            : {},
+      hiddenPhotos: Array.isArray(r.hiddenPhotos)
+        ? r.hiddenPhotos
+        : typeof r.hiddenPhotos === 'string'
+          ? JSON.parse(r.hiddenPhotos || '[]')
+          : [],
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+    }));
+  } catch (err) {
+    console.warn('Neon loadSocialProfilesFromNeon error:', (err as Error).message);
+    return [];
+  }
 }
 
 export function persistSocialPostToNeon(post: {
@@ -2066,6 +2147,7 @@ export function persistSocialPostToNeon(post: {
   content: string;
   images?: string[];
   likes?: string[];
+  congrats?: string[];
   audience?: string;
 }): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !post || !post.id) return Promise.resolve();
@@ -2073,18 +2155,23 @@ export function persistSocialPostToNeon(post: {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
-          INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, audience, updated_at)
+          INSERT INTO rodovar_social_posts (id, author_id, author_name, author_avatar, author_role, author_department, content, images, likes, congrats, audience, updated_at)
           VALUES (
             ${post.id}, ${post.authorId}, ${post.authorName}, ${post.authorAvatar || null},
             ${post.authorRole || null}, ${post.authorDepartment || null}, ${post.content},
             ${JSON.stringify(post.images || [])}::jsonb, ${JSON.stringify(post.likes || [])}::jsonb,
+            ${JSON.stringify(post.congrats || [])}::jsonb,
             ${post.audience || 'Público'}, CURRENT_TIMESTAMP
           )
           ON CONFLICT (id) DO UPDATE SET
+            author_name = EXCLUDED.author_name,
+            author_avatar = COALESCE(EXCLUDED.author_avatar, rodovar_social_posts.author_avatar),
             content = EXCLUDED.content,
             images = EXCLUDED.images,
             likes = EXCLUDED.likes,
+            congrats = EXCLUDED.congrats,
             audience = EXCLUDED.audience,
             updated_at = CURRENT_TIMESTAMP
         `;
@@ -2093,6 +2180,67 @@ export function persistSocialPostToNeon(post: {
       }
     })()
   );
+}
+
+export async function loadSocialPostsFromNeon(): Promise<any[]> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql) return [];
+  try {
+    const [postRows, commentRows] = await Promise.all([
+      sql`
+        SELECT id, author_id, author_name, author_avatar, author_role, author_department,
+               content, images, likes, congrats, audience, created_at, updated_at
+        FROM rodovar_social_posts
+        ORDER BY created_at DESC
+        LIMIT 200
+      `,
+      sql`
+        SELECT id, post_id, author_id, author_name, author_avatar, author_role, content, created_at
+        FROM rodovar_social_comments
+        ORDER BY created_at ASC
+      `,
+    ]);
+    const commentsByPost = new Map<string, any[]>();
+    for (const c of commentRows as any[]) {
+      const pid = String(c.post_id);
+      const list = commentsByPost.get(pid) || [];
+      list.push({
+        id: String(c.id),
+        postId: pid,
+        authorId: String(c.author_id),
+        authorName: String(c.author_name || 'Colaborador'),
+        authorAvatar: String(c.author_avatar || '/assets/default-avatar.png'),
+        authorRole: c.author_role ? String(c.author_role) : 'Colaborador',
+        content: String(c.content || ''),
+        createdAt: c.created_at ? new Date(c.created_at).toISOString() : new Date().toISOString(),
+      });
+      commentsByPost.set(pid, list);
+    }
+    return (postRows as any[]).map((r) => {
+      const postComments = commentsByPost.get(String(r.id)) || [];
+      const parseArr = (val: any) =>
+        Array.isArray(val) ? val : typeof val === 'string' ? JSON.parse(val || '[]') : [];
+      return {
+        id: String(r.id),
+        authorId: String(r.author_id),
+        authorName: String(r.author_name || 'Colaborador'),
+        authorAvatar: String(r.author_avatar || '/assets/default-avatar.png'),
+        authorRole: r.author_role ? String(r.author_role) : 'Colaborador',
+        authorDepartment: r.author_department ? String(r.author_department) : 'Geral',
+        content: String(r.content || ''),
+        images: parseArr(r.images),
+        likes: parseArr(r.likes),
+        congrats: parseArr(r.congrats),
+        comments: postComments,
+        commentsCount: postComments.length,
+        audience: r.audience ? String(r.audience) : 'Público',
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+      };
+    });
+  } catch (err) {
+    console.warn('Neon loadSocialPostsFromNeon error:', (err as Error).message);
+    return [];
+  }
 }
 
 export function deleteSocialPostFromNeon(postId: string): Promise<void> {
@@ -2126,6 +2274,7 @@ export function persistSocialCommentToNeon(c: {
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
           INSERT INTO rodovar_social_comments (id, post_id, author_id, author_name, author_avatar, author_role, content)
           VALUES (${c.id}, ${c.postId}, ${c.authorId}, ${c.authorName}, ${c.authorAvatar || null}, ${c.authorRole || null}, ${c.content})
@@ -2159,12 +2308,13 @@ export function persistSystemAssetToNeon(asset: {
   dataBase64: string;
   width?: number;
   height?: number;
-}): Promise<void> {
-  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return Promise.resolve();
+}): Promise<boolean> {
+  if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !asset.id) return Promise.resolve(false);
   const dbSql = sql;
   return trackNeonWrite(
     (async () => {
       try {
+        await ensureNeonReady();
         await dbSql`
           INSERT INTO rodovar_system_assets (id, slot, mime_type, data_base64, width, height, updated_at)
           VALUES (${asset.id}, ${asset.slot}, ${asset.mimeType}, ${asset.dataBase64}, ${asset.width || null}, ${asset.height || null}, CURRENT_TIMESTAMP)
@@ -2176,8 +2326,10 @@ export function persistSystemAssetToNeon(asset: {
             height = EXCLUDED.height,
             updated_at = CURRENT_TIMESTAMP
         `;
+        return true;
       } catch (err) {
         console.warn('Neon persistSystemAssetToNeon error:', (err as Error).message);
+        return false;
       }
     })()
   );
@@ -2186,6 +2338,7 @@ export function persistSystemAssetToNeon(asset: {
 export async function getSystemAssetFromNeon(id: string): Promise<{ mimeType: string; buffer: Buffer } | null> {
   if (!isNeonConfigured || isIsolatedTestEnv() || !sql || !id) return null;
   try {
+    await ensureNeonReady();
     const rows = await sql`
       SELECT mime_type, data_base64 FROM rodovar_system_assets WHERE id = ${id} LIMIT 1
     `;

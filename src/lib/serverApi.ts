@@ -690,6 +690,7 @@ export async function apiFetchFreightsList(params: {
     CONCLUIDO: number;
     COLETAS_HOJE: number;
     PENDENCIAS: number;
+    CANCELADO?: number;
     DISPONIVEIS_FILA: number;
   };
   monitoramentoCounters?: {
@@ -702,6 +703,7 @@ export async function apiFetchFreightsList(params: {
     FINALIZADO: number;
     COLETAS_HOJE: number;
     PENDENCIAS: number;
+    CANCELADO?: number;
     TOTAL_ATIVOS: number;
     completedCount?: number;
   };
@@ -757,6 +759,7 @@ export async function apiFetchFreightsList(params: {
     CONCLUIDO: 0,
     COLETAS_HOJE: 0,
     PENDENCIAS: 0,
+    CANCELADO: 0,
     DISPONIVEIS_FILA: 0,
   };
 
@@ -1859,6 +1862,32 @@ export async function apiTogglePostLike(postId: string): Promise<{
     };
   } catch (err: any) {
     return { ok: false, error: err.message || 'Erro ao curtir publicação.' };
+  }
+}
+
+export async function apiTogglePostCongrats(postId: string): Promise<{
+  ok: boolean;
+  isCongratulated?: boolean;
+  congratsCount?: number;
+  congrats?: string[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/profile/posts/${encodeURIComponent(postId)}/congrats`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: Boolean(res.ok && data.ok),
+      isCongratulated: data.isCongratulated,
+      congratsCount: data.congratsCount,
+      congrats: data.congrats || [],
+      error: data.error,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Erro ao enviar parabéns na publicação.' };
   }
 }
 

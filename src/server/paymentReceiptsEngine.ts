@@ -241,7 +241,7 @@ export function validatePaymentReceiptBinary(
 
 export function hydratePaymentReceiptsFromPayload(payload: any): void {
   if (!payload || typeof payload !== 'object') return;
-  if (Array.isArray(payload.freights) && payload.freights.length > 0) {
+  if (Array.isArray(payload.freights)) {
     paymentStoreState.freights = payload.freights;
   }
   if (Array.isArray(payload.intents)) {
@@ -395,7 +395,7 @@ function loadOrSeedPaymentStore(): void {
   if (fs.existsSync(FREIGHTS_FILE)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(FREIGHTS_FILE, 'utf8'));
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         loadedFreights = parsed;
       }
     } catch {
@@ -440,129 +440,10 @@ function loadOrSeedPaymentStore(): void {
   }
 
   if (!loadedFreights) {
-    paymentStoreState.freights = INITIAL_FREIGHTS.map((f) => ({
-      ...f,
-      adiantamentoVerificacaoStatus: f.adiantamentoPago ? 'PAGAMENTO_CONFIRMADO' : 'SEM_COMPROVANTE',
-      saldoVerificacaoStatus: f.saldoPago ? 'PAGAMENTO_CONFIRMADO' : 'SEM_COMPROVANTE',
-    }));
-
-    // Seed initial confirmed receipt binaries on disk so existing freights (#0841, #0840, #0839) have real downloadable files
-    for (const f of paymentStoreState.freights) {
-      if (f.docs.comprovanteAdiantamento) {
-        const doc = f.docs.comprovanteAdiantamento;
-        const storageFileName = `seed-${f.id}-adiantamento.pdf`;
-        const absPath = path.join(PAYMENT_RECEIPTS_DIR, storageFileName);
-        const pdfBuf = createSamplePdfBuffer(
-          `Comprovante de Adiantamento ${f.code}`,
-          `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorAdiantamento.toFixed(2)}`
-        );
-        if (!fs.existsSync(absPath)) {
-          fs.writeFileSync(absPath, pdfBuf);
-        }
-        const sha256Hash = crypto.createHash('sha256').update(pdfBuf).digest('hex');
-        const receiptRecord: PaymentReceiptRecord = {
-          id: doc.id,
-          freightId: f.id,
-          freightCode: f.code,
-          installmentId: `${f.id}:ADIANTAMENTO`,
-          installmentType: 'ADIANTAMENTO',
-          title: 'Comprovante de Adiantamento',
-          expectedAmountCentavos: Math.round(f.valorAdiantamento * 100),
-          expectedAmountBRL: f.valorAdiantamento,
-          favorecido: f.favorecido,
-          uploadedByUserId: 'emp-7',
-          uploadedByUserName: doc.uploadedBy || 'Financeiro RODOVAR',
-          uploadedByUserEmail: 'petronio.santos@rodovar.com.br',
-          originalFileName: doc.fileName,
-          storageFileName,
-          storageRelativePath: `data/payment-receipts/${storageFileName}`,
-          mimeType: 'application/pdf',
-          sizeBytes: pdfBuf.length,
-          sizeLabel: doc.sizeLabel || formatFileSize(pdfBuf.length),
-          sha256Hash,
-          idempotencyKey: `seed-idem-${doc.id}`,
-          origin: 'ANEXACAO_MANUAL',
-          transactionCode: f.codigoTransacaoAdiantamento,
-          uploadStatus: 'SALVO_NO_SERVIDOR',
-          verificationStatus: 'PAGAMENTO_CONFIRMADO',
-          verifiedByUserId: 'emp-7',
-          verifiedByUserName: 'Petrônio Santos',
-          verifiedAtIso: f.createdAtIso,
-          verifiedAtFormatted: f.adiantamentoPagoEm || doc.uploadedAt,
-          serverCreatedAtIso: f.createdAtIso,
-          serverCreatedAtFormatted: doc.uploadedAt,
-          downloadUrl: `/api/pagamentos/comprovantes/${doc.id}/download`,
-        };
-        if (!paymentStoreState.receipts.some((r) => r.id === receiptRecord.id)) {
-          paymentStoreState.receipts.push(receiptRecord);
-        }
-      }
-
-      if (f.docs.comprovanteSaldo) {
-        const doc = f.docs.comprovanteSaldo;
-        const storageFileName = `seed-${f.id}-saldo.pdf`;
-        const absPath = path.join(PAYMENT_RECEIPTS_DIR, storageFileName);
-        const pdfBuf = createSamplePdfBuffer(
-          `Comprovante de Saldo ${f.code}`,
-          `Favorecido: ${f.favorecido} - Valor: R$ ${f.valorSaldo.toFixed(2)}`
-        );
-        if (!fs.existsSync(absPath)) {
-          fs.writeFileSync(absPath, pdfBuf);
-        }
-        const sha256Hash = crypto.createHash('sha256').update(pdfBuf).digest('hex');
-        const receiptRecord: PaymentReceiptRecord = {
-          id: doc.id,
-          freightId: f.id,
-          freightCode: f.code,
-          installmentId: `${f.id}:SALDO`,
-          installmentType: 'SALDO',
-          title: 'Comprovante de Saldo',
-          expectedAmountCentavos: Math.round(f.valorSaldo * 100),
-          expectedAmountBRL: f.valorSaldo,
-          favorecido: f.favorecido,
-          uploadedByUserId: 'emp-7',
-          uploadedByUserName: doc.uploadedBy || 'Financeiro RODOVAR',
-          uploadedByUserEmail: 'petronio.santos@rodovar.com.br',
-          originalFileName: doc.fileName,
-          storageFileName,
-          storageRelativePath: `data/payment-receipts/${storageFileName}`,
-          mimeType: 'application/pdf',
-          sizeBytes: pdfBuf.length,
-          sizeLabel: doc.sizeLabel || formatFileSize(pdfBuf.length),
-          sha256Hash,
-          idempotencyKey: `seed-idem-${doc.id}`,
-          origin: 'ANEXACAO_MANUAL',
-          transactionCode: f.codigoTransacaoSaldo,
-          uploadStatus: 'SALVO_NO_SERVIDOR',
-          verificationStatus: 'PAGAMENTO_CONFIRMADO',
-          verifiedByUserId: 'emp-7',
-          verifiedByUserName: 'Petrônio Santos',
-          verifiedAtIso: f.createdAtIso,
-          verifiedAtFormatted: f.saldoPagoEm || doc.uploadedAt,
-          serverCreatedAtIso: f.createdAtIso,
-          serverCreatedAtFormatted: doc.uploadedAt,
-          downloadUrl: `/api/pagamentos/comprovantes/${doc.id}/download`,
-        };
-        if (!paymentStoreState.receipts.some((r) => r.id === receiptRecord.id)) {
-          paymentStoreState.receipts.push(receiptRecord);
-        }
-      }
-    }
-
+    paymentStoreState.freights = [];
     savePaymentStore(true);
   } else {
-    // Fix frete-0841 rule consistency if loaded from older store
-    paymentStoreState.freights = loadedFreights.map((f) => {
-      if (f.id === 'frete-0841' && f.regraTipo === 'INTEGRAL_100' && f.percentualSaldo === 30) {
-        return {
-          ...f,
-          regraTipo: '70_30',
-          regraLabel: '70% / 30%',
-          status: f.saldoPago ? 'Pago' : 'Pendente Saldo',
-        };
-      }
-      return f;
-    });
+    paymentStoreState.freights = loadedFreights;
   }
 }
 

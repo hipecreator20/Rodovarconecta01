@@ -79,6 +79,7 @@ import {
   COMPANY_LEGAL_PROFILES,
   extractOrderDisplayNumber,
 } from '../lib/freightOrderPdfGenerator';
+import { FREIGHTS_UPDATED_EVENT, invalidateFreightQueriesAfterMutation } from '../lib/freightQueryCache';
 
 interface MeusFretesExpedicaoViewProps {
   currentUser: Employee;
@@ -178,9 +179,22 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
   onSwitchToComercial,
 }) => {
   const [freights, setFreights] = useState<UnifiedFreightRecord[]>([]);
+  const [serverExpCounters, setServerExpCounters] = useState<
+    Awaited<ReturnType<typeof apiFetchFreightsList>>['expedicaoCounters'] | null
+  >(null);
   const [loading, setLoading] = useState<boolean>(true);
   useGlobalLoading(loading && freights.length === 0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const latestDataVersionRef = useRef<number | undefined>(undefined);
+  const lastLocalSyncAtRef = useRef<number>(0);
+
+  const notifyOtherModulesOfMutation = useCallback(
+    (updatedFreight?: UnifiedFreightRecord | null) => {
+      lastLocalSyncAtRef.current = Date.now();
+      void invalidateFreightQueriesAfterMutation(currentUser.id, updatedFreight);
+    },
+    [currentUser.id]
+  );
 
   // Open in board mode; canceled freights are reviewed in the list.
   const [displayMode, setDisplayMode] = useState<'LISTA' | 'QUADRO'>('QUADRO');
@@ -248,6 +262,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'success',
         title: 'Concluído',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao reativar frete.');
     } finally {
@@ -532,6 +548,10 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       }
 
       setFreights(res.items || []);
+      if (res.expedicaoCounters) setServerExpCounters(res.expedicaoCounters);
+      if (typeof res.dataVersion === 'number') {
+        latestDataVersionRef.current = res.dataVersion;
+      }
       setSelectedFreight((prev) => {
         if (!prev) return null;
         const updated = (res.items || []).find((f) => f.id === prev.id);
@@ -553,6 +573,41 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
   useEffect(() => {
     void loadFreights();
   }, [loadFreights]);
+
+  useEffect(() => {
+    const onFreightsUpdated = () => {
+      if (Date.now() - lastLocalSyncAtRef.current < 800) return;
+      void loadFreights();
+    };
+    const runVersionCheck = () => {
+      if (document.visibilityState !== 'visible') return;
+      const knownVersion = latestDataVersionRef.current;
+      if (knownVersion === undefined) return;
+      const scopeParam =
+        viewScope === 'QUEUE' ? 'DISPONIVEIS' : viewScope === 'TEAM' ? 'EQUIPE' : 'MEUS';
+      void apiFetchFreightsList({
+        area: 'EXPEDICAO',
+        scope: scopeParam,
+        responsavelId: viewScope === 'TEAM' && responsibleFilterId ? responsibleFilterId : undefined,
+        checkOnly: true,
+        sinceVersion: knownVersion,
+      }).then((check) => {
+        if (check.ok && check.unchanged === false) {
+          void loadFreights();
+        }
+      });
+    };
+    window.addEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+    window.addEventListener('focus', runVersionCheck);
+    document.addEventListener('visibilitychange', runVersionCheck);
+    const interval = setInterval(runVersionCheck, 15_000);
+    return () => {
+      window.removeEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+      window.removeEventListener('focus', runVersionCheck);
+      document.removeEventListener('visibilitychange', runVersionCheck);
+      clearInterval(interval);
+    };
+  }, [loadFreights, viewScope, responsibleFilterId]);
 
   // Handle opening specific freight from notification click
   useEffect(() => {
@@ -612,8 +667,24 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
     });
   }, [freights, statusFilter, periodFilter, searchQuery]);
 
-  // Summary counters
+  // Summary counters (prefer authoritative server counters across scopes)
   const summaryStats = useMemo(() => {
+    if (serverExpCounters) {
+      return {
+        disponiveisFila: serverExpCounters.DISPONIVEIS_FILA ?? 0,
+        recebidos: serverExpCounters.RECEBIDO ?? 0,
+        emPreparacao:
+          (serverExpCounters.EM_PREPARACAO ?? 0) + (serverExpCounters.AGUARDANDO_FECHAMENTO ?? 0),
+        liberadosMonitoramento:
+          (serverExpCounters.LIBERADO_MONITORAMENTO ?? 0) +
+          (serverExpCounters.FECHADO ?? 0) +
+          (serverExpCounters.AGUARDANDO_COLETA ?? 0) +
+          (serverExpCounters.EM_TRANSPORTE ?? 0) +
+          (serverExpCounters.CONCLUIDO ?? 0),
+        comPendencia: serverExpCounters.PENDENCIAS ?? 0,
+        cancelados: serverExpCounters.CANCELADO ?? 0,
+      };
+    }
     const base = freights.filter((f) => f.situacaoOperacional !== 'CANCELADO');
     return {
       disponiveisFila: base.filter((f) => f.situacaoOperacional === 'DISPONIVEL_FILA').length,
@@ -633,8 +704,9 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       ).length,
       comPendencia: base.filter((f) => f.ocorrenciasAbertasCount > 0 || f.devolvidoParaCorrecao)
         .length,
+      cancelados: freights.filter((f) => f.situacaoOperacional === 'CANCELADO').length,
     };
-  }, [freights]);
+  }, [serverExpCounters, freights]);
 
   const handleSelectFreight = (f: UnifiedFreightRecord) => {
     setSelectedFreight(f);
@@ -660,6 +732,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'transfer',
         title: 'Frete assumido',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(claimed);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao assumir frete.');
     } finally {
@@ -783,6 +857,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
           title: 'Concluído',
         });
       }
+      await loadFreights();
+      notifyOtherModulesOfMutation(saved);
       return saved;
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao salvar dados da Expedição.');
@@ -842,6 +918,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'success',
         title: 'Concluído',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao gerar Ordem de Coleta.');
     } finally {
@@ -871,6 +949,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'success',
         title: 'Concluído',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(
         err instanceof Error ? err.message : 'Erro ao confirmar envio da Ordem de Coleta.'
@@ -908,6 +988,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         `Ordem de coleta marcada como pendente no frete ${updated.protocol}. Você já pode liberar para Monitoramento ou emitir depois.`,
         { type: 'info', title: 'Ordem pendente' }
       );
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao adiar Ordem de Coleta.');
     } finally {
@@ -1028,6 +1110,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         `Frete ${updated.protocol} liberado para Monitoramento (${updated.monitoramentoResponsavelNome || 'Operador'})!`,
         { type: 'transfer', title: 'Liberado ao Monitoramento' }
       );
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(
         err instanceof Error ? err.message : 'Erro ao liberar frete para o Monitoramento.'
@@ -1065,6 +1149,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'transfer',
         title: 'Devolvido ao Comercial',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao devolver ao Comercial.');
     } finally {
@@ -1114,6 +1200,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
           : 'Ocorrência operacional registrada.',
         { type: 'success', title: 'Concluído' }
       );
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao registrar ocorrência.');
     } finally {
@@ -1136,6 +1224,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       if (res.ocorrencias) setDetailOcorrencias(res.ocorrencias);
       if (res.historico) setDetailHistorico(res.historico);
       showToast('Ocorrência marcada como resolvida.', { type: 'success', title: 'Concluído' });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao resolver ocorrência.');
     } finally {
@@ -1173,6 +1263,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'success',
         title: 'Concluído',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao enviar anexo.');
     } finally {
@@ -1196,6 +1288,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
       if (res.anexos) setDetailAnexos(res.anexos);
       if (res.historico) setDetailHistorico(res.historico);
       showToast('Documento/comprovante conferido.', { type: 'success', title: 'Concluído' });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao conferir anexo.');
     } finally {
@@ -1228,6 +1322,8 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
         type: 'transfer',
         title: 'Transferido',
       });
+      await loadFreights();
+      notifyOtherModulesOfMutation(updated);
     } catch (err) {
       reportError(err instanceof Error ? err.message : 'Erro ao transferir responsabilidade.');
     } finally {
@@ -1469,7 +1565,7 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
               onChange={(e) => handleToggleIncludeCanceled(e.target.checked)}
               className="rounded border-gray-300 text-[#080B0D] focus:ring-[#FFD400]"
             />
-            <span>Mostrar cancelados</span>
+            <span>Mostrar cancelados ({summaryStats.cancelados})</span>
           </label>
         </div>
 

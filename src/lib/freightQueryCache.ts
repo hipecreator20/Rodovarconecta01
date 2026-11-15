@@ -215,6 +215,8 @@ export async function fetchHomeActiveFreightsCached(user: Employee) {
   });
 }
 
+export const FREIGHTS_UPDATED_EVENT = 'rodovar:freights-updated';
+
 export async function invalidateFreightQueriesAfterMutation(
   userId: string,
   updatedFreight?: UnifiedFreightRecord | null
@@ -231,6 +233,13 @@ export async function invalidateFreightQueriesAfterMutation(
   await appQueryClient.invalidateQueries({
     queryKey: freightQueryKeys.lists(userId),
   });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(FREIGHTS_UPDATED_EVENT, {
+        detail: { userId, freightId: updatedFreight?.id || null },
+      })
+    );
+  }
 }
 
 export async function invalidateFreightDetailCache(

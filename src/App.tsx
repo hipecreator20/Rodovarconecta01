@@ -813,9 +813,12 @@ export default function App() {
     }
   }, [activeSection, isAuthenticated, pendingSharedDraft]);
 
+  const canAccessAgendaModule = hasPagePermission(currentUser, 'agenda');
+  const canAccessSolicitacoesModule = hasPagePermission(currentUser, 'solicitacoes');
+
   // Agenda notifications sync (only if user has agenda permission)
   useEffect(() => {
-    if (!isAuthenticated || currentUser.mustChangePassword || !hasPagePermission(currentUser, 'agenda')) return;
+    if (!isAuthenticated || currentUser.mustChangePassword || !canAccessAgendaModule) return;
     const controller = new AbortController();
     const update = async () => {
       try {
@@ -835,7 +838,7 @@ export default function App() {
       return () => { controller.abort(); clearInterval(interval); };
     }
     return () => { controller.abort(); };
-  }, [isAuthenticated, currentUser.id, currentUser.mustChangePassword, economicMode]);
+  }, [isAuthenticated, currentUser.id, currentUser.mustChangePassword, canAccessAgendaModule, economicMode]);
 
   // The server owns the user directory; browser caches cannot restore deleted accounts.
   useEffect(() => {
@@ -914,6 +917,11 @@ export default function App() {
         if (session.authenticated === false) {
           setIsAuthenticated(false);
           setAuthSessionNotice('Sua sessão expirou ou foi encerrada. Faça login novamente para continuar.');
+        } else if (session.authenticated && session.user) {
+          const freshUser = session.user;
+          setEmployees((prev) =>
+            prev.map((e) => (e.id === freshUser.id ? { ...e, ...freshUser } : e))
+          );
         }
       } catch {
         /* A temporary connection failure does not revoke the server session. */
@@ -924,7 +932,7 @@ export default function App() {
   }, [isAuthenticated, economicMode]);
 
   useEffect(() => {
-    if (!isAuthenticated || currentUser.mustChangePassword || !hasPagePermission(currentUser, 'solicitacoes')) {
+    if (!isAuthenticated || currentUser.mustChangePassword || !canAccessSolicitacoesModule) {
       setRequests([]);
       return;
     }
@@ -970,7 +978,7 @@ export default function App() {
       return () => { cancelled = true; clearInterval(timer); };
     }
     return () => { cancelled = true; };
-  }, [isAuthenticated, currentUser.id, currentUser.accessProfile, currentUser.mustChangePassword, economicMode, activeSection]);
+  }, [isAuthenticated, currentUser.id, currentUser.accessProfile, currentUser.mustChangePassword, canAccessSolicitacoesModule, economicMode, activeSection]);
 
   // Redirecionamento automático caso a página ativa seja desabilitada nas permissões do colaborador
   useEffect(() => {
@@ -2394,6 +2402,7 @@ export default function App() {
           notificationPreferences: updates.notificationPreferences
             ? normalizePortalNotificationPreferences(updates.notificationPreferences)
             : e.notificationPreferences,
+          ...(updates.coverUrl !== undefined ? { coverUrl: updates.coverUrl } : {}),
           mustChangePassword: false,
         };
       })
@@ -2751,12 +2760,9 @@ export default function App() {
       ) : activeSection === 'financeiro' ? (
         <FinanceiroFretesView
           onHydrateFreights={(records) =>
-            setFreights((prev) => {
-              const merged = new Map(prev.map((f) => [f.id, f]));
-              records.forEach((f) => merged.set(f.id, f));
-              const next = [...merged.values()];
-              return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
-            })
+            setFreights((prev) =>
+              JSON.stringify(prev) === JSON.stringify(records) ? prev : records
+            )
           }
           freights={freights}
           currentUser={currentUser}

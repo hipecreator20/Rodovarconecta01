@@ -145,7 +145,7 @@ const freightSubDocs = new Map<string, FreightSubDocument>();
 const idempotencyCache = new Map<string, { timestamp: number; status: number; body: unknown }>();
 const activeFreightLocks = new Set<string>();
 let serverNotifications: ServerNotificationRecord[] = [];
-let nextProtocolNumber = 843;
+let nextProtocolNumber = 1;
 let nextOrderSeqByBrand: Record<'RODOVAR' | 'VL TRANSPORTES', number> = {
   RODOVAR: 1,
   'VL TRANSPORTES': 1,
@@ -475,6 +475,22 @@ function saveFreightsSnapshotToNeon(): void {
 
 export function hydrateUnifiedFreightsFromPayload(payload: any): void {
   if (!payload || typeof payload !== 'object') return;
+  if (payload.purgedAtIso || (Array.isArray(payload.freights) && payload.freights.length === 0 && payload.authoritativeEmpty)) {
+    freightsIndex.clear();
+    freightSubDocs.clear();
+    seededFromDefaultsOnly = false;
+    nextProtocolNumber = typeof payload.nextProtocolNumber === 'number' && payload.nextProtocolNumber >= 1
+      ? payload.nextProtocolNumber
+      : 1;
+    if (payload.nextOrderSeqByBrand && typeof payload.nextOrderSeqByBrand === 'object') {
+      const rdv = Number(payload.nextOrderSeqByBrand.RODOVAR);
+      const vl = Number(payload.nextOrderSeqByBrand['VL TRANSPORTES']);
+      if (!Number.isNaN(rdv) && rdv >= 1) nextOrderSeqByBrand.RODOVAR = rdv;
+      if (!Number.isNaN(vl) && vl >= 1) nextOrderSeqByBrand['VL TRANSPORTES'] = vl;
+    }
+    bumpFreightsDataVersion();
+    return;
+  }
   if (typeof payload.nextProtocolNumber === 'number' && payload.nextProtocolNumber > nextProtocolNumber) {
     nextProtocolNumber = payload.nextProtocolNumber;
   }
@@ -827,7 +843,7 @@ export function loadOrSeedUnifiedFreights(): void {
     try {
       const seq = JSON.parse(fs.readFileSync(SEQUENCE_FILE, 'utf8'));
       if (seq && typeof seq.nextProtocolNumber === 'number') {
-        nextProtocolNumber = Math.max(843, seq.nextProtocolNumber);
+        nextProtocolNumber = Math.max(1, seq.nextProtocolNumber);
       }
       if (seq && seq.nextOrderSeqByBrand && typeof seq.nextOrderSeqByBrand === 'object') {
         const rdv = Number(seq.nextOrderSeqByBrand.RODOVAR);
@@ -892,410 +908,9 @@ export function loadOrSeedUnifiedFreights(): void {
     return;
   }
 
-  // Seed the 3 initial corporate freights (#0842, #0841, #0840) preserving their IDs and protocols
-  const sp = formatSaoPauloDateTime();
-  const initialRecords: { freight: UnifiedFreightRecord; sub: FreightSubDocument }[] = [
-    {
-      freight: {
-        id: 'frete-0842',
-        protocol: '#0842',
-        empresaMarca: 'RODOVAR',
-        unidadeOperacional: 'BA - Salvador',
-        cliente: 'AMBEV S.A.',
-        clienteCnpj: '07.526.557/0001-00',
-        clienteContato: '71 9 9920-2476',
-        origemCidadeUf: 'Feira de Santana - BA',
-        enderecoColeta: 'Rodovia BR-116 Norte, Km 425 — CD AMBEV Feira de Santana/BA',
-        destinoCidadeUf: 'Salvador - BA',
-        enderecoEntrega: 'Via Urbana CIA Sul, Km 12 — Galpão Logístico RODOVAR Salvador/BA',
-        instrucoesColetaEntrega: 'Apresentar motorista na portaria com 30min de antecedência e EPI completo.',
-        tipoCarga: 'Bebidas Paletizadas (PBR)',
-        pesoKg: 26500,
-        volumes: 28,
-        veiculoNecessario: 'Carreta Sider 3 Eixos',
-        dataColetaIso: '2027-10-28',
-        janelaColetaInicio: '08:00',
-        janelaColetaFim: '12:00',
-        dataEntregaPrevistaIso: '2027-10-29',
-        janelaEntregaInicio: '14:00',
-        janelaEntregaFim: '18:00',
-        comercialResponsavelId: 'emp-comercial-1',
-        comercialResponsavelNome: 'Jeise Santana',
-        expedicaoResponsavelId: 'emp-expedicao-2',
-        expedicaoResponsavelNome: 'Marcos Silva',
-        monitoramentoResponsavelId: null,
-        monitoramentoResponsavelNome: null,
-        valorCobradoClienteCentavos: 890000, // R$ 8.900,00
-        valorContratadoCentavos: 600000, // R$ 6.000,00
-        transportadorNome: 'João Silva Transportes Rodoviários',
-        transportadorDocumento: '097.813.375-00',
-        motoristaNome: 'José Carlos Pereira dos Santos',
-        motoristaCpf: '412.889.305-12',
-        motoristaTelefone: '71 9 8845-1290',
-        placaVeiculo: 'RDO4A82',
-        placaCarreta: 'RDO9B10',
-        condicoesPagamento: '70% Adiantamento na coleta / 30% Saldo na entrega',
-        favorecidoPagamento: 'João Silva Transportes Rodoviários',
-        bancoPagamento: '260 - Nu Pagamentos S.A.',
-        tipoChavePix: 'CPF/CNPJ',
-        chavePix: '097.813.375-00',
-        condicoesComerciais: 'Frete dedicado CIF. Pedágio incluso na tarifa comercial.',
-        condicoesOperacionais: 'Exige cinta de amarração a cada 2 paletes e EPI completo.',
-        observacoes: 'Apresentar motorista na portaria com 30min de antecedência.',
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        situacaoComercial: 'AGUARDANDO_EXPEDICAO',
-        situacaoOperacional: 'EM_PREPARACAO',
-        situacaoMonitoramento: 'NAO_LIBERADO',
-        situacaoFinanceira: 'PENDENTE_ADIANTAMENTO',
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: false,
-          ordemColetaEnviadaMotorista: false,
-        },
-        anexosCount: 0,
-        comentariosCount: 1,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 3,
-        autorId: 'emp-comercial-1',
-        autorNome: 'Jeise Santana',
-        createdAtIso: '2027-10-26T09:30:00.000Z',
-        createdAtFormatted: '26/10/2027 09:30',
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 1,
-      },
-      sub: {
-        freightId: 'frete-0842',
-        anexos: [],
-        comentarios: [
-          {
-            id: 'fcom-0842-1',
-            freightId: 'frete-0842',
-            authorId: 'emp-comercial-1',
-            authorName: 'Jeise Santana',
-            authorRole: 'Executiva Comercial de Contas',
-            sector: 'COMERCIAL',
-            text: 'Frete contratado com a AMBEV e encaminhado à Expedição para preparação e liberação.',
-            createdAtIso: '2027-10-26T09:35:00.000Z',
-            createdAtFormatted: '26/10/2027 09:35',
-          },
-        ],
-        ocorrencias: [],
-        historico: [
-          {
-            id: 'fhist-0842-1',
-            freightId: 'frete-0842',
-            timestampIso: '2027-10-26T09:30:00.000Z',
-            timestampFormatted: '26/10/2027 09:30',
-            timeShort: '09:30',
-            actorId: 'emp-comercial-1',
-            actorName: 'Jeise Santana',
-            actorSector: 'Comercial',
-            eventType: 'CRIACAO',
-            summary: 'Frete #0842 registrado no Comercial para AMBEV S.A.',
-          },
-          {
-            id: 'fhist-0842-2',
-            freightId: 'frete-0842',
-            timestampIso: '2027-10-26T09:45:00.000Z',
-            timestampFormatted: '26/10/2027 09:45',
-            timeShort: '09:45',
-            actorId: 'emp-comercial-1',
-            actorName: 'Jeise Santana',
-            actorSector: 'Comercial',
-            eventType: 'ENVIO_EXPEDICAO',
-            summary: 'Contratação confirmada e enviada à Expedição sob responsabilidade de Marcos Silva.',
-            newResponsibleName: 'Marcos Silva',
-          },
-        ],
-      },
-    },
-    {
-      freight: {
-        id: 'frete-0841',
-        protocol: '#0841',
-        empresaMarca: 'VL TRANSPORTES',
-        unidadeOperacional: 'SP - Guarulhos',
-        cliente: 'BAHIA SUL LOG.',
-        clienteCnpj: '14.528.901/0001-88',
-        clienteContato: '11 9 9812-3340',
-        origemCidadeUf: 'Vitória da Conquista - BA',
-        enderecoColeta: 'Distrito Industrial dos Imborés, Quadra B — Terminal Sul/BA',
-        destinoCidadeUf: 'Guarulhos - SP',
-        enderecoEntrega: 'Av. Papa João Paulo I, 4100 — CD Logístico Cumbica Guarulhos/SP',
-        instrucoesColetaEntrega: 'Descarga agendada doca 14. Confirmar chegada com 2h de antecedência.',
-        tipoCarga: 'Celulose e Bobinas Industriais',
-        pesoKg: 32000,
-        volumes: 16,
-        veiculoNecessario: 'Carreta Baú Lonado LS',
-        dataColetaIso: '2027-10-25',
-        janelaColetaInicio: '14:00',
-        janelaColetaFim: '17:00',
-        coletaProgramadaEm: '25/10/2027 10:00',
-        coletaConfirmadaEm: '25/10/2027 14:40',
-        dataEntregaPrevistaIso: '2027-10-29',
-        janelaEntregaInicio: '09:00',
-        janelaEntregaFim: '16:00',
-        comercialResponsavelId: 'emp-comercial-2',
-        comercialResponsavelNome: 'César Augusto',
-        expedicaoResponsavelId: 'emp-expedicao-2',
-        expedicaoResponsavelNome: 'Marcos Silva',
-        monitoramentoResponsavelId: 'emp-4',
-        monitoramentoResponsavelNome: 'Carlos Eduardo Mendes',
-        valorCobradoClienteCentavos: 1240000, // R$ 12.400,00
-        valorContratadoCentavos: 850000, // R$ 8.500,00
-        transportadorNome: 'TransBahia Cargas Rodoviárias Ltda',
-        transportadorDocumento: '14.528.901/0001-88',
-        motoristaNome: 'Antônio Marcos Rocha',
-        motoristaCpf: '289.441.005-87',
-        motoristaTelefone: '77 9 9914-8821',
-        placaVeiculo: 'VLT7C19',
-        placaCarreta: 'VLT2D55',
-        condicoesPagamento: '80% Adiantamento / 20% Saldo contra entrega',
-        favorecidoPagamento: 'TransBahia Cargas Rodoviárias Ltda',
-        bancoPagamento: '341 - Itaú Unibanco S.A.',
-        tipoChavePix: 'E-mail',
-        chavePix: 'financeiro@transbahia.com.br',
-        condicoesComerciais: 'Contrato mensal Bahia Sul. Seguro RCTR-C e RCF-DC averbados.',
-        condicoesOperacionais: 'Rastreamento ativo e trava de quinta roda.',
-        observacoes: 'Trânsito normal pela BR-116.',
-        orientacoesMotorista: 'Parada autorizada apenas em postos homologados pela gerenciadora.',
-        ultimaLocalizacaoInformada: 'BR-116 — Altura de Governador Valadares/MG (informado pelo motorista)',
-        ultimaLocalizacaoAtualizadaEm: '28/10/2027 08:30',
-        ultimaLocalizacaoAtualizadaPor: 'Carlos Eduardo Mendes',
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: 'OC-RDV-0841',
-        ordemCarregamentoEmitidaEm: '25/10/2027 11:50',
-        liberadoMonitoramentoEm: '25/10/2027 12:00',
-        liberadoMonitoramentoPorId: 'emp-expedicao-2',
-        liberadoMonitoramentoPorNome: 'Marcos Silva',
-        situacaoComercial: 'EM_MONITORAMENTO',
-        situacaoOperacional: 'LIBERADO_MONITORAMENTO',
-        situacaoMonitoramento: 'CARREGADO_EM_TRANSPORTE',
-        situacaoFinanceira: 'ADIANTAMENTO_PAGO',
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: true,
-          videochamadaRealizadaPorId: 'emp-expedicao-2',
-          videochamadaRealizadaPorNome: 'Marcos Silva',
-          videochamadaRealizadaEm: '25/10/2027 11:40',
-          videochamadaObservacoes: 'Motorista Antônio validado por vídeo em frente ao cavalo VLT7C19.',
-          ordemColetaEnviadaMotorista: true,
-          ordemColetaEnviadaPorId: 'emp-expedicao-2',
-          ordemColetaEnviadaPorNome: 'Marcos Silva',
-          ordemColetaEnviadaEm: '25/10/2027 11:55',
-          conferidoPorId: 'emp-expedicao-2',
-          conferidoPorNome: 'Marcos Silva',
-          conferidoEmIso: '2027-10-25T12:00:00.000Z',
-          conferidoEmFormatado: '25/10/2027 12:00',
-        },
-        anexosCount: 0,
-        comentariosCount: 0,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 5,
-        autorId: 'emp-comercial-2',
-        autorNome: 'César Augusto',
-        createdAtIso: '2027-10-25T09:15:00.000Z',
-        createdAtFormatted: '25/10/2027 09:15',
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 2,
-      },
-      sub: {
-        freightId: 'frete-0841',
-        anexos: [],
-        comentarios: [],
-        ocorrencias: [],
-        historico: [
-          {
-            id: 'fhist-0841-1',
-            freightId: 'frete-0841',
-            timestampIso: '2027-10-25T09:15:00.000Z',
-            timestampFormatted: '25/10/2027 09:15',
-            timeShort: '09:15',
-            actorId: 'emp-comercial-2',
-            actorName: 'César Augusto',
-            actorSector: 'Comercial',
-            eventType: 'CRIACAO',
-            summary: 'Frete #0841 registrado para BAHIA SUL LOG.',
-          },
-          {
-            id: 'fhist-0841-2',
-            freightId: 'frete-0841',
-            timestampIso: '2027-10-25T12:00:00.000Z',
-            timestampFormatted: '25/10/2027 12:00',
-            timeShort: '12:00',
-            actorId: 'emp-expedicao-2',
-            actorName: 'Marcos Silva',
-            actorSector: 'Expedição',
-            eventType: 'LIBERACAO_MONITORAMENTO',
-            summary: 'Videochamada concluída, Ordem de Coleta enviada ao motorista e frete liberado para Monitoramento (Carlos Eduardo Mendes).',
-            newResponsibleName: 'Carlos Eduardo Mendes',
-          },
-          {
-            id: 'fhist-0841-3',
-            freightId: 'frete-0841',
-            timestampIso: '2027-10-25T14:40:00.000Z',
-            timestampFormatted: '25/10/2027 14:40',
-            timeShort: '14:40',
-            horarioRealEvento: '25/10/2027 14:30',
-            actorId: 'emp-4',
-            actorName: 'Carlos Eduardo Mendes',
-            actorSector: 'Monitoramento',
-            eventType: 'AVANCO_MONITORAMENTO',
-            summary: 'Etapa avançada para "Carregado / Em transporte". Veículo iniciou viagem.',
-          },
-        ],
-      },
-    },
-    {
-      freight: {
-        id: 'frete-0840',
-        protocol: '#0840',
-        empresaMarca: 'AXD',
-        unidadeOperacional: 'BA - Salvador',
-        cliente: 'BRASKEM S.A.',
-        clienteCnpj: '42.150.391/0001-70',
-        clienteContato: '71 3496-8000',
-        origemCidadeUf: 'Camaçari - BA',
-        enderecoColeta: 'Rua Eteno, 1561 — Polo Petroquímico de Camaçari/BA',
-        destinoCidadeUf: 'Recife - PE',
-        enderecoEntrega: 'Rodovia BR-101 Sul, Km 82 — Distrito Industrial Recife/PE',
-        instrucoesColetaEntrega: 'Obrigatório uso de capacete, óculos, bota com biqueira e camisa manga longa no Polo.',
-        tipoCarga: 'Resinas Termoplásticas Ensacadas',
-        pesoKg: 28000,
-        volumes: 22,
-        veiculoNecessario: 'Carreta Graneleira / Sider',
-        dataColetaIso: '2027-10-28',
-        janelaColetaInicio: '07:30',
-        janelaColetaFim: '11:30',
-        coletaProgramadaEm: '28/10/2027 07:30',
-        dataEntregaPrevistaIso: '2027-10-30',
-        janelaEntregaInicio: '08:00',
-        janelaEntregaFim: '14:00',
-        comercialResponsavelId: 'emp-comercial-1',
-        comercialResponsavelNome: 'Jeise Santana',
-        expedicaoResponsavelId: 'emp-expedicao-2',
-        expedicaoResponsavelNome: 'Marcos Silva',
-        monitoramentoResponsavelId: 'emp-4',
-        monitoramentoResponsavelNome: 'Carlos Eduardo Mendes',
-        valorCobradoClienteCentavos: 1680000, // R$ 16.800,00
-        valorContratadoCentavos: 1200000, // R$ 12.000,00
-        transportadorNome: 'Marcos Oliveira Transportes ME',
-        transportadorDocumento: '28.901.442/0001-19',
-        motoristaNome: 'Marcos Oliveira da Silva',
-        motoristaCpf: '619.220.415-00',
-        motoristaTelefone: '71 9 8711-4402',
-        placaVeiculo: 'AXD5E33',
-        placaCarreta: 'AXD8F91',
-        condicoesPagamento: '70% Adiantamento / 30% Saldo',
-        favorecidoPagamento: 'Marcos Oliveira Transportes ME',
-        bancoPagamento: '001 - Banco do Brasil S.A.',
-        tipoChavePix: 'Telefone',
-        chavePix: '+55 71 99123-4567',
-        condicoesComerciais: 'Operação dedicada Polo Camaçari. Exige agendamento de janela.',
-        condicoesOperacionais: 'Kit de emergência química e lona impermeável revisada.',
-        observacoes: 'Motorista liberado pela gerenciadora de risco.',
-        orientacoesMotorista: 'Apresentar Ordem de Coleta impressa ou digital na triagem Braskem.',
-        ultimaLocalizacaoInformada: 'Pátio de Triagem Camaçari/BA — Aguardando chamada de doca',
-        ultimaLocalizacaoAtualizadaEm: '28/10/2027 07:15',
-        ultimaLocalizacaoAtualizadaPor: 'Carlos Eduardo Mendes',
-        devolvidoParaCorrecao: false,
-        requerReconfirmacaoOperacional: false,
-        comprovanteEntregaConferido: false,
-        ordemCarregamentoNumero: 'OC-RDV-0840',
-        ordemCarregamentoEmitidaEm: '27/10/2027 16:08',
-        liberadoMonitoramentoEm: '27/10/2027 16:10',
-        liberadoMonitoramentoPorId: 'emp-expedicao-2',
-        liberadoMonitoramentoPorNome: 'Marcos Silva',
-        situacaoComercial: 'EM_MONITORAMENTO',
-        situacaoOperacional: 'LIBERADO_MONITORAMENTO',
-        situacaoMonitoramento: 'NOVO_PARA_CARREGAR',
-        situacaoFinanceira: 'ADIANTAMENTO_PAGO',
-        checklistFechamento: {
-          motoristaConfirmado: true,
-          veiculoConfirmado: true,
-          condicoesConferidas: true,
-          documentosConferidos: true,
-          videochamadaRealizada: true,
-          videochamadaRealizadaPorId: 'emp-expedicao-2',
-          videochamadaRealizadaPorNome: 'Marcos Silva',
-          videochamadaRealizadaEm: '27/10/2027 16:00',
-          videochamadaObservacoes: 'Videochamada realizada com Marcos Oliveira. EPI e kit químico conferidos.',
-          ordemColetaEnviadaMotorista: true,
-          ordemColetaEnviadaPorId: 'emp-expedicao-2',
-          ordemColetaEnviadaPorNome: 'Marcos Silva',
-          ordemColetaEnviadaEm: '27/10/2027 16:09',
-          conferidoPorId: 'emp-expedicao-2',
-          conferidoPorNome: 'Marcos Silva',
-          conferidoEmIso: '2027-10-27T16:10:00.000Z',
-          conferidoEmFormatado: '27/10/2027 16:10',
-        },
-        anexosCount: 0,
-        comentariosCount: 0,
-        ocorrenciasAbertasCount: 0,
-        ocorrenciasImpeditivasCount: 0,
-        checklistConcluidosCount: 5,
-        autorId: 'emp-comercial-1',
-        autorNome: 'Jeise Santana',
-        createdAtIso: '2027-10-24T11:20:00.000Z',
-        createdAtFormatted: '24/10/2027 11:20',
-        updatedAtIso: sp.iso,
-        updatedAtFormatted: sp.formatted,
-        revision: 2,
-      },
-      sub: {
-        freightId: 'frete-0840',
-        anexos: [],
-        comentarios: [],
-        ocorrencias: [],
-        historico: [
-          {
-            id: 'fhist-0840-1',
-            freightId: 'frete-0840',
-            timestampIso: '2027-10-24T11:20:00.000Z',
-            timestampFormatted: '24/10/2027 11:20',
-            timeShort: '11:20',
-            actorId: 'emp-comercial-1',
-            actorName: 'Jeise Santana',
-            actorSector: 'Comercial',
-            eventType: 'CRIACAO',
-            summary: 'Frete #0840 registrado para BRASKEM S.A.',
-          },
-          {
-            id: 'fhist-0840-2',
-            freightId: 'frete-0840',
-            timestampIso: '2027-10-27T16:10:00.000Z',
-            timestampFormatted: '27/10/2027 16:10',
-            timeShort: '16:10',
-            actorId: 'emp-expedicao-2',
-            actorName: 'Marcos Silva',
-            actorSector: 'Expedição',
-            eventType: 'LIBERACAO_MONITORAMENTO',
-            summary: 'Preparação concluída na Expedição e liberado para Monitoramento (Carlos Eduardo Mendes).',
-            newResponsibleName: 'Carlos Eduardo Mendes',
-          },
-        ],
-      },
-    },
-  ];
-
-  seededFromDefaultsOnly = true;
-  for (const item of initialRecords) {
-    persistFreightAndSubDoc(item.freight, item.sub, { skipNeon: true });
-  }
+  freightsIndex.clear();
+  freightSubDocs.clear();
+  seededFromDefaultsOnly = false;
   saveSequence(true);
 }
 
@@ -1977,6 +1592,7 @@ export function registerUnifiedFreightRoutes(
       CONCLUIDO: 0,
       COLETAS_HOJE: 0,
       PENDENCIAS: 0,
+      CANCELADO: 0,
       DISPONIVEIS_FILA: 0,
     };
 
@@ -2123,79 +1739,13 @@ export function registerUnifiedFreightRoutes(
           ).length
         : 0;
 
-    // Step 2: Filter out canceled unless explicitly requested
-    if (!includeCanceled) {
-      scopedRecords = scopedRecords.filter(
-        (f) =>
-          f.situacaoComercial !== 'CANCELADO' &&
-          f.situacaoOperacional !== 'CANCELADO' &&
-          f.situacaoMonitoramento !== 'CANCELADO'
-      );
-    }
+    const isCanceledFreight = (f: UnifiedFreightRecord): boolean =>
+      f.situacaoComercial === 'CANCELADO' ||
+      f.situacaoOperacional === 'CANCELADO' ||
+      f.situacaoMonitoramento === 'CANCELADO';
 
-    // Monitoring scope counters computed BEFORE search/period/viewMode so "Ver Finalizados (N)" & KPI cards reflect full authorized scope
-    const monActiveStages: MonitoringFreightStatus[] = [
-      'NOVO_PARA_CARREGAR',
-      'EM_DESLOCAMENTO_COLETA',
-      'NO_LOCAL_COLETA',
-      'CARREGADO_EM_TRANSPORTE',
-      'NO_LOCAL_ENTREGA',
-    ];
-    const monCompletedStages: MonitoringFreightStatus[] = ['ENTREGUE', 'FINALIZADO'];
-
-    const monScopeNovo = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR'
-    ).length;
-    const monScopeDesloc = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA'
-    ).length;
-    const monScopeNoLocalColeta = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'NO_LOCAL_COLETA'
-    ).length;
-    const monScopeTransporte = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE'
-    ).length;
-    const monScopeNoLocalEntrega = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'NO_LOCAL_ENTREGA'
-    ).length;
-    const monScopeEntregue = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'ENTREGUE'
-    ).length;
-    const monScopeFinalizado = scopedRecords.filter(
-      (f) => f.situacaoMonitoramento === 'FINALIZADO'
-    ).length;
-
-    const monitoramentoCounters = {
-      NOVO_PARA_CARREGAR: monScopeNovo,
-      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
-      NO_LOCAL_COLETA: monScopeNoLocalColeta,
-      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
-      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
-      ENTREGUE: monScopeEntregue,
-      FINALIZADO: monScopeFinalizado,
-      COLETAS_HOJE: scopedRecords.filter(
-        (f) =>
-          f.dataColetaIso === todaySp &&
-          monActiveStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
-      ).length,
-      PENDENCIAS: scopedRecords.filter(
-        (f) =>
-          f.ocorrenciasAbertasCount > 0 ||
-          f.requerReconfirmacaoOperacional ||
-          (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido)
-      ).length,
-      TOTAL_ATIVOS:
-        monScopeNovo +
-        monScopeDesloc +
-        monScopeNoLocalColeta +
-        monScopeTransporte +
-        monScopeNoLocalEntrega,
-      completedCount: monScopeEntregue + monScopeFinalizado,
-    };
-
-    // Step 3: Search & Period filters
-    if (search) {
-      scopedRecords = scopedRecords.filter((f) => {
+    const matchesSearchAndPeriod = (f: UnifiedFreightRecord): boolean => {
+      if (search) {
         const hay = [
           f.protocol,
           f.cliente,
@@ -2212,30 +1762,26 @@ export function registerUnifiedFreightRoutes(
         ]
           .join(' ')
           .toLowerCase();
-        return hay.includes(search);
-      });
-    }
+        if (!hay.includes(search)) return false;
+      }
 
-    if (periodo === 'HOJE') {
-      scopedRecords = scopedRecords.filter(
-        (f) =>
+      if (periodo === 'HOJE') {
+        return (
           f.dataColetaIso === todaySp ||
           f.dataEntregaPrevistaIso === todaySp ||
           (f.updatedAtIso || '').slice(0, 10) === todaySp
-      );
-    } else if (periodo === 'SEMANA') {
-      scopedRecords = scopedRecords.filter((f) => {
+        );
+      }
+      if (periodo === 'SEMANA') {
         const refDate = f.dataColetaIso || (f.updatedAtIso || '').slice(0, 10);
         return refDate >= weekStartIso && refDate <= weekEndIso;
-      });
-    } else if (periodo === 'MES') {
-      scopedRecords = scopedRecords.filter((f) => {
+      }
+      if (periodo === 'MES') {
         const refDate = f.dataColetaIso || (f.updatedAtIso || '').slice(0, 10);
         return refDate.slice(0, 7) === monthPrefix;
-      });
-    } else if (periodo === 'ATRASADOS') {
-      scopedRecords = scopedRecords.filter(
-        (f) =>
+      }
+      if (periodo === 'ATRASADOS') {
+        return (
           (f.dataColetaIso < todaySp &&
             !['EM_MONITORAMENTO', 'EM_TRANSPORTE', 'FINALIZADO', 'CANCELADO'].includes(
               f.situacaoComercial
@@ -2244,8 +1790,85 @@ export function registerUnifiedFreightRoutes(
           f.devolvidoParaCorrecao ||
           f.requerReconfirmacaoOperacional ||
           f.ocorrenciasAbertasCount > 0
-      );
+        );
+      }
+      return true;
+    };
+
+    const preCancelScopedRecords = scopedRecords;
+    const preCancelFilteredForCounters = preCancelScopedRecords.filter(matchesSearchAndPeriod);
+
+    // Step 2: Filter out canceled unless explicitly requested
+    if (!includeCanceled) {
+      scopedRecords = scopedRecords.filter((f) => !isCanceledFreight(f));
     }
+
+    const isMonitoringPendingFreight = (f: UnifiedFreightRecord): boolean =>
+      !isCanceledFreight(f) &&
+      (f.ocorrenciasAbertasCount > 0 ||
+        Boolean(f.requerReconfirmacaoOperacional) ||
+        Boolean(f.ordemColetaPendente) ||
+        (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido));
+
+    // Monitoring scope counters computed BEFORE search/period/viewMode so "Ver Finalizados (N)" & KPI cards reflect full authorized scope
+    const monActiveStages: MonitoringFreightStatus[] = [
+      'NOVO_PARA_CARREGAR',
+      'EM_DESLOCAMENTO_COLETA',
+      'NO_LOCAL_COLETA',
+      'CARREGADO_EM_TRANSPORTE',
+      'NO_LOCAL_ENTREGA',
+    ];
+    const monCompletedStages: MonitoringFreightStatus[] = ['ENTREGUE', 'FINALIZADO'];
+
+    const nonCanceledMonScope = preCancelScopedRecords.filter((f) => !isCanceledFreight(f));
+    const monScopeNovo = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR'
+    ).length;
+    const monScopeDesloc = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'EM_DESLOCAMENTO_COLETA'
+    ).length;
+    const monScopeNoLocalColeta = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'NO_LOCAL_COLETA'
+    ).length;
+    const monScopeTransporte = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE'
+    ).length;
+    const monScopeNoLocalEntrega = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'NO_LOCAL_ENTREGA'
+    ).length;
+    const monScopeEntregue = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'ENTREGUE'
+    ).length;
+    const monScopeFinalizado = nonCanceledMonScope.filter(
+      (f) => f.situacaoMonitoramento === 'FINALIZADO'
+    ).length;
+
+    const monitoramentoCounters = {
+      NOVO_PARA_CARREGAR: monScopeNovo,
+      EM_DESLOCAMENTO_COLETA: monScopeDesloc,
+      NO_LOCAL_COLETA: monScopeNoLocalColeta,
+      CARREGADO_EM_TRANSPORTE: monScopeTransporte,
+      NO_LOCAL_ENTREGA: monScopeNoLocalEntrega,
+      ENTREGUE: monScopeEntregue,
+      FINALIZADO: monScopeFinalizado,
+      COLETAS_HOJE: nonCanceledMonScope.filter(
+        (f) =>
+          f.dataColetaIso === todaySp &&
+          monActiveStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
+      ).length,
+      PENDENCIAS: nonCanceledMonScope.filter(isMonitoringPendingFreight).length,
+      CANCELADO: preCancelScopedRecords.filter(isCanceledFreight).length,
+      TOTAL_ATIVOS:
+        monScopeNovo +
+        monScopeDesloc +
+        monScopeNoLocalColeta +
+        monScopeTransporte +
+        monScopeNoLocalEntrega,
+      completedCount: monScopeEntregue + monScopeFinalizado,
+    };
+
+    // Step 3: Search & Period filters
+    scopedRecords = scopedRecords.filter(matchesSearchAndPeriod);
 
     // Sort newest updated / protocol descending
     scopedRecords.sort((a, b) => {
@@ -2286,59 +1909,73 @@ export function registerUnifiedFreightRoutes(
       return f.situacaoOperacional === stage;
     };
 
-    // Compute counters over authorized records & active search/period filters
+    // Compute counters over authorized records & active search/period filters (excluding canceled from active stages, always counting CANCELADO accurately)
+    const activeComercialPool = scopedRecords.filter((f) => !isCanceledFreight(f));
     const comercialCounters = {
-      EM_NEGOCIACAO: scopedRecords.filter((f) => f.situacaoComercial === 'EM_NEGOCIACAO').length,
-      CONTRATADO: scopedRecords.filter((f) => f.situacaoComercial === 'CONTRATADO').length,
-      AGUARDANDO_EXPEDICAO: scopedRecords.filter((f) =>
+      EM_NEGOCIACAO: activeComercialPool.filter((f) => f.situacaoComercial === 'EM_NEGOCIACAO').length,
+      CONTRATADO: activeComercialPool.filter((f) => f.situacaoComercial === 'CONTRATADO').length,
+      AGUARDANDO_EXPEDICAO: activeComercialPool.filter((f) =>
         matchesComercialStage(f, 'AGUARDANDO_EXPEDICAO')
       ).length,
-      NA_EXPEDICAO: scopedRecords.filter((f) =>
+      NA_EXPEDICAO: activeComercialPool.filter((f) =>
         matchesComercialStage(f, 'AGUARDANDO_EXPEDICAO')
       ).length,
-      EM_MONITORAMENTO: scopedRecords.filter((f) =>
+      EM_MONITORAMENTO: activeComercialPool.filter((f) =>
         matchesComercialStage(f, 'EM_MONITORAMENTO')
       ).length,
-      EM_TRANSPORTE: scopedRecords.filter((f) =>
+      EM_TRANSPORTE: activeComercialPool.filter((f) =>
         matchesComercialStage(f, 'EM_MONITORAMENTO')
       ).length,
-      FINALIZADO: scopedRecords.filter((f) => matchesComercialStage(f, 'FINALIZADO')).length,
-      CANCELADO: scopedRecords.filter((f) => f.situacaoComercial === 'CANCELADO').length,
+      FINALIZADO: activeComercialPool.filter((f) => matchesComercialStage(f, 'FINALIZADO')).length,
+      CANCELADO: preCancelFilteredForCounters.filter(isCanceledFreight).length,
     };
 
+    // For EXPEDICAO KPI counters, when viewing DISPONIVEIS queue, still summarize operator/team assigned active counters cleanly
+    const expedicaoKpiSource =
+      area === 'EXPEDICAO' && scope === 'DISPONIVEIS'
+        ? allRecords.filter((f) => {
+            if (f.situacaoOperacional === 'NAO_ENVIADO') return false;
+            if (hasTeamPerm) return f.expedicaoResponsavelId !== null;
+            return f.expedicaoResponsavelId === user.id;
+          }).filter(matchesSearchAndPeriod)
+        : preCancelFilteredForCounters;
+
+    const activeExpedicaoPool = expedicaoKpiSource.filter((f) => !isCanceledFreight(f));
     const expedicaoCounters = {
-      RECEBIDO: scopedRecords.filter((f) => matchesExpedicaoStage(f, 'RECEBIDO')).length,
-      EM_PREPARACAO: scopedRecords.filter((f) => matchesExpedicaoStage(f, 'EM_PREPARACAO')).length,
-      LIBERADO_MONITORAMENTO: scopedRecords.filter((f) =>
+      RECEBIDO: activeExpedicaoPool.filter((f) => matchesExpedicaoStage(f, 'RECEBIDO')).length,
+      EM_PREPARACAO: activeExpedicaoPool.filter((f) => matchesExpedicaoStage(f, 'EM_PREPARACAO')).length,
+      LIBERADO_MONITORAMENTO: activeExpedicaoPool.filter((f) =>
         matchesExpedicaoStage(f, 'LIBERADO_MONITORAMENTO')
       ).length,
-      AGUARDANDO_FECHAMENTO: scopedRecords.filter(
+      AGUARDANDO_FECHAMENTO: activeExpedicaoPool.filter(
         (f) => matchesExpedicaoStage(f, 'RECEBIDO') || matchesExpedicaoStage(f, 'EM_PREPARACAO')
       ).length,
-      FECHADO: scopedRecords.filter((f) =>
+      FECHADO: activeExpedicaoPool.filter((f) =>
         matchesExpedicaoStage(f, 'LIBERADO_MONITORAMENTO')
       ).length,
-      AGUARDANDO_COLETA: scopedRecords.filter(
+      AGUARDANDO_COLETA: activeExpedicaoPool.filter(
         (f) => f.situacaoMonitoramento === 'NOVO_PARA_CARREGAR'
       ).length,
-      EM_TRANSPORTE: scopedRecords.filter(
+      EM_TRANSPORTE: activeExpedicaoPool.filter(
         (f) => f.situacaoMonitoramento === 'CARREGADO_EM_TRANSPORTE'
       ).length,
-      CONCLUIDO: scopedRecords.filter((f) => f.situacaoOperacional === 'CONCLUIDO').length,
-      COLETAS_HOJE: scopedRecords.filter((f) => f.dataColetaIso === todaySp).length,
-      PENDENCIAS: scopedRecords.filter(
+      CONCLUIDO: activeExpedicaoPool.filter((f) => f.situacaoOperacional === 'CONCLUIDO').length,
+      COLETAS_HOJE: activeExpedicaoPool.filter((f) => f.dataColetaIso === todaySp).length,
+      PENDENCIAS: activeExpedicaoPool.filter(
         (f) =>
           f.ocorrenciasAbertasCount > 0 ||
-          f.requerReconfirmacaoOperacional ||
-          f.devolvidoParaCorrecao ||
+          Boolean(f.requerReconfirmacaoOperacional) ||
+          Boolean(f.devolvidoParaCorrecao) ||
+          Boolean(f.ordemColetaPendente) ||
           (!matchesExpedicaoStage(f, 'LIBERADO_MONITORAMENTO') && f.checklistConcluidosCount < 5)
       ).length,
+      CANCELADO: expedicaoKpiSource.filter(isCanceledFreight).length,
       DISPONIVEIS_FILA: availableToClaimCount,
     };
 
-    // Apply viewMode separation for MONITORAMENTO
+    // Apply viewMode separation for MONITORAMENTO (skip viewMode restriction when specifically viewing PENDENCIAS)
     let filteredList = scopedRecords;
-    if (area === 'MONITORAMENTO') {
+    if (area === 'MONITORAMENTO' && situacao !== 'PENDENCIAS') {
       if (viewMode === 'ATIVOS') {
         filteredList = filteredList.filter((f) =>
           monActiveStages.includes(f.situacaoMonitoramento || 'NAO_LIBERADO')
@@ -2357,12 +1994,7 @@ export function registerUnifiedFreightRoutes(
       } else if (area === 'EXPEDICAO') {
         filteredList = filteredList.filter((f) => matchesExpedicaoStage(f, situacao));
       } else if (situacao === 'PENDENCIAS') {
-        filteredList = filteredList.filter(
-          (f) =>
-            f.ocorrenciasAbertasCount > 0 ||
-            f.requerReconfirmacaoOperacional ||
-            (f.situacaoMonitoramento === 'ENTREGUE' && !f.comprovanteEntregaConferido)
-        );
+        filteredList = filteredList.filter(isMonitoringPendingFreight);
       } else {
         filteredList = filteredList.filter((f) => f.situacaoMonitoramento === situacao);
       }

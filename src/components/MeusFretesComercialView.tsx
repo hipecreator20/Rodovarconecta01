@@ -62,6 +62,7 @@ import {
   parseBrlInputToCentavos,
 } from '../lib/serverApi';
 import { canAccessExpedicaoFreights, canViewFreightTeam, hasPagePermission } from '../lib/permissions';
+import { FREIGHTS_UPDATED_EVENT, invalidateFreightQueriesAfterMutation } from '../lib/freightQueryCache';
 
 export function normalizeCnpj(raw: string): string {
   const digits = (raw || '').replace(/\D/g, '').slice(0, 14);
@@ -520,6 +521,17 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
     });
   }, []);
 
+  const latestDataVersionRef = useRef<number | undefined>(undefined);
+  const lastLocalSyncAtRef = useRef<number>(0);
+
+  const notifyOtherModulesOfMutation = useCallback(
+    (updatedFreight?: UnifiedFreightRecord | null) => {
+      lastLocalSyncAtRef.current = Date.now();
+      void invalidateFreightQueriesAfterMutation(currentUser.id, updatedFreight);
+    },
+    [currentUser.id]
+  );
+
   // Load freights list & Kanban columns
   const fetchFreights = useCallback(
     async (resetCursor = true) => {
@@ -548,6 +560,9 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           }
           setHasMoreList(Boolean(res.hasMore));
           setNextCursorList(res.nextCursor || null);
+          if (typeof res.dataVersion === 'number') {
+            latestDataVersionRef.current = res.dataVersion;
+          }
           if (res.comercialCounters) setComercialCounters(res.comercialCounters);
           if (res.kanbanColumns) setKanbanColumns(res.kanbanColumns);
         }
@@ -563,6 +578,39 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
   useEffect(() => {
     fetchFreights(true);
   }, [scope, responsavelFilterId, debouncedSearch, periodo, situacaoFilter, includeCanceled, columnLimit]);
+
+  useEffect(() => {
+    const onFreightsUpdated = () => {
+      if (Date.now() - lastLocalSyncAtRef.current < 800) return;
+      void fetchFreights(true);
+    };
+    const runVersionCheck = () => {
+      if (document.visibilityState !== 'visible' || actionBusy || formSubmitting || sendingToExpedicao) return;
+      const knownVersion = latestDataVersionRef.current;
+      if (knownVersion === undefined) return;
+      void apiFetchFreightsList({
+        area: 'COMERCIAL',
+        scope,
+        responsavelId: scope === 'EQUIPE' ? responsavelFilterId : undefined,
+        checkOnly: true,
+        sinceVersion: knownVersion,
+      }).then((check) => {
+        if (check.ok && check.unchanged === false) {
+          void fetchFreights(true);
+        }
+      });
+    };
+    window.addEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+    window.addEventListener('focus', runVersionCheck);
+    document.addEventListener('visibilitychange', runVersionCheck);
+    const interval = setInterval(runVersionCheck, 15_000);
+    return () => {
+      window.removeEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+      window.removeEventListener('focus', runVersionCheck);
+      document.removeEventListener('visibilitychange', runVersionCheck);
+      clearInterval(interval);
+    };
+  }, [fetchFreights, scope, responsavelFilterId, actionBusy, formSubmitting, sendingToExpedicao]);
 
   // Open detail drawer when triggered by notification
   const loadFreightDetails = useCallback(async (freightId: string) => {
@@ -782,6 +830,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
       throw new Error(res.error || 'Não foi possível importar o frete a partir do script.');
     }
     await fetchFreights(true);
+    notifyOtherModulesOfMutation(res.freight);
     showToast(
       `Frete ${res.freight.protocol} importado para Meus Fretes (Em negociação)!`
     );
@@ -963,6 +1012,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         }
 
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
         if (selectedFreightId === editingFreight.id) {
           await loadFreightDetails(editingFreight.id);
         }
@@ -1024,6 +1074,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           }
         );
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
       }
     } finally {
       setFormSubmitting(false);
@@ -1076,6 +1127,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
           title: 'Concluído',
         });
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
         if (selectedFreightId === freight.id) {
           await loadFreightDetails(freight.id);
         }
@@ -1110,6 +1162,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         );
         setSendModalFreight(null);
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
         if (selectedFreightId === sendModalFreight.id) {
           await loadFreightDetails(sendModalFreight.id);
         }
@@ -1133,6 +1186,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         setNewCommentText('');
         await loadFreightDetails(detailFreight.id);
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(detailFreight);
       } else {
         reportErrorBanner(res.error || 'Erro ao publicar comentário.');
       }
@@ -1178,6 +1232,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         });
         await loadFreightDetails(detailFreight.id);
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(detailFreight);
       }
     } finally {
       setUploadingAttachment(false);
@@ -1205,6 +1260,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         setTransferModalOpen(false);
         setTransferReason('');
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
         await loadFreightDetails(detailFreight.id);
       }
     } finally {
@@ -1231,6 +1287,7 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
         setCancelModalOpen(false);
         setCancelReason('');
         await fetchFreights(true);
+        notifyOtherModulesOfMutation(res.freight);
         await loadFreightDetails(detailFreight.id);
       }
     } finally {
@@ -3425,7 +3482,8 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                       type: 'success',
                       title: 'Concluído',
                     });
-                    void fetchFreights(true);
+                    await fetchFreights(true);
+                    notifyOtherModulesOfMutation(updated);
                   } catch (err) {
                     reportErrorBanner(
                       err instanceof Error ? err.message : 'Erro ao reativar frete.'

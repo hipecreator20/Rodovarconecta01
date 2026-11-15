@@ -173,6 +173,11 @@ export function hasPagePermission(employee: Employee | null | undefined, moduleI
   if (employee.accessLevel === 'ADMINISTRADOR') return true;
   if (moduleId === 'administracao' || moduleId === 'fluxo_notificacoes') return false;
   if (moduleId === 'fretes_ativos' && isLogisticsManager(employee)) return true;
+
+  if (Array.isArray(employee.permissoesPaginas) && employee.permissoesPaginas.length > 0) {
+    return employee.permissoesPaginas.includes(moduleId);
+  }
+
   if (moduleId === 'agenda') return !!employee.accessProfile || employee.accessLevel === 'DIRETORIA';
   const profile = employee.accessProfile || (employee.accessLevel === 'DIRETORIA' ? 'DIRETORIA' : undefined);
   return !!profile && PROFILE_MODULES[profile]?.includes(moduleId) === true;
@@ -301,5 +306,17 @@ export function canViewPendingPaymentsCount(u?: Employee | null): boolean {
 }
 export function permittedHome(u: Employee): string {
   if (hasPagePermission(u, 'inicio')) return 'inicio';
-  return ['fretes_comercial','fretes_expedicao','financeiro','solicitacoes'].find(m => hasPagePermission(u,m)) || 'perfil';
+  return (
+    [
+      'comunicados',
+      'fretes_comercial',
+      'fretes_expedicao',
+      'fretes_ativos',
+      'financeiro',
+      'solicitacoes',
+      'agenda',
+      'documentos',
+      'diretorio',
+    ].find((m) => hasPagePermission(u, m)) || 'perfil'
+  );
 }

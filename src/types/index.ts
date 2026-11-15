@@ -57,6 +57,7 @@ export interface Employee {
   role?: string;
   permissoesPaginas?: string[];
   notificationPreferences?: PortalNotificationPreferences;
+  coverUrl?: string;
 }
 
 export interface PortalNotificationPreferences {
@@ -942,6 +943,7 @@ export interface UserSocialProfile {
   phone?: string;
   location?: string;
   socialLinks: SocialLinks;
+  hiddenPhotos?: string[];
   updatedAt?: string;
 }
 
@@ -966,9 +968,10 @@ export interface SocialPost {
   content: string;
   images: string[];
   likes: string[]; // array of user IDs
+  congrats?: string[]; // array of user IDs who congratulated
   comments: SocialComment[];
   commentsCount: number;
-  audience?: string; // 'Comercial' | 'Público' | etc.
+  audience?: string; // 'Público' | 'Comercial' | etc.
   createdAt: string;
   updatedAt?: string;
 }

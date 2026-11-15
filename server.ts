@@ -5,7 +5,13 @@ import { registerAgenda, hydrateAgendaFromPayload } from './src/server/agenda.ts
 import { registerMural } from './src/server/mural.ts';
 import { registerExternalRh, hydrateExternalRhFromPayload } from './src/server/externalRh.ts';
 import { hydrateMuralPollsFromPayload } from './src/server/muralPolls.ts';
-import { registerSocialProfileRoutes, hydrateSocialProfileFromPayload } from './src/server/socialProfile.ts';
+import {
+  registerSocialProfileRoutes,
+  hydrateSocialProfileFromPayload,
+  mergeSocialProfilesFromNeon,
+  mergeSocialPostsFromNeon,
+  getSocialCoverUrlForUser,
+} from './src/server/socialProfile.ts';
 import { registerChats, hydrateChatsFromPayload } from './src/server/chats.ts';
 import { hasPagePermission, canOperateMonitoring, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector, normalizePortalNotificationPreferences } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
@@ -44,6 +50,8 @@ import {
   loadSystemConfigFromNeon,
   persistEconomicModeToNeon,
   loadEconomicModeFromNeon,
+  loadSocialProfilesFromNeon,
+  loadSocialPostsFromNeon,
   hasPendingNeonWrites,
   flushPendingNeonWrites,
 } from './neon.ts';
@@ -1488,12 +1496,21 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<boolean> {
         );
       }
 
-      if (shouldPull('rodovar-social')) {
+      if (shouldPull('rodovar-social') || force) {
         tasks.push(
-          loadStateSnapshotFromNeon<any>('rodovar-social').then((socialSnap) => {
-            if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
-            localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
-          })
+          (async () => {
+            if (shouldPull('rodovar-social')) {
+              const socialSnap = await loadStateSnapshotFromNeon<any>('rodovar-social');
+              if (socialSnap?.payload) hydrateSocialProfileFromPayload(socialSnap.payload);
+              localNeonTimestamps['rodovar-social'] = remoteTs['rodovar-social'];
+            }
+            const [profileRows, neonPosts] = await Promise.all([
+              loadSocialProfilesFromNeon(),
+              loadSocialPostsFromNeon(),
+            ]);
+            if (profileRows.length > 0) mergeSocialProfilesFromNeon(profileRows);
+            if (neonPosts.length > 0) mergeSocialPostsFromNeon(neonPosts);
+          })()
         );
       }
 
@@ -1595,6 +1612,7 @@ function sanitizeUserForClient(user: ServerUserRecord, config: SystemConfig) {
     active: user.active,
     permissoesPaginas: user.permissoesPaginas,
     notificationPreferences: normalizePortalNotificationPreferences(user.notificationPreferences),
+    coverUrl: getSocialCoverUrlForUser(user.id) || (user as any).coverUrl || undefined,
   };
 }
 
@@ -2866,7 +2884,7 @@ export function createExpressApp(): express.Express {
         `Administrador ${admin.login} executou ${action} na conta ${targetUser.name} (${targetUser.login}) -> Situação: ${newStatus}, Perfil: ${targetUser.accessLevel}.${cleanReason ? ` Motivo: ${cleanReason}` : ''}`,
         req.ip
       );
-      void persistUserToNeon(targetUser);
+      await persistUserToNeon(targetUser);
       await saveDatabaseAsync(dbState);
       await flushPendingNeonWrites();
 
@@ -3230,21 +3248,30 @@ export function createExpressApp(): express.Express {
       return;
     }
 
-    // Generate system storage filename with UUID
     const fileName = `avatar-${crypto.randomUUID()}.${validation.extension}`;
     const filePath = path.join(UPLOADS_DIR, fileName);
     try {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
       fs.writeFileSync(filePath, validation.sanitizedBuffer);
     } catch {}
-    void persistSystemAssetToNeon({
-      id: fileName,
-      slot: 'userAvatar',
-      mimeType: validation.mimeType || 'image/jpeg',
-      dataBase64: validation.sanitizedBuffer.toString('base64'),
-      width: validation.width,
-      height: validation.height,
-    });
+    if (isNeonConfigured && !isIsolatedTestEnv()) {
+      await ensureNeonReady().catch(() => {});
+      const assetSaved = await persistSystemAssetToNeon({
+        id: fileName,
+        slot: 'userAvatar',
+        mimeType: validation.mimeType || 'image/jpeg',
+        dataBase64: validation.sanitizedBuffer.toString('base64'),
+        width: validation.width,
+        height: validation.height,
+      });
+      if (!assetSaved) {
+        res.status(500).json({
+          error: 'Falha ao persistir a imagem de perfil no banco de dados Neon. Tente novamente.',
+          code: 'NEON_ASSET_SAVE_FAILED',
+        });
+        return;
+      }
+    }
 
     // Delete old custom uploaded avatar file if it was in /uploads/avatar-
     if (targetUser.hasCustomAvatar && targetUser.avatar.startsWith('/uploads/avatar-')) {
@@ -3270,7 +3297,7 @@ export function createExpressApp(): express.Express {
       `Foto de perfil atualizada e sanitizada (${validation.mimeType}, ${validation.width}x${validation.height}px) para ${targetUser.login}.`,
       req.ip
     );
-    void persistUserToNeon(targetUser);
+    await persistUserToNeon(targetUser);
     await saveDatabaseAsync(dbState);
     await flushPendingNeonWrites();
 
@@ -3327,7 +3354,7 @@ export function createExpressApp(): express.Express {
         `Avatar padrão neutro restaurado para a conta ${targetUser.login}.`,
         req.ip
       );
-      void persistUserToNeon(targetUser);
+      await persistUserToNeon(targetUser);
       await saveDatabaseAsync(dbState);
       await flushPendingNeonWrites();
 
@@ -3517,7 +3544,7 @@ export function createExpressApp(): express.Express {
       }
       const assetId = fileName.replace(/^sysconfig-([a-zA-Z0-9_-]+)-/, '').replace(/\.[^.]+$/, '');
       const asset =
-        (await getSystemAssetFromNeon(assetId)) || (await getSystemAssetFromNeon(fileName));
+        (await getSystemAssetFromNeon(fileName)) || (await getSystemAssetFromNeon(assetId));
       if (asset && asset.buffer) {
         try {
           fs.mkdirSync(path.dirname(diskPath), { recursive: true });
@@ -3538,8 +3565,8 @@ export function createExpressApp(): express.Express {
         const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-truck-yellow.png');
         if (fs.existsSync(fallback)) return res.sendFile(fallback);
       } else if (fileName.includes('defaultAvatar') || fileName.includes('avatar')) {
-        const fallback = path.join(PUBLIC_DIR, 'assets/rodovar-avatar-default.png');
-        if (fs.existsSync(fallback)) return res.sendFile(fallback);
+        ensureDefaultAvatarPngExists();
+        if (fs.existsSync(DEFAULT_AVATAR_FS_PATH)) return res.sendFile(DEFAULT_AVATAR_FS_PATH);
       }
 
       next();

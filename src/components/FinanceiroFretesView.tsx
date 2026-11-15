@@ -58,6 +58,7 @@ import {
 } from '../lib/permissions';
 import { prepareMobileUploadFile } from '../lib/mobileFileHelper';
 import { getAuthHeaders } from '../lib/serverApi';
+import { FREIGHTS_UPDATED_EVENT, invalidateFreightQueriesAfterMutation } from '../lib/freightQueryCache';
 import {
   SharedReceiptDraft,
   enqueueOfflinePendingReceipt,
@@ -469,8 +470,13 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
 
     setIsSubmittingCreate(true);
     try {
-      const nextNum = 843 + freights.length;
-      const code = `#0${nextNum}`;
+      const maxExistingCode = freights.reduce((max, item) => {
+        const digits = String(item.code || '').replace(/\D/g, '');
+        const parsed = digits ? parseInt(digits, 10) : 0;
+        return Number.isFinite(parsed) && parsed > max ? parsed : max;
+      }, 0);
+      const nextNum = maxExistingCode + 1;
+      const code = `#${String(nextNum).padStart(4, '0')}`;
       const now = new Date();
       const createdAtDate = now.toLocaleDateString('pt-BR');
 
@@ -596,6 +602,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         `Solicitação de Frete ${code} registrada!`,
         `Cliente ${newFreight.cliente} • Adiantamento: ${formatProtectedCurrency(newFreight.valorAdiantamento)}`
       );
+      lastLocalSyncAtRef.current = Date.now();
+      void invalidateFreightQueriesAfterMutation(currentUser.id);
     } catch (error) {
       triggerToast('Solicitação não salva', error instanceof Error ? error.message : 'Confira a conexão e tente novamente.');
     } finally {
@@ -702,8 +710,29 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
     }
   };
 
+  const lastLocalSyncAtRef = useRef<number>(0);
+
   useEffect(() => {
     void fetchServerPaymentData();
+    const onFreightsUpdated = () => {
+      if (Date.now() - lastLocalSyncAtRef.current < 800) return;
+      void fetchServerPaymentData();
+    };
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchServerPaymentData();
+      }
+    };
+    window.addEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    const interval = setInterval(onFocusOrVisible, 15_000);
+    return () => {
+      window.removeEventListener(FREIGHTS_UPDATED_EVENT, onFreightsUpdated);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+      clearInterval(interval);
+    };
   }, [currentUser.id]);
 
   useEffect(() => {
@@ -1025,6 +1054,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         `Arquivo "${currentDraft.fileName}" vinculado à parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'}. Responsável e Monitoramento avisados.`
       );
       await fetchServerPaymentData();
+      lastLocalSyncAtRef.current = Date.now();
+      void invalidateFreightQueriesAfterMutation(currentUser.id);
     } catch {
       setUploadStateByInstallment((prev) => ({ ...prev, [mode]: 'FALHA_NO_ENVIO' }));
       setUploadErrorByInstallment((prev) => ({
@@ -1105,6 +1136,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
         `Parcela ${mode === 'ADIANTAMENTO' ? 'Adiantamento' : 'Saldo'} confirmada por ${currentUser.name}. Responsável e Monitoramento avisados.`
       );
       await fetchServerPaymentData();
+      lastLocalSyncAtRef.current = Date.now();
+      void invalidateFreightQueriesAfterMutation(currentUser.id);
     } catch {
       setUploadErrorByInstallment((prev) => ({
         ...prev,
@@ -1151,6 +1184,8 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
       `Entrega Confirmada (${freight.code})!`,
       `Saldo de ${formatProtectedCurrency(freight.valorSaldo)} liberado para pagamento.`
     );
+    lastLocalSyncAtRef.current = Date.now();
+    void invalidateFreightQueriesAfterMutation(currentUser.id);
   };
 
   // =========================================================================

@@ -12,6 +12,7 @@ import {
   persistStateSnapshotToNeon,
   persistSystemAssetToNeon,
   persistUserToNeon,
+  flushPendingNeonWrites,
 } from '../../neon.ts';
 import type { SocialPost, SocialComment, UserSocialProfile, SocialLinks } from '../types/index.ts';
 
@@ -27,8 +28,119 @@ export function hydrateSocialProfileFromPayload(payload: any): void {
     activeSocialState.profiles = payload.profiles;
   }
   if (Array.isArray(payload.posts)) {
-    activeSocialState.posts = payload.posts;
+    activeSocialState.posts = payload.posts.map((p: any) => ({
+      ...p,
+      likes: Array.isArray(p?.likes) ? p.likes : [],
+      congrats: Array.isArray(p?.congrats) ? p.congrats : [],
+      comments: Array.isArray(p?.comments) ? p.comments : [],
+    }));
   }
+}
+
+export function mergeSocialProfilesFromNeon(
+  rows: Array<{
+    userId: string;
+    coverUrl?: string;
+    bio?: string;
+    customDisplayName?: string;
+    phone?: string;
+    location?: string;
+    socialLinks?: SocialLinks;
+    hiddenPhotos?: string[];
+    updatedAt?: string;
+  }>
+): void {
+  if (!activeSocialState || !Array.isArray(rows)) return;
+  for (const row of rows) {
+    if (!row || !row.userId) continue;
+    const existing = activeSocialState.profiles[row.userId];
+    if (!existing) {
+      activeSocialState.profiles[row.userId] = {
+        userId: row.userId,
+        coverUrl: row.coverUrl || DEFAULT_COVER,
+        bio: row.bio || '',
+        customDisplayName: row.customDisplayName,
+        phone: row.phone,
+        location: row.location,
+        socialLinks: row.socialLinks || {},
+        hiddenPhotos: Array.isArray(row.hiddenPhotos) ? row.hiddenPhotos : [],
+        updatedAt: row.updatedAt || new Date().toISOString(),
+      };
+      continue;
+    }
+
+    const rowTs = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    const existingTs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+    const rowIsNewer = rowTs > existingTs;
+
+    if (
+      row.coverUrl &&
+      row.coverUrl !== DEFAULT_COVER &&
+      (!existing.coverUrl || existing.coverUrl === DEFAULT_COVER || rowIsNewer)
+    ) {
+      existing.coverUrl = row.coverUrl;
+    }
+    if (rowIsNewer) {
+      if (row.bio !== undefined) existing.bio = row.bio;
+      if (row.customDisplayName !== undefined) existing.customDisplayName = row.customDisplayName;
+      if (row.phone !== undefined) existing.phone = row.phone;
+      if (row.location !== undefined) existing.location = row.location;
+      if (row.socialLinks) existing.socialLinks = row.socialLinks;
+      if (Array.isArray(row.hiddenPhotos)) existing.hiddenPhotos = row.hiddenPhotos;
+      if (row.updatedAt) existing.updatedAt = row.updatedAt;
+    }
+  }
+}
+
+export function mergeSocialPostsFromNeon(neonPosts: SocialPost[]): void {
+  if (!activeSocialState || !Array.isArray(neonPosts) || neonPosts.length === 0) return;
+  const byId = new Map<string, SocialPost>();
+  for (const p of activeSocialState.posts) {
+    if (p && p.id) {
+      byId.set(p.id, {
+        ...p,
+        likes: Array.isArray(p.likes) ? p.likes : [],
+        congrats: Array.isArray(p.congrats) ? p.congrats : [],
+        comments: Array.isArray(p.comments) ? p.comments : [],
+      });
+    }
+  }
+  for (const np of neonPosts) {
+    if (!np || !np.id) continue;
+    const existing = byId.get(np.id);
+    if (!existing) {
+      byId.set(np.id, {
+        ...np,
+        likes: Array.isArray(np.likes) ? np.likes : [],
+        congrats: Array.isArray(np.congrats) ? np.congrats : [],
+        comments: Array.isArray(np.comments) ? np.comments : [],
+      });
+    } else {
+      const npTs = np.updatedAt ? new Date(np.updatedAt).getTime() : 0;
+      const exTs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+      if (npTs > exTs) {
+        byId.set(np.id, {
+          ...existing,
+          ...np,
+          likes: Array.isArray(np.likes) ? np.likes : existing.likes || [],
+          congrats: Array.isArray(np.congrats) ? np.congrats : existing.congrats || [],
+          comments:
+            Array.isArray(np.comments) && np.comments.length >= (existing.comments || []).length
+              ? np.comments
+              : existing.comments || [],
+        });
+      }
+    }
+  }
+  activeSocialState.posts = Array.from(byId.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
+
+export function getSocialCoverUrlForUser(userId: string): string | undefined {
+  if (!activeSocialState || !userId) return undefined;
+  const cover = activeSocialState.profiles[userId]?.coverUrl;
+  return cover && cover.trim() !== '' ? cover : undefined;
 }
 
 const DEFAULT_COVER = '/assets/banner-rodovar-conecta-highway.png';
@@ -126,18 +238,74 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
   }
   activeSocialState = state;
 
-  const persistState = () => {
+  const persistStateLocal = () => {
     try {
       fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(socialStoreFile, JSON.stringify(state, null, 2), 'utf8');
-      void persistStateSnapshotToNeon('rodovar-social', {
-        profiles: state.profiles,
-        posts: state.posts,
-        updatedAt: new Date().toISOString(),
-      });
     } catch (err) {
       console.warn('Social state save error:', (err as Error).message);
     }
+  };
+
+  const persistState = () => {
+    persistStateLocal();
+    void persistStateSnapshotToNeon('rodovar-social', {
+      profiles: state.profiles,
+      posts: state.posts,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const persistStateAsync = async () => {
+    persistStateLocal();
+    await persistStateSnapshotToNeon('rodovar-social', {
+      profiles: state.profiles,
+      posts: state.posts,
+      updatedAt: new Date().toISOString(),
+    }).catch((err) => {
+      console.warn('Social state Neon snapshot error:', (err as Error).message);
+    });
+  };
+
+  const resolveLiveAvatar = (user: any, fallbackAvatar?: string) => {
+    if (
+      user?.hasCustomAvatar &&
+      user?.avatar &&
+      String(user.avatar).trim() !== '' &&
+      !String(user.avatar).includes('default-avatar.png')
+    ) {
+      return String(user.avatar).trim();
+    }
+    return fallbackAvatar && !fallbackAvatar.includes('avatar-joao')
+      ? fallbackAvatar
+      : '/assets/default-avatar.png';
+  };
+
+  const enrichPostForClient = (p: SocialPost): SocialPost => {
+    const authorUser = dbState?.users?.find((u: any) => u.id === p.authorId);
+    const authorSocial = state.profiles[p.authorId];
+    const enrichedComments = (p.comments || []).map((c) => {
+      const cUser = dbState?.users?.find((u: any) => u.id === c.authorId);
+      const cSocial = state.profiles[c.authorId];
+      return {
+        ...c,
+        authorName: cSocial?.customDisplayName || cUser?.name || c.authorName,
+        authorAvatar: cUser ? resolveLiveAvatar(cUser, c.authorAvatar) : c.authorAvatar || '/assets/default-avatar.png',
+      };
+    });
+    return {
+      ...p,
+      authorName: authorSocial?.customDisplayName || authorUser?.name || p.authorName,
+      authorAvatar: authorUser
+        ? resolveLiveAvatar(authorUser, p.authorAvatar)
+        : p.authorAvatar || '/assets/default-avatar.png',
+      authorRole: authorUser?.roleTitle || p.authorRole,
+      authorDepartment: authorUser?.department || p.authorDepartment,
+      likes: Array.isArray(p.likes) ? p.likes : [],
+      congrats: Array.isArray(p.congrats) ? p.congrats : [],
+      comments: enrichedComments,
+      commentsCount: enrichedComments.length,
+    };
   };
 
   const getOrCreateProfile = (userId: string, defaultUser?: any): UserSocialProfile => {
@@ -189,11 +357,12 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     const userPosts = state.posts.filter((p) => p.authorId === targetUserId);
 
     // Collect all unique photos from user posts
+    const hiddenSet = new Set(Array.isArray(profile.hiddenPhotos) ? profile.hiddenPhotos : []);
     const photos: string[] = [];
     userPosts.forEach((p) => {
       if (Array.isArray(p.images)) {
         p.images.forEach((img) => {
-          if (img && !photos.includes(img)) photos.push(img);
+          if (img && !hiddenSet.has(img) && !photos.includes(img)) photos.push(img);
         });
       }
     });
@@ -210,7 +379,7 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
       '/assets/aistudio/image_0137ac6c.png',
     ];
     stockPhotos.forEach((sp) => {
-      if (photos.length < 8 && !photos.includes(sp)) {
+      if (photos.length < 8 && !hiddenSet.has(sp) && !photos.includes(sp)) {
         photos.push(sp);
       }
     });
@@ -226,7 +395,9 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
         roleTitle: targetUser.roleTitle,
         department: targetUser.department,
         accessLevel: targetUser.accessLevel,
-        avatar: targetUser.avatar || '/assets/avatar-joao.jpg',
+        avatar: resolveLiveAvatar(targetUser),
+        hasCustomAvatar: Boolean(targetUser.hasCustomAvatar),
+        coverUrl: profile.coverUrl || targetUser.coverUrl || DEFAULT_COVER,
         phoneExt: profile.phone || targetUser.phoneExt,
         location: profile.location || 'Salvador – BA',
         joinedAt: targetUser.joinedAt,
@@ -247,6 +418,8 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
       location,
       socialLinks,
       coverUrl,
+      photos: nextPhotos,
+      hiddenPhotos,
     } = req.body || {};
 
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
@@ -272,10 +445,39 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
       }
     }
     if (typeof location === 'string') profile.location = location.trim().slice(0, 100);
-    if (syncedUserRecord) {
-      void persistUserToNeon(syncedUserRecord).catch(() => {});
+    if (typeof coverUrl === 'string' && coverUrl.trim()) {
+      profile.coverUrl = coverUrl.trim();
+      const u = dbState.users.find((user: any) => user.id === sessionUser.id);
+      if (u) {
+        u.coverUrl = profile.coverUrl;
+        syncedUserRecord = u;
+      }
     }
-    if (typeof coverUrl === 'string' && coverUrl.trim()) profile.coverUrl = coverUrl.trim();
+
+    if (Array.isArray(hiddenPhotos)) {
+      profile.hiddenPhotos = hiddenPhotos.filter((item) => typeof item === 'string');
+    } else if (Array.isArray(nextPhotos)) {
+      const keepSet = new Set(nextPhotos.filter((item) => typeof item === 'string'));
+      const currentKnown = new Set<string>([
+        '/assets/aistudio/Banner_Rodovar_Conecta_na_Rodovia_24f668fa.png',
+        '/assets/aistudio/010203_5a4289e5.png',
+        '/assets/aistudio/image_58f528e8.png',
+        '/assets/aistudio/DSC00410_9423424f.JPG',
+        '/assets/aistudio/image_47dbceb5.png',
+        '/assets/aistudio/DSC00515_18c5e319.JPG',
+        '/assets/aistudio/image_4dcd4767.png',
+        '/assets/aistudio/image_0137ac6c.png',
+      ]);
+      state.posts
+        .filter((p) => p.authorId === sessionUser.id)
+        .forEach((p) => (p.images || []).forEach((img) => currentKnown.add(img)));
+      const mergedHidden = new Set(Array.isArray(profile.hiddenPhotos) ? profile.hiddenPhotos : []);
+      currentKnown.forEach((img) => {
+        if (!keepSet.has(img)) mergedHidden.add(img);
+        else mergedHidden.delete(img);
+      });
+      profile.hiddenPhotos = Array.from(mergedHidden);
+    }
 
     if (socialLinks && typeof socialLinks === 'object') {
       const cleanUrl = (val: string | undefined): string => {
@@ -297,8 +499,12 @@ export function registerSocialProfileRoutes(app: Express, guard: any, dbState: a
     }
 
     profile.updatedAt = new Date().toISOString();
-    persistState();
+    await persistStateAsync();
     await persistSocialProfileToNeon(profile).catch(() => {});
+    if (syncedUserRecord) {
+      await persistUserToNeon(syncedUserRecord).catch(() => {});
+    }
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -398,11 +604,32 @@ function validateSocialImageBuffer(
     }
 
     const profile = getOrCreateProfile(sessionUser.id, sessionUser);
+    const previousCoverUrl = profile.coverUrl;
+    if (
+      previousCoverUrl &&
+      previousCoverUrl !== targetCoverUrl &&
+      previousCoverUrl.startsWith('/uploads/cover-')
+    ) {
+      try {
+        const prevPath = path.join(uploadsDir, path.basename(previousCoverUrl));
+        if (fs.existsSync(prevPath)) fs.unlinkSync(prevPath);
+      } catch {
+        // ignore cleanup errors on read-only FS
+      }
+    }
     profile.coverUrl = targetCoverUrl;
     profile.updatedAt = new Date().toISOString();
+    const userRecord = dbState?.users?.find((u: any) => u.id === sessionUser.id);
+    if (userRecord) {
+      userRecord.coverUrl = targetCoverUrl;
+    }
 
-    persistState();
+    await persistStateAsync();
     await persistSocialProfileToNeon(profile).catch(() => {});
+    if (userRecord) {
+      await persistUserToNeon(userRecord).catch(() => {});
+    }
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -411,10 +638,10 @@ function validateSocialImageBuffer(
     });
   });
 
-  // 4. GET /api/profile/posts - List social posts (feed or user specific)
+  // 4. GET /api/profile/posts - List universal social posts (or filter by authorId if explicitly requested)
   app.get('/api/profile/posts', guard, (req: any, res) => {
     const { authorId } = req.query;
-    let posts = [...state.posts];
+    let posts = state.posts.map(enrichPostForClient);
     if (authorId) {
       posts = posts.filter((p) => p.authorId === authorId);
     }
@@ -476,12 +703,13 @@ function validateSocialImageBuffer(
       id: `post-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
-      authorAvatar: sessionUser.avatar || '/assets/avatar-joao.jpg',
+      authorAvatar: resolveLiveAvatar(sessionUser),
       authorRole: sessionUser.roleTitle || 'Colaborador',
       authorDepartment: sessionUser.department || 'Geral',
       content: cleanContent,
       images: validImages,
       likes: [],
+      congrats: [],
       comments: [],
       commentsCount: 0,
       audience: audience || 'Público',
@@ -490,17 +718,18 @@ function validateSocialImageBuffer(
     };
 
     state.posts.unshift(newPost);
-    persistState();
-    void persistSocialPostToNeon(newPost);
+    await persistStateAsync();
+    await persistSocialPostToNeon(newPost);
+    await flushPendingNeonWrites();
 
     res.status(201).json({
       ok: true,
-      post: newPost,
+      post: enrichPostForClient(newPost),
     });
   });
 
   // 6. PUT /api/profile/posts/:postId - Edit post
-  app.put('/api/profile/posts/:postId', guard, (req: any, res) => {
+  app.put('/api/profile/posts/:postId', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const { content, images, audience } = req.body || {};
@@ -525,17 +754,18 @@ function validateSocialImageBuffer(
     }
     post.updatedAt = new Date().toISOString();
 
-    persistState();
-    void persistSocialPostToNeon(post);
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
-      post,
+      post: enrichPostForClient(post),
     });
   });
 
   // 7. DELETE /api/profile/posts/:postId - Delete post
-  app.delete('/api/profile/posts/:postId', guard, (req: any, res) => {
+  app.delete('/api/profile/posts/:postId', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
 
@@ -550,8 +780,9 @@ function validateSocialImageBuffer(
     }
 
     state.posts.splice(postIndex, 1);
-    persistState();
-    void deleteSocialPostFromNeon(postId);
+    await persistStateAsync();
+    await deleteSocialPostFromNeon(postId);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -560,7 +791,7 @@ function validateSocialImageBuffer(
   });
 
   // 8. POST /api/profile/posts/:postId/like - Toggle like
-  app.post('/api/profile/posts/:postId/like', guard, (req: any, res) => {
+  app.post('/api/profile/posts/:postId/like', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
 
@@ -569,6 +800,7 @@ function validateSocialImageBuffer(
       return res.status(404).json({ error: 'Publicação não encontrada.' });
     }
 
+    post.likes ||= [];
     const userId = sessionUser.id;
     const existingIndex = post.likes.indexOf(userId);
     let isLiked = false;
@@ -580,9 +812,11 @@ function validateSocialImageBuffer(
       post.likes.push(userId);
       isLiked = true;
     }
+    post.updatedAt = new Date().toISOString();
 
-    persistState();
-    void persistSocialPostToNeon(post);
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,
@@ -592,8 +826,44 @@ function validateSocialImageBuffer(
     });
   });
 
+  // 8b. POST /api/profile/posts/:postId/congrats - Toggle Parabéns reaction
+  app.post('/api/profile/posts/:postId/congrats', guard, async (req: any, res) => {
+    const sessionUser = req.sessionUser;
+    const { postId } = req.params;
+
+    const post = state.posts.find((p) => p.id === postId);
+    if (!post) {
+      return res.status(404).json({ error: 'Publicação não encontrada.' });
+    }
+
+    post.congrats ||= [];
+    const userId = sessionUser.id;
+    const existingIndex = post.congrats.indexOf(userId);
+    let isCongratulated = false;
+
+    if (existingIndex >= 0) {
+      post.congrats.splice(existingIndex, 1);
+      isCongratulated = false;
+    } else {
+      post.congrats.push(userId);
+      isCongratulated = true;
+    }
+    post.updatedAt = new Date().toISOString();
+
+    await persistStateAsync();
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
+
+    res.json({
+      ok: true,
+      isCongratulated,
+      congratsCount: post.congrats.length,
+      congrats: post.congrats,
+    });
+  });
+
   // 9. POST /api/profile/posts/:postId/comments - Add comment
-  app.post('/api/profile/posts/:postId/comments', guard, (req: any, res) => {
+  app.post('/api/profile/posts/:postId/comments', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { postId } = req.params;
     const { content } = req.body || {};
@@ -613,7 +883,7 @@ function validateSocialImageBuffer(
       postId,
       authorId: sessionUser.id,
       authorName: profile.customDisplayName || sessionUser.name,
-      authorAvatar: sessionUser.avatar || '/assets/avatar-joao.jpg',
+      authorAvatar: resolveLiveAvatar(sessionUser),
       authorRole: sessionUser.roleTitle || 'Colaborador',
       content: String(content).trim().slice(0, 1000),
       createdAt: new Date().toISOString(),
@@ -622,10 +892,12 @@ function validateSocialImageBuffer(
     post.comments ||= [];
     post.comments.push(newComment);
     post.commentsCount = post.comments.length;
+    post.updatedAt = new Date().toISOString();
 
-    persistState();
-    void persistSocialCommentToNeon(newComment);
-    void persistSocialPostToNeon(post);
+    await persistStateAsync();
+    await persistSocialCommentToNeon(newComment);
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
 
     res.status(201).json({
       ok: true,
@@ -635,7 +907,7 @@ function validateSocialImageBuffer(
   });
 
   // 10. DELETE /api/profile/posts/:postId/comments/:commentId - Delete comment
-  app.delete('/api/profile/posts/:postId/comments/:commentId', guard, (req: any, res) => {
+  app.delete('/api/profile/posts/:postId/comments/:commentId', guard, async (req: any, res) => {
     const sessionUser = req.sessionUser;
     const { postId, commentId } = req.params;
 
@@ -660,10 +932,12 @@ function validateSocialImageBuffer(
 
     post.comments.splice(commentIndex, 1);
     post.commentsCount = post.comments.length;
+    post.updatedAt = new Date().toISOString();
 
-    persistState();
-    void deleteSocialCommentFromNeon(commentId);
-    void persistSocialPostToNeon(post);
+    await persistStateAsync();
+    await deleteSocialCommentFromNeon(commentId);
+    await persistSocialPostToNeon(post);
+    await flushPendingNeonWrites();
 
     res.json({
       ok: true,

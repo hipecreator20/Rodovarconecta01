@@ -753,13 +753,13 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     if (onClearSelectedNotificationFreight) onClearSelectedNotificationFreight();
   }, [selectedFreightIdFromNotification, onClearSelectedNotificationFreight]);
 
-  // Moderate visibility-gated sync check every 90s (zero DB work when unchanged)
+  // Real-time visibility-gated sync check every 15s + on focus (zero DB work when unchanged)
   const latestDataVersionRef = useRef<number | undefined>(undefined);
   latestDataVersionRef.current =
     currentListQuery.data?.dataVersion ?? activeQuery.data?.dataVersion ?? finalizedQuery.data?.dataVersion;
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const runVersionCheck = () => {
       if (document.visibilityState !== 'visible' || actionBusy) return;
       const knownVersion = latestDataVersionRef.current;
       if (knownVersion === undefined) return;
@@ -776,8 +776,15 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
           });
         }
       });
-    }, 90_000);
-    return () => clearInterval(interval);
+    };
+    const interval = setInterval(runVersionCheck, 15_000);
+    window.addEventListener('focus', runVersionCheck);
+    document.addEventListener('visibilitychange', runVersionCheck);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', runVersionCheck);
+      document.removeEventListener('visibilitychange', runVersionCheck);
+    };
   }, [viewScope, responsibleFilterId, actionBusy, currentUser.id]);
 
   // Manual Refresh ("Atualizar") invalidates cache & refetches

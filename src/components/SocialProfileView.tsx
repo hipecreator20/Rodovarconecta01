@@ -30,6 +30,9 @@ import {
   Maximize2,
   ChevronLeft,
   ChevronRight,
+  Smile,
+  PartyPopper,
+  Loader2,
 } from 'lucide-react';
 import type {
   Employee,
@@ -53,12 +56,14 @@ import {
   apiUpdateSocialPost,
   apiDeleteSocialPost,
   apiTogglePostLike,
+  apiTogglePostCongrats,
   apiAddPostComment,
   apiDeletePostComment,
   resolveAvatarUrl,
 } from '../lib/serverApi';
 import { ProfileSecurity } from './ProfileSecurity';
 import { CorporateModal } from './ui/CorporateModal';
+import { ConfettiRainOverlay } from './ui/ConfettiRainOverlay';
 import { resolveAccessProfileLabel } from './UserProfileMenu';
 
 interface SocialProfileViewProps {
@@ -72,6 +77,64 @@ interface SocialProfileViewProps {
   requests?: any[];
   employees?: Employee[];
   onDownloadFunctionalSheet?: (employee: Employee) => void;
+}
+
+const SOCIAL_PROFILE_CACHE_PREFIX = 'rodovar-social-profile-v2:';
+const LEGACY_PROFILE_CACHE_PREFIX = 'rodovar-social-profile:';
+const DEFAULT_PROFILE_COVER = '/assets/banner-rodovar-conecta-highway.png';
+
+const CORPORATE_EMOTIONS = [
+  '😀', '😄', '😁', '🥳', '🤩', '😎', '🙏', '👏', '🙌', '💪',
+  '🤝', '❤️', '💛', '🔥', '✨', '🎉', '🎊', '🏆', '⭐', '👍',
+  '👌', '🚀', '🚛', '🚚', '📦', '🛣️', '📍', '⏱️', '✅', '📢',
+];
+
+function readCachedSocialProfile(userId: string): { profile: UserSocialProfile | null; photos: string[] } {
+  if (!userId || typeof window === 'undefined') return { profile: null, photos: [] };
+  try {
+    const raw = localStorage.getItem(SOCIAL_PROFILE_CACHE_PREFIX + userId);
+    if (!raw) return { profile: null, photos: [] };
+    const parsed = JSON.parse(raw);
+    return {
+      profile: parsed?.profile && typeof parsed.profile === 'object' ? parsed.profile : null,
+      photos: Array.isArray(parsed?.photos) ? parsed.photos : [],
+    };
+  } catch {
+    return { profile: null, photos: [] };
+  }
+}
+
+function writeCachedSocialProfile(
+  userId: string,
+  profile: UserSocialProfile | null,
+  photos?: string[]
+): void {
+  if (!userId || typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(LEGACY_PROFILE_CACHE_PREFIX + userId);
+    if (!profile) return;
+    const existing = readCachedSocialProfile(userId);
+    localStorage.setItem(
+      SOCIAL_PROFILE_CACHE_PREFIX + userId,
+      JSON.stringify({
+        profile,
+        photos: Array.isArray(photos) ? photos : existing.photos,
+        cachedAt: Date.now(),
+      })
+    );
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function clearCachedSocialProfile(userId: string): void {
+  if (!userId || typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(SOCIAL_PROFILE_CACHE_PREFIX + userId);
+    localStorage.removeItem(LEGACY_PROFILE_CACHE_PREFIX + userId);
+  } catch {
+    // ignore
+  }
 }
 
 export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
@@ -98,6 +161,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     name: currentUser.name,
     phoneExt: currentUser.phoneExt || '',
   });
+  const isAccountDirtyRef = useRef<boolean>(false);
   const [isSavingAccount, setIsSavingAccount] = useState(false);
 
   const [notifPrefs, setNotifPrefs] = useState<PortalNotificationPreferences>(() => {
@@ -116,11 +180,20 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   const [isSavingNotifPrefs, setIsSavingNotifPrefs] = useState(false);
 
   useEffect(() => {
+    isAccountDirtyRef.current = false;
     setAccountForm({
       name: currentUser.name,
       phoneExt: currentUser.phoneExt || '',
     });
-  }, [currentUser.id, currentUser.name, currentUser.phoneExt]);
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    if (isAccountDirtyRef.current) return;
+    setAccountForm({
+      name: currentUser.name,
+      phoneExt: currentUser.phoneExt || '',
+    });
+  }, [currentUser.name, currentUser.phoneExt]);
 
   useEffect(() => {
     if (currentUser.notificationPreferences) {
@@ -139,24 +212,54 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     }
   }, [currentUser.id, currentUser.notificationPreferences]);
 
-  // Profile data
-  const [profile, setProfile] = useState<UserSocialProfile | null>(null);
+  // Profile data (hydrated synchronously from session/localStorage cache to prevent default-cover flash)
+  const [profile, setProfile] = useState<UserSocialProfile | null>(() => {
+    const cached = readCachedSocialProfile(currentUser.id).profile;
+    if (cached) {
+      if (currentUser.coverUrl && currentUser.coverUrl !== cached.coverUrl) {
+        return { ...cached, coverUrl: currentUser.coverUrl };
+      }
+      return cached;
+    }
+    if (currentUser.coverUrl) {
+      return {
+        userId: currentUser.id,
+        coverUrl: currentUser.coverUrl,
+        bio: '',
+        socialLinks: {},
+        updatedAt: '',
+      };
+    }
+    return null;
+  });
+  const [hasLoadedServerProfile, setHasLoadedServerProfile] = useState<boolean>(
+    () => Boolean(readCachedSocialProfile(currentUser.id).profile || currentUser.coverUrl)
+  );
   const [posts, setPosts] = useState<SocialPost[]>([]);
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [photos, setPhotos] = useState<string[]>(() => readCachedSocialProfile(currentUser.id).photos);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Post composer state
   const [newPostText, setNewPostText] = useState<string>('');
   const [newPostImages, setNewPostImages] = useState<string[]>([]);
-  const [newPostAudience, setNewPostAudience] = useState<string>('Comercial');
+  const [newPostAudience, setNewPostAudience] = useState<string>('Público');
   const [isPosting, setIsPosting] = useState<boolean>(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState<boolean>(false);
+  const [isUploadingCover, setIsUploadingCover] = useState<boolean>(false);
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState<boolean>(false);
+  const [activeCommentEmojiPostId, setActiveCommentEmojiPostId] = useState<string | null>(null);
+  const [confettiBurstKey, setConfettiBurstKey] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const postTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
 
-  // Edit Profile Modal state
+  // Edit Profile Modal state (guarded against 5s background refresh wiping typed text)
   const [isEditProfileOpen, setIsEditProfileOpen] = useState<boolean>(false);
+  const isEditProfileOpenRef = useRef<boolean>(false);
+  const hasInitializedEditFormRef = useRef<boolean>(false);
   const [editForm, setEditForm] = useState({
     customDisplayName: '',
     phone: '',
@@ -170,6 +273,43 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     website: '',
   });
   const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+
+  useEffect(() => {
+    isEditProfileOpenRef.current = isEditProfileOpen;
+  }, [isEditProfileOpen]);
+
+  useEffect(() => {
+    if (!isEmojiPickerOpen) return;
+    const handleOutside = (ev: MouseEvent) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(ev.target as Node)) {
+        setIsEmojiPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [isEmojiPickerOpen]);
+
+  const populateEditForm = (p: UserSocialProfile | null) => {
+    setEditForm({
+      customDisplayName: p?.customDisplayName || currentUser.name || '',
+      phone: p?.phone || currentUser.phoneExt || '',
+      location: p?.location || 'Salvador – BA',
+      bio: p?.bio || '',
+      instagram: p?.socialLinks?.instagram || '',
+      linkedin: p?.socialLinks?.linkedin || '',
+      facebook: p?.socialLinks?.facebook || '',
+      youtube: p?.socialLinks?.youtube || '',
+      tiktok: p?.socialLinks?.tiktok || '',
+      website: p?.socialLinks?.website || '',
+    });
+  };
+
+  const openEditProfileModal = () => {
+    populateEditForm(profile);
+    hasInitializedEditFormRef.current = true;
+    isEditProfileOpenRef.current = true;
+    setIsEditProfileOpen(true);
+  };
 
   // Edit Post Modal state
   const [editingPost, setEditingPost] = useState<SocialPost | null>(null);
@@ -194,9 +334,9 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     });
   };
 
-  // Load profile and posts from API
-  const loadProfileData = async () => {
-    setIsLoading(true);
+  // Load profile and universal posts from API
+  const loadProfileData = async (silent = false) => {
+    if (!silent) setIsLoading(true);
     try {
       const [profRes, postsRes] = await Promise.all([
         apiFetchSocialProfile(currentUser.id),
@@ -206,85 +346,129 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       if (profRes.ok && profRes.profile) {
         setProfile(profRes.profile);
         setPhotos(profRes.photos || []);
-        setEditForm({
-          customDisplayName: profRes.profile.customDisplayName || currentUser.name,
-          phone: profRes.profile.phone || currentUser.phoneExt || '',
-          location: profRes.profile.location || 'Salvador – BA',
-          bio: profRes.profile.bio || '',
-          instagram: profRes.profile.socialLinks?.instagram || '',
-          linkedin: profRes.profile.socialLinks?.linkedin || '',
-          facebook: profRes.profile.socialLinks?.facebook || '',
-          youtube: profRes.profile.socialLinks?.youtube || '',
-          tiktok: profRes.profile.socialLinks?.tiktok || '',
-          website: profRes.profile.socialLinks?.website || '',
-        });
+        setHasLoadedServerProfile(true);
+        writeCachedSocialProfile(currentUser.id, profRes.profile, profRes.photos || []);
+        if (!isEditProfileOpenRef.current && !hasInitializedEditFormRef.current) {
+          populateEditForm(profRes.profile);
+          hasInitializedEditFormRef.current = true;
+        }
       }
 
       if (postsRes.ok) {
         setPosts(postsRes.posts);
       }
     } catch {
-      setErrorMessage('Erro ao carregar informações sociais.');
+      if (!silent) setErrorMessage('Erro ao carregar informações sociais.');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadProfileData();
+    hasInitializedEditFormRef.current = false;
+    const cached = readCachedSocialProfile(currentUser.id);
+    if (cached.profile) {
+      setProfile(
+        currentUser.coverUrl && currentUser.coverUrl !== cached.profile.coverUrl
+          ? { ...cached.profile, coverUrl: currentUser.coverUrl }
+          : cached.profile
+      );
+      setPhotos(cached.photos);
+      setHasLoadedServerProfile(true);
+    } else if (currentUser.coverUrl) {
+      setProfile({
+        userId: currentUser.id,
+        coverUrl: currentUser.coverUrl,
+        bio: '',
+        socialLinks: {},
+        updatedAt: '',
+      });
+      setHasLoadedServerProfile(true);
+    } else {
+      setProfile(null);
+      setPhotos([]);
+      setHasLoadedServerProfile(false);
+    }
+    void loadProfileData(false);
     const interval = setInterval(() => {
-      loadProfileData();
+      void loadProfileData(true);
     }, 5000);
     return () => clearInterval(interval);
   }, [currentUser.id]);
 
-  // Handle avatar upload
+  // Handle avatar upload (compressed & persisted in Neon)
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    setErrorMessage(null);
+    setIsUploadingAvatar(true);
 
-    if (file.size > 5 * 1024 * 1024) {
-      setErrorMessage('A foto de perfil excede o limite de 5 MB.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      if (typeof reader.result === 'string') {
-        try {
-          const res = await apiUploadProfileAvatar(reader.result);
-          if (res.ok && res.user) {
-            onUpdateMyProfile?.({ avatar: res.user.avatar, hasCustomAvatar: true });
-            showToast('Foto de perfil atualizada com sucesso!');
-          } else {
-            setErrorMessage(res.error || 'Erro ao atualizar foto de perfil.');
-          }
-        } catch {
-          setErrorMessage('Falha ao enviar avatar.');
-        }
+    try {
+      const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
+      const processed = await processImageFileForUpload(file, {
+        maxWidth: 1024,
+        maxHeight: 1024,
+        maxDataUrlBytes: 1_200_000,
+      });
+      const res = await apiUploadProfileAvatar(processed.dataUrl);
+      if (res.ok && res.user) {
+        onUpdateMyProfile?.({ avatar: res.user.avatar, hasCustomAvatar: true });
+        setPosts((prev) =>
+          prev.map((p) => ({
+            ...p,
+            authorAvatar: p.authorId === currentUser.id ? res.user!.avatar : p.authorAvatar,
+            comments: (p.comments || []).map((c) =>
+              c.authorId === currentUser.id ? { ...c, authorAvatar: res.user!.avatar } : c
+            ),
+          }))
+        );
+        showToast('Foto de perfil salva no banco de dados com sucesso!');
+      } else {
+        setErrorMessage(res.error || 'Erro ao atualizar foto de perfil.');
       }
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Falha ao enviar foto de perfil.'
+      );
+    } finally {
+      setIsUploadingAvatar(false);
+    }
   };
 
-  // Handle cover photo upload
+  // Handle cover photo upload (compressed & persisted in Neon)
   const handleCoverFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setErrorMessage('');
+    setErrorMessage(null);
+    setIsUploadingCover(true);
     try {
       const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
       const processed = await processImageFileForUpload(file, {
         maxWidth: 1600,
         maxHeight: 600,
-        maxDataUrlBytes: 1_500_000,
+        maxDataUrlBytes: 1_400_000,
       });
       const res = await apiUploadCoverPhoto(processed.dataUrl);
       if (res.ok && res.coverUrl) {
-        setProfile((prev) => (prev ? { ...prev, coverUrl: res.coverUrl } : null));
-        showToast('Foto de capa atualizada com sucesso!');
+        clearCachedSocialProfile(currentUser.id);
+        const nextProfile: UserSocialProfile = res.profile
+          ? { ...res.profile, coverUrl: res.coverUrl }
+          : profile
+            ? { ...profile, coverUrl: res.coverUrl }
+            : {
+                userId: currentUser.id,
+                coverUrl: res.coverUrl,
+                bio: '',
+                socialLinks: {},
+                updatedAt: new Date().toISOString(),
+              };
+        setProfile(nextProfile);
+        setHasLoadedServerProfile(true);
+        writeCachedSocialProfile(currentUser.id, nextProfile, photos);
+        onUpdateMyProfile?.({ coverUrl: res.coverUrl });
+        showToast('Foto de capa salva no banco de dados com sucesso!');
       } else {
         setErrorMessage(res.error || 'Erro ao enviar foto de capa.');
       }
@@ -292,6 +476,8 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       setErrorMessage(
         err instanceof Error ? err.message : 'Falha ao enviar imagem de capa.'
       );
+    } finally {
+      setIsUploadingCover(false);
     }
   };
 
@@ -301,28 +487,54 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       const nextPhotos = photos.filter((p) => p !== photoUrl);
       setPhotos(nextPhotos);
       await apiUpdateSocialProfile({ photos: nextPhotos });
+      if (profile) {
+        writeCachedSocialProfile(currentUser.id, profile, nextPhotos);
+      }
       showToast('Foto excluída com sucesso da galeria.');
     } catch {
       showToast('Erro ao excluir foto.');
     }
   };
 
-  // Handle post image additions
-  const handlePostImagesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file) => {
-      if (file.size > 5 * 1024 * 1024) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          setNewPostImages((prev) => [...prev, reader.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+  // Handle post image additions (safely compressed for Neon & Vercel)
+  const handlePostImagesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
+    if (files.length === 0) return;
+
+    try {
+      const { processImageFileForUpload } = await import('../lib/imageUploadUtils');
+      const processedImages: string[] = [];
+      for (const file of files.slice(0, 6)) {
+        const processed = await processImageFileForUpload(file, {
+          maxWidth: 1600,
+          maxHeight: 1200,
+          maxDataUrlBytes: 1_200_000,
+        });
+        processedImages.push(processed.dataUrl);
+      }
+      if (processedImages.length > 0) {
+        setNewPostImages((prev) => [...prev, ...processedImages].slice(0, 10));
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Falha ao processar imagem selecionada.');
+    }
+  };
+
+  const handleInsertPostEmoji = (emoji: string) => {
+    const el = postTextareaRef.current;
+    if (el && typeof el.selectionStart === 'number') {
+      const start = el.selectionStart;
+      const end = el.selectionEnd ?? start;
+      setNewPostText((prev) => prev.slice(0, start) + emoji + prev.slice(end));
+      requestAnimationFrame(() => {
+        el.focus();
+        const cursor = start + emoji.length;
+        el.setSelectionRange(cursor, cursor);
+      });
+    } else {
+      setNewPostText((prev) => `${prev}${emoji}`);
+    }
   };
 
   // Submit new post
@@ -332,18 +544,20 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
     setIsPosting(true);
     setErrorMessage(null);
+    setIsEmojiPickerOpen(false);
     try {
       const res = await apiCreateSocialPost({
         content: newPostText,
         images: newPostImages,
-        audience: newPostAudience,
+        audience: newPostAudience || 'Público',
       });
 
       if (res.ok && res.post) {
         setPosts((prev) => [res.post!, ...prev]);
         setNewPostText('');
         setNewPostImages([]);
-        showToast('Publicação criada com sucesso!');
+        setNewPostAudience('Público');
+        showToast('Publicação enviada para a timeline universal!');
       } else {
         setErrorMessage(res.error || 'Não foi possível publicar.');
       }
@@ -411,6 +625,46 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       }
     } catch {
       // silent
+    }
+  };
+
+  // Toggle Parabéns with celebratory confetti rain
+  const handleToggleCongrats = async (postId: string) => {
+    const targetPost = posts.find((p) => p.id === postId);
+    const wasCongratulated = Boolean(targetPost?.congrats?.includes(currentUser.id));
+
+    if (!wasCongratulated) {
+      setConfettiBurstKey((prev) => prev + 1);
+    }
+
+    // Optimistic update
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.id !== postId) return p;
+        const curr = Array.isArray(p.congrats) ? p.congrats : [];
+        const nextCongrats = wasCongratulated
+          ? curr.filter((id) => id !== currentUser.id)
+          : [...curr, currentUser.id];
+        return { ...p, congrats: nextCongrats };
+      })
+    );
+
+    try {
+      const res = await apiTogglePostCongrats(postId);
+      if (res.ok && res.congrats) {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  congrats: res.congrats || [],
+                }
+              : p
+          )
+        );
+      }
+    } catch {
+      // keep silent on network hiccup
     }
   };
 
@@ -500,6 +754,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
       if (socialRes.ok && socialRes.profile && profileRes.ok) {
         setProfile(socialRes.profile);
+        writeCachedSocialProfile(currentUser.id, socialRes.profile, photos);
         setIsEditProfileOpen(false);
         showToast('Perfil atualizado e salvo com sucesso!');
         onUpdateMyProfile?.({
@@ -573,6 +828,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
         setErrorMessage(res.error || 'Erro ao salvar dados no servidor.');
         return;
       }
+      isAccountDirtyRef.current = false;
       const normalizedPrefs = normalizePortalNotificationPreferences(
         res.user.notificationPreferences || notifPrefs
       );
@@ -696,10 +952,9 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
     systemConfig
   );
 
+  const resolvedCoverCandidate = profile?.coverUrl || currentUser.coverUrl || '';
   const coverSrc =
-    profile?.coverUrl ||
-    (currentUser as any).coverUrl ||
-    '/assets/banner-rodovar-conecta-highway.png';
+    resolvedCoverCandidate || (hasLoadedServerProfile ? DEFAULT_PROFILE_COVER : '');
 
   const userDisplayName = profile?.customDisplayName || currentUser.name;
   const userBio =
@@ -708,16 +963,27 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
   const userLocation = profile?.location || 'Salvador – BA';
   const userPhone = profile?.phone || currentUser.phoneExt || '(71) 9 9920-2476';
 
-  // Filter posts based on active tab
+  const resolvePostAuthorAvatar = (authorId: string, fallbackAvatar?: string) => {
+    if (authorId === currentUser.id) return effectiveAvatarSrc;
+    const matchedEmp = employees.find((emp) => emp.id === authorId);
+    if (matchedEmp) return resolveAvatarUrl(matchedEmp, systemConfig);
+    if (fallbackAvatar && !fallbackAvatar.includes('avatar-joao')) return fallbackAvatar;
+    return resolveAvatarUrl(null, systemConfig);
+  };
+
+  // Universal Timeline: all profiles share and view the full team feed
   const displayedPosts =
     activeTab === 'likes'
-      ? posts.filter((p) => (p.likes || []).includes(currentUser.id))
-      : activeTab === 'posts'
-      ? posts.filter((p) => p.authorId === currentUser.id)
+      ? posts.filter(
+          (p) =>
+            (p.likes || []).includes(currentUser.id) ||
+            (p.congrats || []).includes(currentUser.id)
+        )
       : posts;
 
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-12">
+      <ConfettiRainOverlay burstKey={confettiBurstKey} />
 
       {/* Error Message */}
       {errorMessage && (
@@ -757,23 +1023,34 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
       {/* 2. Cover Photo & Profile Hero Card */}
       <div className="bg-white rounded-3xl border border-gray-200/90 shadow-sm overflow-hidden">
         {/* Panoramic Cover */}
-        <div className="relative w-full h-56 sm:h-72 md:h-80 bg-linear-to-r from-gray-900 via-gray-800 to-gray-900 overflow-hidden group">
-          <img
-            src={coverSrc}
-            alt="Capa do Perfil"
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover object-center group-hover:scale-102 transition duration-500"
-          />
-          <div className="absolute inset-0 bg-linear-to-t from-black/40 via-transparent to-black/20" />
+        <div className="relative w-full h-56 sm:h-72 md:h-80 bg-gray-100 overflow-hidden group">
+          {coverSrc ? (
+            <>
+              <img
+                src={coverSrc}
+                alt="Capa do Perfil"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover object-center group-hover:scale-102 transition duration-500"
+              />
+              <div className="absolute inset-0 bg-linear-to-t from-black/30 via-transparent to-black/10 pointer-events-none" />
+            </>
+          ) : (
+            <div className="w-full h-full bg-linear-to-r from-gray-100 via-gray-200 to-gray-100 animate-pulse" />
+          )}
 
           {/* Alterar Capa Button */}
           <button
             type="button"
+            disabled={isUploadingCover}
             onClick={() => coverInputRef.current?.click()}
-            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white backdrop-blur-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-white/20 transition cursor-pointer shadow-md"
+            className="absolute top-4 right-4 bg-black/65 hover:bg-black/85 disabled:opacity-70 text-white backdrop-blur-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-white/20 transition cursor-pointer shadow-md"
           >
-            <Camera className="w-4 h-4 text-[#FFD400]" />
-            <span>Alterar capa</span>
+            {isUploadingCover ? (
+              <Loader2 className="w-4 h-4 text-[#FFD400] animate-spin" />
+            ) : (
+              <Camera className="w-4 h-4 text-[#FFD400]" />
+            )}
+            <span>{isUploadingCover ? 'Salvando capa...' : 'Alterar capa'}</span>
           </button>
           <input
             type="file"
@@ -802,11 +1079,16 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                 {/* Avatar upload trigger button badge */}
                 <button
                   type="button"
+                  disabled={isUploadingAvatar}
                   onClick={() => avatarInputRef.current?.click()}
-                  className="absolute bottom-1 right-1 w-9 h-9 rounded-full bg-[#080B0D] text-[#FFD400] hover:bg-black border-2 border-white flex items-center justify-center shadow-lg transition cursor-pointer"
-                  title="Alterar foto de perfil"
+                  className="absolute bottom-1 right-1 w-9 h-9 rounded-full bg-[#080B0D] text-[#FFD400] hover:bg-black disabled:opacity-70 border-2 border-white flex items-center justify-center shadow-lg transition cursor-pointer"
+                  title={isUploadingAvatar ? 'Salvando foto...' : 'Alterar foto de perfil'}
                 >
-                  <Camera className="w-4 h-4" />
+                  {isUploadingAvatar ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
                 </button>
                 <input
                   type="file"
@@ -841,7 +1123,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
             <div className="flex items-center justify-center sm:justify-end gap-2.5 mb-2 shrink-0">
               <button
                 type="button"
-                onClick={() => setIsEditProfileOpen(true)}
+                onClick={openEditProfileModal}
                 className="bg-[#FFD400] hover:bg-[#ffdc26] text-[#080B0D] px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 shadow-xs transition cursor-pointer"
               >
                 <Edit3 className="w-4 h-4 stroke-[2.5]" />
@@ -909,7 +1191,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   </h3>
                   <button
                     type="button"
-                    onClick={() => setIsEditProfileOpen(true)}
+                    onClick={openEditProfileModal}
                     className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
                     title="Editar biografia e informações"
                   >
@@ -975,7 +1257,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   </h3>
                   <button
                     type="button"
-                    onClick={() => setIsEditProfileOpen(true)}
+                    onClick={openEditProfileModal}
                     className="text-gray-400 hover:text-[#080B0D] transition cursor-pointer"
                     title="Editar redes sociais"
                   >
@@ -1141,8 +1423,26 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
             </div>
           )}
 
-          {/* Center Column: Post Composer & Feed */}
+          {/* Center Column: Post Composer & Universal Feed */}
           <div className={activeTab === 'posts' ? 'lg:col-span-12 space-y-5' : 'lg:col-span-8 space-y-5'}>
+            {/* Universal Timeline Notice Strip */}
+            <div className="bg-[#080B0D] text-white rounded-2xl px-4 py-3 border border-[#FFD400]/30 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <Globe className="w-4 h-4 text-[#FFD400] shrink-0" />
+                <div>
+                  <p className="text-xs font-extrabold text-white leading-tight">
+                    Timeline Universal RODOVAR
+                  </p>
+                  <p className="text-[11px] text-gray-300">
+                    Todos os colaboradores publicam, interagem e celebram juntos em tempo real.
+                  </p>
+                </div>
+              </div>
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-[#FFD400] text-[#080B0D]">
+                {displayedPosts.length} {displayedPosts.length === 1 ? 'publicação' : 'publicações'}
+              </span>
+            </div>
+
             {/* Post Creator Box */}
             <div className="bg-white rounded-2xl p-5 border border-gray-200/90 shadow-2xs space-y-3">
               <div className="flex items-start gap-3">
@@ -1153,9 +1453,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   className="w-10 h-10 rounded-full object-cover border border-[#FFD400] shrink-0 aspect-square"
                 />
                 <textarea
+                  ref={postTextareaRef}
                   value={newPostText}
                   onChange={(e) => setNewPostText(e.target.value)}
-                  placeholder="No que você está pensando hoje?"
+                  placeholder="Compartilhe novidades, avisos ou conquistas com toda a equipe RODOVAR..."
                   rows={3}
                   className="w-full px-3.5 py-2.5 bg-[#F3F5F7] hover:bg-gray-100 focus:bg-white rounded-xl border border-gray-200 text-xs font-medium text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[#FFD400] transition resize-none"
                 />
@@ -1181,7 +1482,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
 
               {/* Composer Action Toolbar */}
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100">
-                <div className="flex items-center gap-1">
+                <div className="flex flex-wrap items-center gap-1.5 relative" ref={emojiPickerRef}>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -1199,14 +1500,60 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                     className="hidden"
                   />
 
+                  <button
+                    type="button"
+                    onClick={() => setIsEmojiPickerOpen((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                      isEmojiPickerOpen
+                        ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                        : 'hover:bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    <Smile className="w-4 h-4 text-amber-500" />
+                    <span>Emoções</span>
+                  </button>
+
+                  {isEmojiPickerOpen && (
+                    <div className="absolute left-0 top-full mt-1.5 z-40 w-[336px] sm:w-[408px] max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-gray-200 shadow-xl p-2 space-y-1.5">
+                      <div className="flex items-center justify-between px-0.5">
+                        <span className="text-[11px] font-extrabold text-[#080B0D]">
+                          Emoções
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setIsEmojiPickerOpen(false)}
+                          className="text-gray-400 hover:text-gray-700 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex flex-row flex-wrap items-center gap-1">
+                        {CORPORATE_EMOTIONS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => handleInsertPostEmoji(emoji)}
+                            className="w-7 h-7 shrink-0 rounded-md hover:bg-amber-50 active:scale-95 text-sm flex items-center justify-center transition cursor-pointer"
+                            title={`Inserir ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <select
                     value={newPostAudience}
                     onChange={(e) => setNewPostAudience(e.target.value)}
+                    aria-label="Público da publicação"
                     className="px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-[11px] font-bold text-gray-700 cursor-pointer"
                   >
-                    <option value="Comercial">Comercial</option>
                     <option value="Público">Público</option>
+                    <option value="Comercial">Comercial</option>
                     <option value="Expedição">Expedição</option>
+                    <option value="Monitoramento">Monitoramento</option>
+                    <option value="Financeiro">Financeiro</option>
                     <option value="Diretoria">Diretoria</option>
                   </select>
                 </div>
@@ -1238,6 +1585,8 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   const isAuthor = post.authorId === currentUser.id;
                   const isAdmin = currentUser.accessLevel === 'ADMINISTRADOR';
                   const isLikedByMe = (post.likes || []).includes(currentUser.id);
+                  const isCongratulatedByMe = (post.congrats || []).includes(currentUser.id);
+                  const postAvatarSrc = resolvePostAuthorAvatar(post.authorId, post.authorAvatar);
 
                   return (
                     <article
@@ -1248,7 +1597,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                       <div className="p-4 sm:p-5 pb-3 flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3">
                           <img
-                            src={post.authorAvatar || '/assets/avatar-joao.jpg'}
+                            src={postAvatarSrc}
                             alt={post.authorName}
                             referrerPolicy="no-referrer"
                             className="w-10 h-10 rounded-full object-cover border border-[#FFD400] shrink-0 aspect-square"
@@ -1270,7 +1619,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                                 })}
                               </span>
                               <span>•</span>
-                              <span className="font-semibold text-gray-600">{post.audience || 'Comercial'}</span>
+                              <span className="font-semibold text-gray-600">{post.audience || 'Público'}</span>
                             </div>
                           </div>
                         </div>
@@ -1393,17 +1742,23 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                       )}
 
                       {/* Reactions & Stats Bar */}
-                      <div className="px-4 sm:px-5 py-2.5 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
-                        <div className="flex items-center gap-1.5 font-medium">
-                          <span className="flex items-center -space-x-1">
-                            <span className="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center text-[10px] shadow-xs">
-                              👍
+                      <div className="px-4 sm:px-5 py-2.5 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+                        <div className="flex flex-wrap items-center gap-3 font-medium">
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center -space-x-1">
+                              <span className="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center text-[10px] shadow-xs">
+                                👍
+                              </span>
+                              <span className="w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] shadow-xs">
+                                ❤️
+                              </span>
                             </span>
-                            <span className="w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] shadow-xs">
-                              ❤️
-                            </span>
-                          </span>
-                          <span>{(post.likes || []).length} curtidas</span>
+                            <span>{(post.likes || []).length} curtidas</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-amber-700 font-semibold">
+                            <span>🎉</span>
+                            <span>{(post.congrats || []).length} parabéns</span>
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -1416,8 +1771,8 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                         </button>
                       </div>
 
-                      {/* Action Buttons: Curtir / Comentar / Compartilhar */}
-                      <div className="px-4 sm:px-5 py-1.5 border-t border-gray-100 grid grid-cols-3 gap-1">
+                      {/* Action Buttons: Curtir / Parabéns / Comentar / Compartilhar */}
+                      <div className="px-4 sm:px-5 py-1.5 border-t border-gray-100 grid grid-cols-2 sm:grid-cols-4 gap-1">
                         <button
                           type="button"
                           onClick={() => handleToggleLike(post.id)}
@@ -1429,6 +1784,19 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                         >
                           <ThumbsUp className={`w-4 h-4 ${isLikedByMe ? 'fill-blue-600 text-blue-600' : ''}`} />
                           <span>Curtir</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCongrats(post.id)}
+                          className={`py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer ${
+                            isCongratulatedByMe
+                              ? 'text-amber-700 bg-amber-50 border border-amber-200/80 font-extrabold shadow-2xs'
+                              : 'text-gray-600 hover:bg-amber-50/60 hover:text-amber-700'
+                          }`}
+                        >
+                          <PartyPopper className={`w-4 h-4 ${isCongratulatedByMe ? 'text-amber-600' : ''}`} />
+                          <span>Parabéns</span>
                         </button>
 
                         <button
@@ -1468,7 +1836,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                               post.comments.map((comment) => (
                                 <div key={comment.id} className="flex items-start gap-2.5 group">
                                   <img
-                                    src={comment.authorAvatar || '/assets/avatar-joao.jpg'}
+                                    src={resolvePostAuthorAvatar(comment.authorId, comment.authorAvatar)}
                                     alt={comment.authorName}
                                     referrerPolicy="no-referrer"
                                     className="w-8 h-8 rounded-full object-cover shrink-0 aspect-square"
@@ -1507,7 +1875,7 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                           </div>
 
                           {/* New comment input */}
-                          <div className="flex items-center gap-2 pt-2">
+                          <div className="flex items-center gap-2 pt-2 relative">
                             <img
                               src={effectiveAvatarSrc}
                               alt={userDisplayName}
@@ -1535,6 +1903,18 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                               />
                               <button
                                 type="button"
+                                onClick={() =>
+                                  setActiveCommentEmojiPostId(
+                                    activeCommentEmojiPostId === post.id ? null : post.id
+                                  )
+                                }
+                                className="text-gray-400 hover:text-amber-600 cursor-pointer"
+                                title="Inserir emoji no comentário"
+                              >
+                                <Smile className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => handleAddComment(post.id)}
                                 disabled={
                                   isSubmittingComment ||
@@ -1545,6 +1925,26 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                                 <Send className="w-4 h-4" />
                               </button>
                             </div>
+                            {activeCommentEmojiPostId === post.id && (
+                              <div className="absolute right-0 top-full mt-1.5 z-40 bg-white rounded-xl border border-gray-200 shadow-lg p-1.5 flex flex-row flex-wrap items-center gap-1 w-[256px] sm:w-[310px] max-w-[calc(100vw-2rem)]">
+                                {CORPORATE_EMOTIONS.slice(0, 18).map((emoji) => (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    onClick={() => {
+                                      setCommentInputText((prev) => ({
+                                        ...prev,
+                                        [post.id]: `${prev[post.id] || ''}${emoji}`,
+                                      }));
+                                      setActiveCommentEmojiPostId(null);
+                                    }}
+                                    className="w-7 h-7 shrink-0 rounded-md hover:bg-amber-50 text-sm flex items-center justify-center cursor-pointer"
+                                  >
+                                    {emoji}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -1664,7 +2064,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   maxLength={120}
                   required
                   value={accountForm.name}
-                  onChange={(e) => setAccountForm((prev) => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) => {
+                    isAccountDirtyRef.current = true;
+                    setAccountForm((prev) => ({ ...prev, name: e.target.value }));
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
                 />
               </div>
@@ -1678,7 +2081,10 @@ export const SocialProfileView: React.FC<SocialProfileViewProps> = ({
                   type="text"
                   maxLength={40}
                   value={accountForm.phoneExt}
-                  onChange={(e) => setAccountForm((prev) => ({ ...prev, phoneExt: e.target.value }))}
+                  onChange={(e) => {
+                    isAccountDirtyRef.current = true;
+                    setAccountForm((prev) => ({ ...prev, phoneExt: e.target.value }));
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#FFD400] focus:outline-none"
                 />
               </div>

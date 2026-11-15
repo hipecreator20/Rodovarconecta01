@@ -208,8 +208,8 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
     const defaultRole: UserRole = target.accessLevel || 'FUNCIONARIO';
     const resolvedSector = resolveEmployeeSectorLabel(target) as Department;
     const defaultPerms =
-      target.permissoesPaginas && target.permissoesPaginas.length > 0 && target.approvalStatus === 'APROVADO'
-        ? [...target.permissoesPaginas]
+      Array.isArray(target.permissoesPaginas) && target.permissoesPaginas.length > 0
+        ? Array.from(new Set(target.permissoesPaginas))
         : getDefaultPermissionsForDepartment(resolvedSector, defaultRole, target.accessProfile);
 
     setDecisionModal({
@@ -568,6 +568,11 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                           {acc.accessProfile && acc.accessProfile !== acc.accessLevel && (
                             <span className="inline-block font-mono text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded">
                               {acc.accessProfile}
+                            </span>
+                          )}
+                          {acc.accessLevel !== 'ADMINISTRADOR' && (
+                            <span className="inline-block font-mono text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
+                              {(acc.permissoesPaginas?.length || 0)} págs
                             </span>
                           )}
                         </div>
@@ -1007,11 +1012,14 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
                     <label className="font-extrabold text-[#15191D]">
-                      Permissões Explícitas de Páginas e Módulos
+                      Permissões Explícitas de Páginas e Módulos{' '}
+                      <span className="font-mono text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded ml-1">
+                        {decisionModal.permissoesPaginas.length}/{AVAILABLE_MODULES.length} ativas
+                      </span>
                     </label>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() =>
@@ -1029,6 +1037,21 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                         onClick={() =>
                           setDecisionModal({
                             ...decisionModal,
+                            permissoesPaginas: getDefaultPermissionsForDepartment(
+                              decisionModal.department,
+                              decisionModal.accessLevel
+                            ),
+                          })
+                        }
+                        className="text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        Padrão do Setor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDecisionModal({
+                            ...decisionModal,
                             permissoesPaginas: ['inicio'],
                           })
                         }
@@ -1039,16 +1062,16 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[#F8FAFC] border border-gray-200 p-2.5 rounded-xl max-h-52 overflow-y-auto">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[#F8FAFC] border border-gray-200 p-2.5 rounded-xl max-h-60 overflow-y-auto">
                     {AVAILABLE_MODULES.map((mod) => {
                       const checked = decisionModal.permissoesPaginas.includes(mod.id);
                       return (
                         <label
                           key={mod.id}
-                          className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer ${
+                          className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition ${
                             checked
-                              ? 'bg-amber-50 border-[#FFD400] font-bold text-[#15191D]'
-                              : 'bg-white border-gray-200 text-gray-600'
+                              ? 'bg-amber-50/90 border-[#FFD400] font-bold text-[#15191D] shadow-2xs'
+                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
                           }`}
                         >
                           <input
@@ -1056,7 +1079,7 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                             checked={checked}
                             onChange={(e) => {
                               const next = e.target.checked
-                                ? [...decisionModal.permissoesPaginas, mod.id]
+                                ? Array.from(new Set([...decisionModal.permissoesPaginas, mod.id]))
                                 : decisionModal.permissoesPaginas.filter((id) => id !== mod.id);
                               setDecisionModal({
                                 ...decisionModal,
@@ -1065,7 +1088,23 @@ export const AccessReleaseTab: React.FC<AccessReleaseTabProps> = ({
                             }}
                             className="mt-0.5 rounded text-[#080B0D]"
                           />
-                          <span>{mod.label}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="truncate">{mod.label}</span>
+                              <span
+                                className={`text-[9px] font-mono font-extrabold px-1.5 py-0.5 rounded shrink-0 ${
+                                  checked
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-gray-100 text-gray-500'
+                                }`}
+                              >
+                                {checked ? 'ATIVA' : mod.badgeCategory}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-gray-500 font-normal leading-tight line-clamp-2 mt-0.5">
+                              {mod.description}
+                            </p>
+                          </div>
                         </label>
                       );
                     })}
