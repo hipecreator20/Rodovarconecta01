@@ -3416,12 +3416,12 @@ export const FinanceiroFretesView: React.FC<FinanceiroFretesViewProps> = ({
               {/* 5. Pré-visualização do comprovante */}
               {activeDraftForInstallment ? (
                 <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/40 space-y-2 min-w-0">
-                  <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                    <span className="text-xs font-bold text-amber-200 break-all min-w-0 flex-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 min-w-0">
+                    <span className="text-xs font-bold text-amber-200 break-all min-w-0">
                       {activeDraftForInstallment.fileName} (
                       {formatFileSize(activeDraftForInstallment.sizeBytes)})
                     </span>
-                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-400 text-black shrink-0">
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-400 text-black shrink-0 self-start sm:self-center">
                       Rascunho
                     </span>
                   </div>
