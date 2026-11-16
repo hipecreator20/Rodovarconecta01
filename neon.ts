@@ -53,6 +53,20 @@ export const pool = new Pool({
   max: 5,
 });
 
+pool.on('error', (err) => {
+  console.warn('Neon Postgres pool error:', (err as Error)?.message || err);
+});
+
+export function isNeonQuotaError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '').toLowerCase();
+  return (
+    msg.includes('402') ||
+    msg.includes('exceeded the quota') ||
+    msg.includes('compute time quota') ||
+    msg.includes('upgrade your plan to increase limits')
+  );
+}
+
 export const sql = isNeonConfigured ? neon(connectionString) : null;
 
 const pendingNeonWrites = new Set<Promise<unknown>>();
@@ -84,8 +98,10 @@ export async function flushPendingNeonWrites(timeoutMs = 15000): Promise<void> {
 }
 
 const NEON_SCHEMA_VERSION = '2027.07.v1';
+const NEON_SCHEMA_FAIL_COOLDOWN_MS = 30_000;
 let neonSchemaInitialized = false;
 let neonSchemaInitPromise: Promise<void> | null = null;
+let neonSchemaLastFailMs = 0;
 
 export async function testNeonConnection(): Promise<boolean> {
   if (!isNeonConfigured || !sql) {
@@ -95,13 +111,26 @@ export async function testNeonConnection(): Promise<boolean> {
     await sql`SELECT 1 AS ok`;
     return true;
   } catch (error) {
+    if (isNeonQuotaError(error)) {
+      console.warn('Neon Postgres connection unavailable (quota):', (error as Error).message);
+      return false;
+    }
     try {
       const client = await pool.connect();
+      const onClientError = (err: unknown) => {
+        console.warn('Neon Postgres client error:', (err as Error)?.message || err);
+      };
+      client.on('error', onClientError);
+      let hadError = false;
       try {
         await client.query('SELECT 1');
         return true;
+      } catch (queryErr) {
+        hadError = true;
+        throw queryErr;
       } finally {
-        client.release();
+        client.removeListener('error', onClientError);
+        client.release(hadError);
       }
     } catch (poolErr) {
       console.warn('Neon Postgres connection failed:', (poolErr as Error).message || (error as Error).message);
@@ -225,6 +254,9 @@ export async function initializeNeonSchema(): Promise<void> {
   if (neonSchemaInitialized) {
     return;
   }
+  if (neonSchemaLastFailMs > 0 && Date.now() - neonSchemaLastFailMs < NEON_SCHEMA_FAIL_COOLDOWN_MS) {
+    return;
+  }
   if (neonSchemaInitPromise) {
     return neonSchemaInitPromise;
   }
@@ -239,14 +271,28 @@ export async function initializeNeonSchema(): Promise<void> {
           `;
           if (check[0]?.payload?.version === NEON_SCHEMA_VERSION) {
             neonSchemaInitialized = true;
+            neonSchemaLastFailMs = 0;
             return;
           }
-        } catch {
+        } catch (checkErr) {
+          if (isNeonQuotaError(checkErr)) {
+            neonSchemaLastFailMs = Date.now();
+            console.warn(
+              'Neon schema check skipped (quota/unavailable):',
+              (checkErr as Error).message
+            );
+            return;
+          }
           // Table may not exist yet — proceed to DDL initialization
         }
       }
 
       const client = await pool.connect();
+      const onClientError = (err: unknown) => {
+        console.warn('Neon Postgres init client error:', (err as Error)?.message || err);
+      };
+      client.on('error', onClientError);
+      let hadError = false;
       try {
         await client.query(`
       CREATE TABLE IF NOT EXISTS rodovar_users (
@@ -557,11 +603,17 @@ export async function initializeNeonSchema(): Promise<void> {
       [JSON.stringify({ version: NEON_SCHEMA_VERSION, updatedAt: new Date().toISOString() })]
     );
         neonSchemaInitialized = true;
+        neonSchemaLastFailMs = 0;
         console.log('Neon Postgres schema & data synchronized successfully.');
+      } catch (initQueryErr) {
+        hadError = true;
+        throw initQueryErr;
       } finally {
-        client.release();
+        client.removeListener('error', onClientError);
+        client.release(hadError);
       }
     } catch (error) {
+      neonSchemaLastFailMs = Date.now();
       console.warn('Neon schema/data synchronization failed:', (error as Error).message);
     }
   })().finally(() => {

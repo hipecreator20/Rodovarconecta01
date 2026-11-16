@@ -510,6 +510,13 @@ var pool = new Pool({
   idleTimeoutMillis: 5e3,
   max: 5
 });
+pool.on("error", (err) => {
+  console.warn("Neon Postgres pool error:", err?.message || err);
+});
+function isNeonQuotaError(err) {
+  const msg = String(err?.message || err || "").toLowerCase();
+  return msg.includes("402") || msg.includes("exceeded the quota") || msg.includes("compute time quota") || msg.includes("upgrade your plan to increase limits");
+}
 var sql = isNeonConfigured ? neon(connectionString) : null;
 var pendingNeonWrites = /* @__PURE__ */ new Set();
 function trackNeonWrite(promise) {
@@ -536,8 +543,10 @@ async function flushPendingNeonWrites(timeoutMs = 15e3) {
   }
 }
 var NEON_SCHEMA_VERSION = "2027.07.v1";
+var NEON_SCHEMA_FAIL_COOLDOWN_MS = 3e4;
 var neonSchemaInitialized = false;
 var neonSchemaInitPromise = null;
+var neonSchemaLastFailMs = 0;
 async function testNeonConnection() {
   if (!isNeonConfigured || !sql) {
     return false;
@@ -546,13 +555,26 @@ async function testNeonConnection() {
     await sql`SELECT 1 AS ok`;
     return true;
   } catch (error) {
+    if (isNeonQuotaError(error)) {
+      console.warn("Neon Postgres connection unavailable (quota):", error.message);
+      return false;
+    }
     try {
       const client = await pool.connect();
+      const onClientError = (err) => {
+        console.warn("Neon Postgres client error:", err?.message || err);
+      };
+      client.on("error", onClientError);
+      let hadError = false;
       try {
         await client.query("SELECT 1");
         return true;
+      } catch (queryErr) {
+        hadError = true;
+        throw queryErr;
       } finally {
-        client.release();
+        client.removeListener("error", onClientError);
+        client.release(hadError);
       }
     } catch (poolErr) {
       console.warn("Neon Postgres connection failed:", poolErr.message || error.message);
@@ -643,6 +665,9 @@ async function initializeNeonSchema() {
   if (neonSchemaInitialized) {
     return;
   }
+  if (neonSchemaLastFailMs > 0 && Date.now() - neonSchemaLastFailMs < NEON_SCHEMA_FAIL_COOLDOWN_MS) {
+    return;
+  }
   if (neonSchemaInitPromise) {
     return neonSchemaInitPromise;
   }
@@ -655,12 +680,26 @@ async function initializeNeonSchema() {
           `;
           if (check[0]?.payload?.version === NEON_SCHEMA_VERSION) {
             neonSchemaInitialized = true;
+            neonSchemaLastFailMs = 0;
             return;
           }
-        } catch {
+        } catch (checkErr) {
+          if (isNeonQuotaError(checkErr)) {
+            neonSchemaLastFailMs = Date.now();
+            console.warn(
+              "Neon schema check skipped (quota/unavailable):",
+              checkErr.message
+            );
+            return;
+          }
         }
       }
       const client = await pool.connect();
+      const onClientError = (err) => {
+        console.warn("Neon Postgres init client error:", err?.message || err);
+      };
+      client.on("error", onClientError);
+      let hadError = false;
       try {
         await client.query(`
       CREATE TABLE IF NOT EXISTS rodovar_users (
@@ -970,11 +1009,17 @@ async function initializeNeonSchema() {
           [JSON.stringify({ version: NEON_SCHEMA_VERSION, updatedAt: (/* @__PURE__ */ new Date()).toISOString() })]
         );
         neonSchemaInitialized = true;
+        neonSchemaLastFailMs = 0;
         console.log("Neon Postgres schema & data synchronized successfully.");
+      } catch (initQueryErr) {
+        hadError = true;
+        throw initQueryErr;
       } finally {
-        client.release();
+        client.removeListener("error", onClientError);
+        client.release(hadError);
       }
     } catch (error) {
+      neonSchemaLastFailMs = Date.now();
       console.warn("Neon schema/data synchronization failed:", error.message);
     }
   })().finally(() => {
@@ -3982,8 +4027,8 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
   });
   app.post("/api/profile/posts", guard, async (req, res) => {
     const sessionUser = req.sessionUser;
-    const { content, images, audience } = req.body || {};
-    if (!content && (!Array.isArray(images) || images.length === 0)) {
+    const { content, images, audioUrl, videoUrl, audience } = req.body || {};
+    if (!content && (!Array.isArray(images) || images.length === 0) && !audioUrl && !videoUrl) {
       return res.status(400).json({ error: "A publica\xE7\xE3o n\xE3o pode estar vazia." });
     }
     const cleanContent = String(content || "").trim().slice(0, 3e3);
@@ -4030,6 +4075,8 @@ function registerSocialProfileRoutes(app, guard, dbState2) {
       authorDepartment: sessionUser.department || "Geral",
       content: cleanContent,
       images: validImages,
+      audioUrl: typeof audioUrl === "string" ? audioUrl : void 0,
+      videoUrl: typeof videoUrl === "string" ? videoUrl : void 0,
       likes: [],
       congrats: [],
       comments: [],
@@ -4951,7 +4998,7 @@ var FREIGHTS_STORE_DIR = path10.join(ROOT_DIR, "data", "freights-store");
 var FREIGHT_ATTACHMENTS_DIR = path10.join(ROOT_DIR, "data", "freight-attachments");
 var NOTIFICATIONS_FILE = path10.join(FREIGHTS_STORE_DIR, "_notifications.json");
 var SEQUENCE_FILE = path10.join(FREIGHTS_STORE_DIR, "_sequence.json");
-var MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+var MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 function formatSaoPauloDateTime(date = /* @__PURE__ */ new Date()) {
   const iso = date.toISOString();
   const partsFormatter = new Intl.DateTimeFormat("pt-BR", {
@@ -5039,6 +5086,28 @@ function computePendingForExpedicao(freight) {
   }
   return pending;
 }
+function getOrCreateSubDoc(freightId) {
+  let sub = freightSubDocs.get(freightId);
+  if (!sub) {
+    sub = {
+      freightId,
+      anexos: [],
+      comentarios: [],
+      ocorrencias: [],
+      historico: []
+    };
+    freightSubDocs.set(freightId, sub);
+  }
+  return sub;
+}
+function isDeliveryProofAttachment(att) {
+  if (att.category === "COMPROVANTE_ENTREGA") return true;
+  if (att.category === "COMPROVANTE_PAGAMENTO" || att.category === "COMERCIAL") {
+    return false;
+  }
+  const text = `${att.label || ""} ${att.fileName || ""}`;
+  return /canhoto/i.test(text) || /comprovante.*entrega|entrega.*comprovante/i.test(text);
+}
 function syncSubDocCounters(freight, sub) {
   freight.anexosCount = sub.anexos.length;
   freight.comentariosCount = sub.comentarios.length;
@@ -5047,8 +5116,10 @@ function syncSubDocCounters(freight, sub) {
   freight.ocorrenciasImpeditivasCount = openOccs.filter((o) => o.severity === "IMPEDITIVA").length;
   freight.checklistConcluidosCount = expeditionChecklistCount(freight);
   freight.camposPendentesExpedicao = computePendingForExpedicao(freight);
-  const deliveryProofs = sub.anexos.filter((a) => a.category === "COMPROVANTE_ENTREGA");
-  const verifiedProof = deliveryProofs.find((a) => a.conferido);
+  const deliveryProofs = sub.anexos.filter((a) => isDeliveryProofAttachment(a));
+  const verifiedProof = deliveryProofs.find((a) => a.conferido) || (freight.comprovanteEntregaAnexoId ? sub.anexos.find(
+    (a) => a.id === freight.comprovanteEntregaAnexoId && a.conferido && a.category !== "COMPROVANTE_PAGAMENTO" && a.category !== "COMERCIAL"
+  ) : void 0);
   if (verifiedProof) {
     freight.comprovanteEntregaAnexoId = verifiedProof.id;
     freight.comprovanteEntregaConferido = true;
@@ -5613,7 +5684,7 @@ function validateAttachmentFileBuffer(buf, originalFileName) {
     return { valid: false, error: "Arquivo vazio ou inv\xE1lido." };
   }
   if (buf.length > MAX_ATTACHMENT_BYTES) {
-    return { valid: false, error: "O anexo excede o limite m\xE1ximo de 5 MB." };
+    return { valid: false, error: "O anexo excede o limite m\xE1ximo de 10 MB." };
   }
   const headAscii = buf.subarray(0, Math.min(buf.length, 512)).toString("utf8").trim().toLowerCase();
   if (headAscii.startsWith("<svg") || headAscii.includes("<svg") || headAscii.startsWith("<?xml") || headAscii.startsWith("<!doctype") || headAscii.startsWith("<html") || headAscii.startsWith("<script") || buf[0] === 77 && buf[1] === 90 || // MZ EXE
@@ -5638,7 +5709,7 @@ function validateAttachmentFileBuffer(buf, originalFileName) {
   }
   return {
     valid: false,
-    error: `Formato do arquivo "${originalFileName}" n\xE3o suportado. Envie PDF, PNG, JPEG ou WebP de at\xE9 5 MB.`
+    error: `Formato do arquivo "${originalFileName}" n\xE3o suportado. Envie PDF, PNG, JPEG ou WebP de at\xE9 10 MB.`
   };
 }
 function sanitizeFreightForUser(freight, user, isSharedAvailableQueueItem = false) {
@@ -6249,7 +6320,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
     if (!includeCanceled) {
       scopedRecords = scopedRecords.filter((f) => !isCanceledFreight(f));
     }
-    const isMonitoringPendingFreight = (f) => !isCanceledFreight(f) && (f.ocorrenciasAbertasCount > 0 || Boolean(f.requerReconfirmacaoOperacional) || Boolean(f.ordemColetaPendente) || f.situacaoMonitoramento === "ENTREGUE" && !f.comprovanteEntregaConferido);
+    const isMonitoringPendingFreight = (f) => !isCanceledFreight(f) && !["ENTREGUE", "FINALIZADO"].includes(f.situacaoMonitoramento || "");
     const monActiveStages = [
       "NOVO_PARA_CARREGAR",
       "EM_DESLOCAMENTO_COLETA",
@@ -6377,7 +6448,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       CONCLUIDO: activeExpedicaoPool.filter((f) => f.situacaoOperacional === "CONCLUIDO").length,
       COLETAS_HOJE: activeExpedicaoPool.filter((f) => f.dataColetaIso === todaySp).length,
       PENDENCIAS: activeExpedicaoPool.filter(
-        (f) => f.ocorrenciasAbertasCount > 0 || Boolean(f.requerReconfirmacaoOperacional) || Boolean(f.devolvidoParaCorrecao) || Boolean(f.ordemColetaPendente) || !matchesExpedicaoStage(f, "LIBERADO_MONITORAMENTO") && f.checklistConcluidosCount < 5
+        (f) => f.situacaoOperacional !== "CONCLUIDO"
       ).length,
       CANCELADO: expedicaoKpiSource.filter(isCanceledFreight).length,
       DISPONIVEIS_FILA: availableToClaimCount
@@ -6895,7 +6966,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const editReason = String(body.reason || body.motivo || "").trim();
       if (wasSentToNextStage && changedRelevantFields.length > 0) {
         const wasReleased = freight.situacaoOperacional === "LIBERADO_MONITORAMENTO";
@@ -6995,7 +7066,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       const idemKey = checkIdempotency(req, res, user.id);
       if (idemKey === "__HANDLED__") return;
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       if (targetStatus === "EM_NEGOCIACAO") {
         if (!["CONTRATADO", "EM_NEGOCIACAO"].includes(freight.situacaoComercial)) {
           res.status(400).json({
@@ -7159,7 +7230,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
@@ -7404,7 +7475,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           freight.monitoramentoResponsavelNome = null;
         }
       }
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       if (body.checklistFechamento && typeof body.checklistFechamento === "object") {
         const prev = freight.checklistFechamento || {
           motoristaConfirmado: false,
@@ -7537,7 +7608,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         return;
       }
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       if (action === "EMITIR_ORDEM_CARREGAMENTO" || action === "EMITIR_ORDEM") {
         if (freight.empresaMarca === "AXD") {
           res.status(400).json({
@@ -8054,7 +8125,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           });
           return;
         }
-      } else if (user.accessLevel !== "ADMINISTRADOR" && (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id)) {
+      } else if (user.accessLevel !== "ADMINISTRADOR" && (!(canOperateMonitoring(user) || canAccessMonitoramentoFreights(user)) || freight.monitoramentoResponsavelId !== user.id)) {
         res.status(403).json({
           error: "Permiss\xE3o negada: apenas o Operador de Monitoramento respons\xE1vel ou a Gest\xE3o pode atualizar o acompanhamento deste frete.",
           code: "FORBIDDEN_MONITORAMENTO_ACTION"
@@ -8066,6 +8137,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         targetStage,
         horarioRealEvento,
         observacoes,
+        enderecoEntrega,
         ultimaLocalizacaoInformada,
         orientacoesMotorista,
         dataColetaIso,
@@ -8089,7 +8161,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         return;
       }
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const cleanRealTime = String(horarioRealEvento || sp.formatted).trim().slice(0, 60);
       const cleanObs = String(observacoes || rawReason || motivo || "").trim().slice(0, 500);
       if (action === "AVANCAR_ETAPA") {
@@ -8105,6 +8177,9 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         if (!validStages.includes(targetStage)) {
           res.status(400).json({ error: "Etapa de monitoramento inv\xE1lida." });
           return;
+        }
+        if (typeof enderecoEntrega === "string" && enderecoEntrega.trim().length > 0) {
+          freight.enderecoEntrega = enderecoEntrega.trim().slice(0, 240);
         }
         const stageLabels = {
           NAO_LIBERADO: "N\xE3o liberado",
@@ -8124,7 +8199,8 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
           res.json({ ok: true, freight: sanitizeFreightForUser(freight, user), historico: sub.historico });
           return;
         }
-        if (nextIndex !== currentIndex + 1) {
+        const allowDirectFinalizeFromDeliverySite = freight.situacaoMonitoramento === "NO_LOCAL_ENTREGA" && targetStage === "FINALIZADO";
+        if (nextIndex !== currentIndex + 1 && !allowDirectFinalizeFromDeliverySite) {
           res.status(409).json({ error: "Transi\xE7\xE3o fora da sequ\xEAncia operacional." });
           return;
         }
@@ -8143,20 +8219,22 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
             });
             return;
           }
-          const verifiedDeliveryProof = sub.anexos.find(
-            (a) => a.category === "COMPROVANTE_ENTREGA" && a.conferido === true
-          );
+          const deliveryProofs = sub.anexos.filter((a) => isDeliveryProofAttachment(a));
+          const verifiedDeliveryProof = deliveryProofs.find((a) => a.conferido) || (freight.comprovanteEntregaConferido && freight.comprovanteEntregaAnexoId ? sub.anexos.find((a) => a.id === freight.comprovanteEntregaAnexoId && a.conferido) : void 0);
           if (!verifiedDeliveryProof) {
+            const hasUnverifiedProof = deliveryProofs.length > 0;
             res.status(400).json({
-              error: "Finaliza\xE7\xE3o recusada: \xE9 obrigat\xF3rio anexar e conferir o Comprovante de Entrega antes de finalizar o monitoramento.",
-              code: "MISSING_VERIFIED_DELIVERY_PROOF"
+              error: hasUnverifiedProof ? 'Finaliza\xE7\xE3o bloqueada: o Comprovante de Entrega (canhoto) foi anexado, mas ainda aguarda confer\xEAncia. Acesse a aba Comprovantes e clique em "Conferir comprovante" antes de finalizar.' : "Finaliza\xE7\xE3o recusada: \xE9 obrigat\xF3rio anexar o Comprovante de Entrega (canhoto) e marc\xE1-lo como Conferido na aba Comprovantes antes de finalizar o monitoramento.",
+              code: hasUnverifiedProof ? "UNVERIFIED_DELIVERY_PROOF" : "MISSING_VERIFIED_DELIVERY_PROOF"
             });
             return;
           }
           freight.situacaoMonitoramento = "FINALIZADO";
           freight.situacaoOperacional = "CONCLUIDO";
           freight.situacaoComercial = "FINALIZADO";
-          freight.entregaComprovadaEm = cleanRealTime;
+          if (!freight.entregaComprovadaEm) {
+            freight.entregaComprovadaEm = cleanRealTime;
+          }
           freight.comprovanteEntregaConferido = true;
           freight.comprovanteEntregaAnexoId = verifiedDeliveryProof.id;
         } else {
@@ -8493,7 +8571,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         severity
       ) ? severity : "MEDIA";
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       let occAttachment;
       if (attachment && typeof attachment.dataUrl === "string" && attachment.dataUrl.includes(",")) {
         const base64Part = attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1);
@@ -8649,7 +8727,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.status(403).json({ error: "Sem permiss\xE3o para resolver ocorr\xEAncia neste frete." });
         return;
       }
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const occ = sub.ocorrencias.find((o) => o.id === occId);
       if (!occ) {
         res.status(404).json({ error: "Ocorr\xEAncia n\xE3o encontrada." });
@@ -8702,7 +8780,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         return;
       }
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const sector = user.accessLevel !== "FUNCIONARIO" ? "GESTAO" : canAccessExpedicaoFreights(user) && freight.expedicaoResponsavelId === user.id || freight.monitoramentoResponsavelId === user.id ? "EXPEDICAO" : "COMERCIAL";
       const comment = {
         id: `fcom-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
@@ -8795,6 +8873,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       });
       const sp = formatSaoPauloDateTime();
       const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
+      const initiallyVerified = req.body?.conferido === true;
       const attachment = {
         id: `fatt-${Date.now()}-${crypto11.randomBytes(3).toString("hex")}`,
         freightId: freight.id,
@@ -8805,15 +8884,21 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         mimeType: validation.mimeType,
         sizeBytes: fileBuf.length,
         sizeLabel: sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`,
-        conferido: false,
-        // Never assume verified merely by upload!
+        conferido: initiallyVerified,
+        conferidoPorId: initiallyVerified ? user.id : void 0,
+        conferidoPorNome: initiallyVerified ? user.name : void 0,
+        conferidoEmFormatado: initiallyVerified ? sp.formatted : void 0,
         uploadedById: user.id,
         uploadedByName: user.name,
         uploadedAtIso: sp.iso,
         uploadedAtFormatted: sp.formatted
       };
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       sub.anexos.unshift(attachment);
+      if (isDeliveryProofAttachment(attachment) && initiallyVerified) {
+        freight.comprovanteEntregaConferido = true;
+        freight.comprovanteEntregaAnexoId = attachment.id;
+      }
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
@@ -8822,7 +8907,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         actorName: user.name,
         actorSector: freight.monitoramentoResponsavelId === user.id ? "Monitoramento" : canAccessExpedicaoFreights(user) ? "Expedi\xE7\xE3o" : "Comercial",
         eventType: "UPLOAD_ANEXO",
-        summary: `Anexo adicionado (${attachment.label}: ${attachment.fileName}, ${attachment.sizeLabel}) \u2014 aguardando confer\xEAncia.`
+        summary: `Anexo adicionado (${attachment.label}: ${attachment.fileName}, ${attachment.sizeLabel}) \u2014 ${initiallyVerified ? "conferido e validado." : "aguardando confer\xEAncia."}`
       });
       persistFreightAndSubDoc(freight, sub);
       const payload = {
@@ -8848,29 +8933,41 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         res.status(404).json({ error: "Frete n\xE3o encontrado." });
         return;
       }
-      const isAssignedOrManager = freight.expedicaoResponsavelId === user.id || freight.monitoramentoResponsavelId === user.id || canViewFreightTeam(user);
-      const hasOperationalPerm = canAccessExpedicaoFreights(user) || canAccessMonitoramentoFreights(user);
-      if (!hasOperationalPerm || !isAssignedOrManager) {
+      const isAdminOrDirector = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA";
+      const isAssignedOperator = freight.expedicaoResponsavelId === user.id || freight.monitoramentoResponsavelId === user.id || freight.comercialResponsavelId === user.id;
+      const hasOperationalPerm = isAdminOrDirector || isLogisticsManager(user) || canAccessExpedicaoFreights(user) || canAccessMonitoramentoFreights(user) || canOperateMonitoring(user) || canAccessFinanceiroFreights(user);
+      const hasScopeAccess = isAdminOrDirector || isLogisticsManager(user) || isAssignedOperator || canViewFreightTeam(user);
+      if (!hasOperationalPerm || !hasScopeAccess) {
         res.status(403).json({
-          error: "Apenas o respons\xE1vel da Expedi\xE7\xE3o ou do Monitoramento pode atestar a confer\xEAncia de documentos.",
+          error: "Apenas o respons\xE1vel da Expedi\xE7\xE3o, do Monitoramento ou a Gest\xE3o pode atestar a confer\xEAncia de documentos.",
           code: "FORBIDDEN_VERIFY_ATTACHMENT"
         });
         return;
       }
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const att = sub.anexos.find((a) => a.id === attId);
       if (!att) {
         res.status(404).json({ error: "Anexo n\xE3o encontrado." });
         return;
       }
       const sp = formatSaoPauloDateTime();
-      att.conferido = Boolean(req.body?.conferido ?? true);
-      att.conferidoPorId = user.id;
-      att.conferidoPorNome = user.name;
-      att.conferidoEmFormatado = sp.formatted;
-      if (att.category === "COMPROVANTE_ENTREGA") {
-        freight.comprovanteEntregaConferido = att.conferido;
-        freight.comprovanteEntregaAnexoId = att.conferido ? att.id : void 0;
+      const nextVerified = req.body?.conferido === void 0 ? true : Boolean(req.body.conferido);
+      if (req.body?.markAsDeliveryProof === true && att.category === "OUTRO") {
+        att.category = "COMPROVANTE_ENTREGA";
+      }
+      att.conferido = nextVerified;
+      if (nextVerified) {
+        att.conferidoPorId = user.id;
+        att.conferidoPorNome = user.name;
+        att.conferidoEmFormatado = sp.formatted;
+      } else {
+        att.conferidoPorId = void 0;
+        att.conferidoPorNome = void 0;
+        att.conferidoEmFormatado = void 0;
+      }
+      if (isDeliveryProofAttachment(att) || req.body?.markAsDeliveryProof === true) {
+        freight.comprovanteEntregaConferido = nextVerified;
+        freight.comprovanteEntregaAnexoId = att.id;
       }
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
@@ -8972,7 +9069,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         });
         return;
       }
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const attIdx = sub.anexos.findIndex((a) => a.id === attId);
       if (attIdx === -1) {
         res.status(404).json({ error: "Anexo n\xE3o encontrado." });
@@ -9024,7 +9121,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         });
         return;
       }
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const count = sub.anexos.length;
       for (const att of sub.anexos) {
         try {
@@ -9097,7 +9194,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
         return;
       }
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       const targetSector = String(sector || "EXPEDICAO").toUpperCase();
       if (targetSector === "COMERCIAL") {
         if (!canAccessComercialFreights(targetUser) || targetUser.accessLevel === "ADMINISTRADOR") {
@@ -9246,7 +9343,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
@@ -9339,7 +9436,7 @@ function registerUnifiedFreightRoutes(app, requireApprovedSession2, getAllServer
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
-      const sub = freightSubDocs.get(freight.id);
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
@@ -11712,9 +11809,12 @@ var activeNeonSyncPromise = null;
 var activeFreightNeonSyncPromise = null;
 var initialNeonBootDone = false;
 var initialNeonBootPromise = null;
+var neonBootLastFailMs = 0;
+var NEON_BOOT_FAIL_COOLDOWN_MS = 2e4;
 var cachedEconomicMode = null;
 async function ensureNeonBootstrapped() {
   if (!isNeonConfigured || isIsolatedTestEnv() || initialNeonBootDone && dbState.users.length > 0) return;
+  if (neonBootLastFailMs > 0 && Date.now() - neonBootLastFailMs < NEON_BOOT_FAIL_COOLDOWN_MS) return;
   if (initialNeonBootPromise) return initialNeonBootPromise;
   initialNeonBootPromise = (async () => {
     try {
@@ -11722,8 +11822,12 @@ async function ensureNeonBootstrapped() {
       const syncOk = await syncAllModulesFromNeonIfNeeded(true);
       if (syncOk && dbState.users.length > 0) {
         initialNeonBootDone = true;
+        neonBootLastFailMs = 0;
+      } else {
+        neonBootLastFailMs = Date.now();
       }
     } catch (err) {
+      neonBootLastFailMs = Date.now();
       console.warn("Neon bootstrap notice:", err.message);
     } finally {
       initialNeonBootPromise = null;
@@ -11944,6 +12048,9 @@ async function syncAllModulesFromNeonIfNeeded(force = false) {
       }
       if (tasks.length > 0) {
         await Promise.all(tasks);
+      }
+      if (dbState.users.length > 0 && (tasks.length > 0 || !fs12.existsSync(DB_FILE_PATH))) {
+        saveLocalDbFile(dbState);
       }
       return true;
     } catch (err) {
@@ -12390,7 +12497,7 @@ function createExpressApp() {
         const p = req.path, profile = user.accessProfile;
         const isManagerOrAdmin = user.accessLevel === "ADMINISTRADOR" || user.accessLevel === "DIRETORIA";
         const isSharedAction = /\/(comments|attachments(\/[^/]+)?(\/verify)?|occurrences(\/[^/]+\/resolve)?|transfer|cancel|reactivate|reopen)$/.test(p);
-        const permitted = isManagerOrAdmin || isSharedAction && (profile === "COMERCIAL" || profile === "EXPEDICAO" || profile === "FINANCEIRO" || canOperateMonitoring(user) || hasPagePermission(user, "fretes_transferir") || hasPagePermission(user, "fretes_cancelar")) || profile === "COMERCIAL" && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p)) || profile === "EXPEDICAO" && /\/(claim|operational-data|operational|expedicao-action|occurrences(\/[^/]+\/resolve)?)$/.test(p) || canOperateMonitoring(user) && /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p);
+        const permitted = isManagerOrAdmin || isSharedAction && (profile === "COMERCIAL" || profile === "EXPEDICAO" || profile === "FINANCEIRO" || canOperateMonitoring(user) || canAccessMonitoramentoFreights(user) || canAccessExpedicaoFreights(user) || canAccessComercialFreights(user) || hasPagePermission(user, "fretes_transferir") || hasPagePermission(user, "fretes_cancelar")) || canAccessComercialFreights(user) && (p === "/meus-fretes" || /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p)) || canAccessExpedicaoFreights(user) && /\/(claim|operational-data|operational|expedicao-action|occurrences(\/[^/]+\/resolve)?)$/.test(p) || (canOperateMonitoring(user) || canAccessMonitoramentoFreights(user)) && /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p);
         if (!permitted) {
           res.status(403).json({ error: "Etapa exclusiva de outro perfil." });
           return;
@@ -14049,6 +14156,19 @@ async function startServer() {
 }
 var isAutomatedTestProcess = Boolean(process.env.NODE_TEST_CONTEXT) || Boolean(process.env.RODOVAR_SKIP_AUTOSTART) || process.execArgv.includes("--test") || process.argv.includes("--test");
 if (process.env.VERCEL !== "1" && !isAutomatedTestProcess) {
+  process.on("unhandledRejection", (reason) => {
+    console.warn("RODOVAR unhandledRejection:", reason?.message || reason);
+  });
+  process.on("uncaughtException", (err) => {
+    const msg = String(err?.message || err || "").toLowerCase();
+    const isTransientDbOrWs = msg.includes("connection terminated") || msg.includes("websocket") || msg.includes("quota") || msg.includes("402") || msg.includes("econnreset") || msg.includes("etimedout");
+    if (isTransientDbOrWs) {
+      console.warn("RODOVAR transient socket/DB exception caught:", err?.message || err);
+      return;
+    }
+    console.error("RODOVAR fatal uncaughtException:", err);
+    process.exit(1);
+  });
   startServer().catch((err) => {
     console.error("Failed to start RODOVAR server:", err);
     process.exit(1);

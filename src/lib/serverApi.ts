@@ -1322,7 +1322,8 @@ export async function apiUploadFreightAttachment(
 export async function apiVerifyFreightAttachment(
   freightId: string,
   attId: string,
-  conferido: boolean
+  conferido: boolean,
+  options?: { markAsDeliveryProof?: boolean }
 ): Promise<{
   ok: boolean;
   status: number;
@@ -1338,7 +1339,10 @@ export async function apiVerifyFreightAttachment(
       method: 'POST',
       credentials: 'include',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ conferido }),
+      body: JSON.stringify({
+        conferido,
+        ...(options?.markAsDeliveryProof ? { markAsDeliveryProof: true } : {}),
+      }),
     }
   );
   const data = await safeParseJson(res);

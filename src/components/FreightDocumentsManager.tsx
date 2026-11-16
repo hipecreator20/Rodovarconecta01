@@ -234,13 +234,28 @@ export const FreightDocumentsManager: React.FC<FreightDocumentsManagerProps> = (
   };
 
   const handleVerify = async (att: UnifiedFreightAttachment, nextVal: boolean) => {
+    setFeedback(null);
     try {
       const res = await apiVerifyFreightAttachment(freight.id, att.id, nextVal);
       if (res.ok && res.anexos) {
         onAttachmentsUpdated(res.anexos, res.freight);
+        setFeedback({
+          type: 'success',
+          message: nextVal
+            ? `Documento "${att.fileName}" marcado como Conferido!`
+            : `Conferência de "${att.fileName}" desmarcada.`,
+        });
+      } else {
+        setFeedback({
+          type: 'error',
+          message: res.error || 'Não foi possível atualizar a conferência do documento.',
+        });
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: err?.message || 'Falha de conexão ao conferir o documento.',
+      });
     }
   };
 

@@ -13,7 +13,7 @@ import {
   getSocialCoverUrlForUser,
 } from './src/server/socialProfile.ts';
 import { registerChats, hydrateChatsFromPayload } from './src/server/chats.ts';
-import { hasPagePermission, canOperateMonitoring, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector, normalizePortalNotificationPreferences } from './src/lib/permissions.ts';
+import { hasPagePermission, canOperateMonitoring, canAccessComercialFreights, canAccessExpedicaoFreights, canAccessMonitoramentoFreights, canAccessFinanceiroFreights, canConfirmFreightPayment, getDefaultPermissionsForDepartment, resolveAccessProfileFromSector, normalizePortalNotificationPreferences } from './src/lib/permissions.ts';
 import { AUTHORIZED_ROSTER, PROFILE_MODULES } from './src/lib/accessPolicy.ts';
 import { registerRequestQueue, hydrateRequestQueueFromPayload } from './src/server/requestQueue.ts';
 import { registerAccountDeletionRoutes } from './src/server/accountLifecycle.ts';
@@ -1251,10 +1251,13 @@ let activeNeonSyncPromise: Promise<boolean> | null = null;
 let activeFreightNeonSyncPromise: Promise<boolean> | null = null;
 let initialNeonBootDone = false;
 let initialNeonBootPromise: Promise<void> | null = null;
+let neonBootLastFailMs = 0;
+const NEON_BOOT_FAIL_COOLDOWN_MS = 20_000;
 let cachedEconomicMode: { value: boolean; fetchedAtMs: number } | null = null;
 
 async function ensureNeonBootstrapped(): Promise<void> {
   if (!isNeonConfigured || isIsolatedTestEnv() || (initialNeonBootDone && dbState.users.length > 0)) return;
+  if (neonBootLastFailMs > 0 && Date.now() - neonBootLastFailMs < NEON_BOOT_FAIL_COOLDOWN_MS) return;
   if (initialNeonBootPromise) return initialNeonBootPromise;
   initialNeonBootPromise = (async () => {
     try {
@@ -1262,8 +1265,12 @@ async function ensureNeonBootstrapped(): Promise<void> {
       const syncOk = await syncAllModulesFromNeonIfNeeded(true);
       if (syncOk && dbState.users.length > 0) {
         initialNeonBootDone = true;
+        neonBootLastFailMs = 0;
+      } else {
+        neonBootLastFailMs = Date.now();
       }
     } catch (err) {
+      neonBootLastFailMs = Date.now();
       console.warn('Neon bootstrap notice:', (err as Error).message);
     } finally {
       initialNeonBootPromise = null;
@@ -1525,6 +1532,9 @@ async function syncAllModulesFromNeonIfNeeded(force = false): Promise<boolean> {
 
       if (tasks.length > 0) {
         await Promise.all(tasks);
+      }
+      if (dbState.users.length > 0 && (tasks.length > 0 || !fs.existsSync(DB_FILE_PATH))) {
+        saveLocalDbFile(dbState);
       }
       return true;
     } catch (err) {
@@ -2110,14 +2120,17 @@ export function createExpressApp(): express.Express {
               profile === 'EXPEDICAO' ||
               profile === 'FINANCEIRO' ||
               canOperateMonitoring(user) ||
+              canAccessMonitoramentoFreights(user) ||
+              canAccessExpedicaoFreights(user) ||
+              canAccessComercialFreights(user) ||
               hasPagePermission(user, 'fretes_transferir') ||
               hasPagePermission(user, 'fretes_cancelar'))) ||
-          (profile === 'COMERCIAL' &&
+          (canAccessComercialFreights(user) &&
             (p === '/meus-fretes' ||
               /\/(comercial|commercial|comercial-transition|commercial-transition)$/.test(p))) ||
-          (profile === 'EXPEDICAO' &&
+          (canAccessExpedicaoFreights(user) &&
             /\/(claim|operational-data|operational|expedicao-action|occurrences(\/[^/]+\/resolve)?)$/.test(p)) ||
-          (canOperateMonitoring(user) &&
+          ((canOperateMonitoring(user) || canAccessMonitoramentoFreights(user)) &&
             /\/(monitoramento-action|occurrences(\/[^/]+\/resolve)?|resolve|reopen)$/.test(p));
         if (!permitted) {
           res.status(403).json({error:'Etapa exclusiva de outro perfil.'});
@@ -4100,6 +4113,25 @@ const isAutomatedTestProcess =
   process.argv.includes('--test');
 
 if (process.env.VERCEL !== '1' && !isAutomatedTestProcess) {
+  process.on('unhandledRejection', (reason) => {
+    console.warn('RODOVAR unhandledRejection:', (reason as any)?.message || reason);
+  });
+  process.on('uncaughtException', (err: any) => {
+    const msg = String(err?.message || err || '').toLowerCase();
+    const isTransientDbOrWs =
+      msg.includes('connection terminated') ||
+      msg.includes('websocket') ||
+      msg.includes('quota') ||
+      msg.includes('402') ||
+      msg.includes('econnreset') ||
+      msg.includes('etimedout');
+    if (isTransientDbOrWs) {
+      console.warn('RODOVAR transient socket/DB exception caught:', err?.message || err);
+      return;
+    }
+    console.error('RODOVAR fatal uncaughtException:', err);
+    process.exit(1);
+  });
   startServer().catch((err) => {
     console.error('Failed to start RODOVAR server:', err);
     process.exit(1);

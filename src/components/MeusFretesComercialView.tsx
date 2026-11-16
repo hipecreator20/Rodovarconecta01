@@ -3173,9 +3173,18 @@ export const MeusFretesComercialView: React.FC<MeusFretesComercialViewProps> = (
                     <FreightDocumentsManager
                       freight={detailFreight}
                       currentUser={currentUser}
-                    savedAttachments={detailAnexos}
-                    canVerify={false}
-                    onAttachmentsUpdated={(attachments) => { setDetailAnexos(attachments); }}
+                      savedAttachments={detailAnexos}
+                      canVerify={false}
+                      onAttachmentsUpdated={(attachments, updatedFreight) => {
+                        setDetailAnexos(attachments);
+                        if (updatedFreight) {
+                          setDetailFreight(updatedFreight);
+                          setItems((prev) =>
+                            prev.map((f) => (f.id === updatedFreight.id ? updatedFreight : f))
+                          );
+                          notifyOtherModulesOfMutation(updatedFreight);
+                        }
+                      }}
                     />
                   )}
 

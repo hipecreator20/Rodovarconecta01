@@ -862,6 +862,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       const res = await apiMonitoramentoAction(selectedFreight.id, {
         action: 'AVANCAR_ETAPA',
         targetStage: stageToApply,
+        enderecoEntrega: deliveryAddress.trim() || undefined,
         horarioRealEvento: realEventTimeInput.trim() || undefined,
         ultimaLocalizacaoInformada: informedLocationInput.trim() || undefined,
         orientacoesMotorista: driverInstructionsInput.trim() || undefined,
@@ -886,8 +887,7 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
       );
       if (
         panelMode === 'ATIVOS' &&
-        (updated.situacaoMonitoramento === 'ENTREGUE' ||
-          updated.situacaoMonitoramento === 'FINALIZADO')
+        updated.situacaoMonitoramento === 'FINALIZADO'
       ) {
         closeDetailModal();
       }
@@ -1124,11 +1124,18 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
     }
   };
 
-  const handleVerifyAttachment = async (attId: string) => {
+  const handleVerifyAttachment = async (
+    attId: string,
+    nextVal = true,
+    markAsDeliveryProof = false
+  ) => {
     if (!selectedFreight) return;
     setAttBusy(true);
+    setErrorMsg(null);
     try {
-      const res = await apiVerifyFreightAttachment(selectedFreight.id, attId, true);
+      const res = await apiVerifyFreightAttachment(selectedFreight.id, attId, nextVal, {
+        markAsDeliveryProof,
+      });
       if (!res.ok || !res.freight) {
         reportError(sanitizeApiErrorMessage(res.error, 'Erro ao conferir comprovante.'));
         return;
@@ -1138,7 +1145,10 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
         anexos: res.anexos,
         historico: res.historico,
       });
-      showToast('Comprovante conferido e validado.', { type: 'success', title: 'Concluído' });
+      showToast(
+        nextVal ? 'Comprovante conferido e validado!' : 'Conferência do comprovante desmarcada.',
+        { type: 'success', title: 'Concluído' }
+      );
     } catch (err) {
       reportError(sanitizeApiErrorMessage(err, 'Erro ao conferir comprovante.'));
     } finally {
@@ -2104,20 +2114,75 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Aviso de requisitos para Finalizar */}
-                    {targetNextStage === 'FINALIZADO' && (
-                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-950 space-y-1">
-                        <p className="font-extrabold">Requisitos para Finalizar o Frete:</p>
-                        <p>
-                          • Etapa anterior <strong>Entregue</strong> confirmada;
-                        </p>
-                        <p>
-                          • <strong>Comprovante de Entrega</strong> anexado e marcado como{' '}
-                          <strong>Conferido</strong> na aba Comprovantes;
-                        </p>
-                        <p>• Nenhuma ocorrência impeditiva em aberto.</p>
-                      </div>
-                    )}
+                    {/* Aviso e status em tempo real dos requisitos para Finalizar */}
+                    {targetNextStage === 'FINALIZADO' && (() => {
+                      const proofCandidate = detailAnexos.find(
+                        (a) =>
+                          a.category === 'COMPROVANTE_ENTREGA' ||
+                          (a.category !== 'COMPROVANTE_PAGAMENTO' &&
+                            a.category !== 'COMERCIAL' &&
+                            (/canhoto/i.test(`${a.label || ''} ${a.fileName || ''}`) ||
+                              /comprovante.*entrega|entrega.*comprovante/i.test(
+                                `${a.label || ''} ${a.fileName || ''}`
+                              )))
+                      );
+                      const hasVerifiedProof =
+                        Boolean(selectedFreight.comprovanteEntregaConferido) ||
+                        detailAnexos.some(
+                          (a) =>
+                            a.conferido &&
+                            (a.category === 'COMPROVANTE_ENTREGA' ||
+                              a.id === selectedFreight.comprovanteEntregaAnexoId)
+                        );
+                      const stageReady =
+                        selectedFreight.situacaoMonitoramento === 'ENTREGUE' ||
+                        selectedFreight.situacaoMonitoramento === 'NO_LOCAL_ENTREGA';
+                      const noOpenImpeditivas =
+                        (selectedFreight.ocorrenciasImpeditivasCount || 0) === 0;
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-950 space-y-1.5">
+                          <p className="font-extrabold">Requisitos para Finalizar o Frete:</p>
+                          <p>
+                            {stageReady ? '✓' : '•'} Entrega no destino confirmada ({formatSituacaoMonitoramentoLabel(selectedFreight.situacaoMonitoramento)});
+                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span>
+                              {hasVerifiedProof
+                                ? '✓ Comprovante de Entrega (Canhoto) anexado e Conferido!'
+                                : proofCandidate
+                                ? '⏳ Canhoto anexado — clique em "Conferir comprovante" para liberar:'
+                                : '• Comprovante de Entrega (Canhoto) pendente na aba Comprovantes.'}
+                            </span>
+                            {!hasVerifiedProof && proofCandidate && (
+                              <button
+                                type="button"
+                                disabled={attBusy}
+                                onClick={() =>
+                                  void handleVerifyAttachment(proofCandidate.id, true, true)
+                                }
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
+                              >
+                                {attBusy ? 'Validando...' : 'Conferir Canhoto Agora'}
+                              </button>
+                            )}
+                            {!hasVerifiedProof && !proofCandidate && (
+                              <button
+                                type="button"
+                                onClick={() => setActiveTab('ANEXOS')}
+                                className="bg-[#080B0D] text-[#FFD400] font-extrabold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
+                              >
+                                Ir para Comprovantes
+                              </button>
+                            )}
+                          </div>
+                          <p>
+                            {noOpenImpeditivas
+                              ? '✓ Nenhuma ocorrência impeditiva em aberto.'
+                              : `⚠ Existem ${selectedFreight.ocorrenciasImpeditivasCount} ocorrência(s) impeditiva(s) em aberto.`}
+                          </p>
+                        </div>
+                      );
+                    })()}
 
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -2417,11 +2482,27 @@ export const FretesAtivosView: React.FC<FretesAtivosViewProps> = ({
                               <Download className="w-3 h-3" />
                               <span>Baixar</span>
                             </button>
-                            {!att.conferido && (
+                            {att.conferido ? (
                               <button
                                 type="button"
                                 disabled={attBusy}
-                                onClick={() => void handleVerifyAttachment(att.id)}
+                                onClick={() => void handleVerifyAttachment(att.id, false)}
+                                className="text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-lg cursor-pointer"
+                                title="Clique para desmarcar conferência"
+                              >
+                                ✓ Conferido
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={attBusy}
+                                onClick={() =>
+                                  void handleVerifyAttachment(
+                                    att.id,
+                                    true,
+                                    att.category === 'OUTRO'
+                                  )
+                                }
                                 className="text-[11px] font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg cursor-pointer"
                               >
                                 Conferir comprovante

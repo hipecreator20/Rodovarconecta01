@@ -3031,8 +3031,15 @@ export const MeusFretesExpedicaoView: React.FC<MeusFretesExpedicaoViewProps> = (
                 currentUser={currentUser}
                 savedAttachments={detailAnexos}
                 canVerify={true}
-                onAttachmentsUpdated={(attachments) => {
+                onAttachmentsUpdated={(attachments, updatedFreight) => {
                   setDetailAnexos(attachments);
+                  if (updatedFreight) {
+                    setSelectedFreight(updatedFreight);
+                    setFreights((prev) =>
+                      prev.map((f) => (f.id === updatedFreight.id ? updatedFreight : f))
+                    );
+                    notifyOtherModulesOfMutation(updatedFreight);
+                  }
                 }}
               />
             )}

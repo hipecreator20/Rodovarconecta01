@@ -27,10 +27,12 @@ import {
   canOperateMonitoring,
   canAccessComercialFreights,
   canAccessExpedicaoFreights,
+  canAccessFinanceiroFreights,
   canAccessMonitoramentoFreights,
   canViewFinancialValuesAndStats,
   canViewFreightTeam,
   hasPagePermission,
+  isLogisticsManager,
   shouldUserReceiveNotification,
 } from '../lib/permissions.ts';
 import {
@@ -87,7 +89,7 @@ const FREIGHT_ATTACHMENTS_DIR = path.join(ROOT_DIR, 'data', 'freight-attachments
 const NOTIFICATIONS_FILE = path.join(FREIGHTS_STORE_DIR, '_notifications.json');
 const SEQUENCE_FILE = path.join(FREIGHTS_STORE_DIR, '_sequence.json');
 
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export function formatSaoPauloDateTime(date: Date = new Date()): {
   iso: string;
@@ -233,6 +235,30 @@ export function computePendingForExpedicao(freight: UnifiedFreightRecord): strin
   return pending;
 }
 
+function getOrCreateSubDoc(freightId: string): FreightSubDocument {
+  let sub = freightSubDocs.get(freightId);
+  if (!sub) {
+    sub = {
+      freightId,
+      anexos: [],
+      comentarios: [],
+      ocorrencias: [],
+      historico: [],
+    };
+    freightSubDocs.set(freightId, sub);
+  }
+  return sub;
+}
+
+function isDeliveryProofAttachment(att: UnifiedFreightAttachment): boolean {
+  if (att.category === 'COMPROVANTE_ENTREGA') return true;
+  if (att.category === 'COMPROVANTE_PAGAMENTO' || att.category === 'COMERCIAL') {
+    return false;
+  }
+  const text = `${att.label || ''} ${att.fileName || ''}`;
+  return /canhoto/i.test(text) || /comprovante.*entrega|entrega.*comprovante/i.test(text);
+}
+
 function syncSubDocCounters(freight: UnifiedFreightRecord, sub: FreightSubDocument): void {
   freight.anexosCount = sub.anexos.length;
   freight.comentariosCount = sub.comentarios.length;
@@ -242,8 +268,18 @@ function syncSubDocCounters(freight: UnifiedFreightRecord, sub: FreightSubDocume
   freight.checklistConcluidosCount = expeditionChecklistCount(freight);
   freight.camposPendentesExpedicao = computePendingForExpedicao(freight);
 
-  const deliveryProofs = sub.anexos.filter((a) => a.category === 'COMPROVANTE_ENTREGA');
-  const verifiedProof = deliveryProofs.find((a) => a.conferido);
+  const deliveryProofs = sub.anexos.filter((a) => isDeliveryProofAttachment(a));
+  const verifiedProof =
+    deliveryProofs.find((a) => a.conferido) ||
+    (freight.comprovanteEntregaAnexoId
+      ? sub.anexos.find(
+          (a) =>
+            a.id === freight.comprovanteEntregaAnexoId &&
+            a.conferido &&
+            a.category !== 'COMPROVANTE_PAGAMENTO' &&
+            a.category !== 'COMERCIAL'
+        )
+      : undefined);
   if (verifiedProof) {
     freight.comprovanteEntregaAnexoId = verifiedProof.id;
     freight.comprovanteEntregaConferido = true;
@@ -928,7 +964,7 @@ function validateAttachmentFileBuffer(
     return { valid: false, error: 'Arquivo vazio ou inválido.' };
   }
   if (buf.length > MAX_ATTACHMENT_BYTES) {
-    return { valid: false, error: 'O anexo excede o limite máximo de 5 MB.' };
+    return { valid: false, error: 'O anexo excede o limite máximo de 10 MB.' };
   }
 
   const headAscii = buf.subarray(0, Math.min(buf.length, 512)).toString('utf8').trim().toLowerCase();
@@ -990,7 +1026,7 @@ function validateAttachmentFileBuffer(
 
   return {
     valid: false,
-    error: `Formato do arquivo "${originalFileName}" não suportado. Envie PDF, PNG, JPEG ou WebP de até 5 MB.`,
+    error: `Formato do arquivo "${originalFileName}" não suportado. Envie PDF, PNG, JPEG ou WebP de até 10 MB.`,
   };
 }
 
@@ -2582,7 +2618,7 @@ export function registerUnifiedFreightRoutes(
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const editReason = String(body.reason || body.motivo || '').trim();
 
       // Requirement 6: "Alterações em endereço, motorista, veículo, condições ou datas após transferência de etapa exigem motivo, registro no histórico e notificação ao responsável atual."
@@ -2704,7 +2740,7 @@ export function registerUnifiedFreightRoutes(
       if (idemKey === '__HANDLED__') return;
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
 
       if (targetStatus === 'EM_NEGOCIACAO') {
         if (!['CONTRATADO', 'EM_NEGOCIACAO'].includes(freight.situacaoComercial)) {
@@ -2919,7 +2955,7 @@ export function registerUnifiedFreightRoutes(
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
@@ -3195,7 +3231,7 @@ export function registerUnifiedFreightRoutes(
         }
       }
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
 
       // 5 Persisted Functional Verifications
       if (body.checklistFechamento && typeof body.checklistFechamento === 'object') {
@@ -3389,7 +3425,7 @@ export function registerUnifiedFreightRoutes(
       }
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
 
       // ACTION 1: EMITIR_ORDEM_CARREGAMENTO / EMITIR_ORDEM (Ordem de Coleta PDF oficial)
       if (action === 'EMITIR_ORDEM_CARREGAMENTO' || action === 'EMITIR_ORDEM') {
@@ -3987,7 +4023,8 @@ export function registerUnifiedFreightRoutes(
         }
       } else if (
         user.accessLevel !== 'ADMINISTRADOR' &&
-        (!canOperateMonitoring(user) || freight.monitoramentoResponsavelId !== user.id)
+        (!(canOperateMonitoring(user) || canAccessMonitoramentoFreights(user)) ||
+          freight.monitoramentoResponsavelId !== user.id)
       ) {
         res.status(403).json({
           error:
@@ -4002,6 +4039,7 @@ export function registerUnifiedFreightRoutes(
         targetStage,
         horarioRealEvento,
         observacoes,
+        enderecoEntrega,
         ultimaLocalizacaoInformada,
         orientacoesMotorista,
         dataColetaIso,
@@ -4028,7 +4066,7 @@ export function registerUnifiedFreightRoutes(
       }
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const cleanRealTime = String(horarioRealEvento || sp.formatted).trim().slice(0, 60);
       const cleanObs = String(observacoes || rawReason || motivo || '').trim().slice(0, 500);
 
@@ -4048,6 +4086,10 @@ export function registerUnifiedFreightRoutes(
           return;
         }
 
+        if (typeof enderecoEntrega === 'string' && enderecoEntrega.trim().length > 0) {
+          freight.enderecoEntrega = enderecoEntrega.trim().slice(0, 240);
+        }
+
         const stageLabels: Record<MonitoringFreightStatus, string> = {
           NAO_LIBERADO: 'Não liberado',
           NOVO_PARA_CARREGAR: 'Novo para carregar',
@@ -4061,11 +4103,22 @@ export function registerUnifiedFreightRoutes(
           CANCELADO: 'Cancelado',
         };
 
-        const currentIndex=validStages.indexOf(freight.situacaoMonitoramento || 'NAO_LIBERADO');
-        const nextIndex=validStages.indexOf(targetStage);
-        if(nextIndex===currentIndex) {res.json({ok:true,freight:sanitizeFreightForUser(freight,user),historico:sub.historico});return;}
-        if(nextIndex!==currentIndex+1) {res.status(409).json({error:'Transição fora da sequência operacional.'});return;}
-        if(nextIndex>=3 && (!freight.enderecoEntrega || freight.enderecoEntrega.trim().length<10)) {res.status(400).json({error:'Confirme o endereço detalhado de entrega antes de avançar.'});return;}
+        const currentIndex = validStages.indexOf(freight.situacaoMonitoramento || 'NAO_LIBERADO');
+        const nextIndex = validStages.indexOf(targetStage);
+        if (nextIndex === currentIndex) {
+          res.json({ ok: true, freight: sanitizeFreightForUser(freight, user), historico: sub.historico });
+          return;
+        }
+        const allowDirectFinalizeFromDeliverySite =
+          freight.situacaoMonitoramento === 'NO_LOCAL_ENTREGA' && targetStage === 'FINALIZADO';
+        if (nextIndex !== currentIndex + 1 && !allowDirectFinalizeFromDeliverySite) {
+          res.status(409).json({ error: 'Transição fora da sequência operacional.' });
+          return;
+        }
+        if (nextIndex >= 3 && (!freight.enderecoEntrega || freight.enderecoEntrega.trim().length < 10)) {
+          res.status(400).json({ error: 'Confirme o endereço detalhado de entrega antes de avançar.' });
+          return;
+        }
         // Special validation for FINALIZADO:
         // "Para finalizar o monitoramento, exigir confirmação de entrega, comprovante conferido e ausência de pendências impeditivas abertas. Finalizar o monitoramento não altera automaticamente o status de pagamento do Financeiro."
         if (targetStage === 'FINALIZADO') {
@@ -4080,14 +4133,20 @@ export function registerUnifiedFreightRoutes(
             return;
           }
 
-          const verifiedDeliveryProof = sub.anexos.find(
-            (a) => a.category === 'COMPROVANTE_ENTREGA' && a.conferido === true
-          );
+          const deliveryProofs = sub.anexos.filter((a) => isDeliveryProofAttachment(a));
+          const verifiedDeliveryProof =
+            deliveryProofs.find((a) => a.conferido) ||
+            (freight.comprovanteEntregaConferido && freight.comprovanteEntregaAnexoId
+              ? sub.anexos.find((a) => a.id === freight.comprovanteEntregaAnexoId && a.conferido)
+              : undefined);
+
           if (!verifiedDeliveryProof) {
+            const hasUnverifiedProof = deliveryProofs.length > 0;
             res.status(400).json({
-              error:
-                'Finalização recusada: é obrigatório anexar e conferir o Comprovante de Entrega antes de finalizar o monitoramento.',
-              code: 'MISSING_VERIFIED_DELIVERY_PROOF',
+              error: hasUnverifiedProof
+                ? 'Finalização bloqueada: o Comprovante de Entrega (canhoto) foi anexado, mas ainda aguarda conferência. Acesse a aba Comprovantes e clique em "Conferir comprovante" antes de finalizar.'
+                : 'Finalização recusada: é obrigatório anexar o Comprovante de Entrega (canhoto) e marcá-lo como Conferido na aba Comprovantes antes de finalizar o monitoramento.',
+              code: hasUnverifiedProof ? 'UNVERIFIED_DELIVERY_PROOF' : 'MISSING_VERIFIED_DELIVERY_PROOF',
             });
             return;
           }
@@ -4095,7 +4154,9 @@ export function registerUnifiedFreightRoutes(
           freight.situacaoMonitoramento = 'FINALIZADO';
           freight.situacaoOperacional = 'CONCLUIDO';
           freight.situacaoComercial = 'FINALIZADO';
-          freight.entregaComprovadaEm = cleanRealTime;
+          if (!freight.entregaComprovadaEm) {
+            freight.entregaComprovadaEm = cleanRealTime;
+          }
           freight.comprovanteEntregaConferido = true;
           freight.comprovanteEntregaAnexoId = verifiedDeliveryProof.id;
           // Financial status remains strictly independent!
@@ -4104,7 +4165,7 @@ export function registerUnifiedFreightRoutes(
           freight.situacaoComercial = 'EM_MONITORAMENTO';
           freight.situacaoOperacional = 'LIBERADO_MONITORAMENTO';
 
-        if (targetStage === 'CARREGADO_EM_TRANSPORTE' && !freight.coletaConfirmadaEm) {
+          if (targetStage === 'CARREGADO_EM_TRANSPORTE' && !freight.coletaConfirmadaEm) {
             freight.coletaConfirmadaEm = cleanRealTime;
           }
           if (targetStage === 'ENTREGUE') {
@@ -4499,7 +4560,7 @@ export function registerUnifiedFreightRoutes(
         : 'MEDIA';
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
 
       let occAttachment: UnifiedFreightAttachment | undefined;
       if (attachment && typeof attachment.dataUrl === 'string' && attachment.dataUrl.includes(',')) {
@@ -4675,7 +4736,7 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const occ = sub.ocorrencias.find((o) => o.id === occId);
       if (!occ) {
         res.status(404).json({ error: 'Ocorrência não encontrada.' });
@@ -4744,7 +4805,7 @@ export function registerUnifiedFreightRoutes(
       }
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const sector: 'COMERCIAL' | 'EXPEDICAO' | 'GESTAO' =
         user.accessLevel !== 'FUNCIONARIO'
           ? 'GESTAO'
@@ -4860,6 +4921,7 @@ export function registerUnifiedFreightRoutes(
 
       const sp = formatSaoPauloDateTime();
       const sizeKb = Math.max(1, Math.round(fileBuf.length / 1024));
+      const initiallyVerified = req.body?.conferido === true;
       const attachment: UnifiedFreightAttachment = {
         id: `fatt-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         freightId: freight.id,
@@ -4870,15 +4932,23 @@ export function registerUnifiedFreightRoutes(
         mimeType: validation.mimeType,
         sizeBytes: fileBuf.length,
         sizeLabel: sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`,
-        conferido: false, // Never assume verified merely by upload!
+        conferido: initiallyVerified,
+        conferidoPorId: initiallyVerified ? user.id : undefined,
+        conferidoPorNome: initiallyVerified ? user.name : undefined,
+        conferidoEmFormatado: initiallyVerified ? sp.formatted : undefined,
         uploadedById: user.id,
         uploadedByName: user.name,
         uploadedAtIso: sp.iso,
         uploadedAtFormatted: sp.formatted,
       };
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       sub.anexos.unshift(attachment);
+      if (isDeliveryProofAttachment(attachment) && initiallyVerified) {
+        freight.comprovanteEntregaConferido = true;
+        freight.comprovanteEntregaAnexoId = attachment.id;
+      }
+
       freight.updatedAtIso = sp.iso;
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
@@ -4893,7 +4963,7 @@ export function registerUnifiedFreightRoutes(
             ? 'Expedição'
             : 'Comercial',
         eventType: 'UPLOAD_ANEXO',
-        summary: `Anexo adicionado (${attachment.label}: ${attachment.fileName}, ${attachment.sizeLabel}) — aguardando conferência.`,
+        summary: `Anexo adicionado (${attachment.label}: ${attachment.fileName}, ${attachment.sizeLabel}) — ${initiallyVerified ? 'conferido e validado.' : 'aguardando conferência.'}`,
       });
 
       persistFreightAndSubDoc(freight, sub);
@@ -4909,7 +4979,7 @@ export function registerUnifiedFreightRoutes(
     }
   );
 
-  // Verify (conferir) attachment explicitly by Expedição or Operador de Monitoramento
+  // Verify (conferir) attachment explicitly by Expedição, Monitoramento or Gestão
   app.post(
     '/api/meus-fretes/:freightId/attachments/:attId/verify',
     requireApprovedSession,
@@ -4923,22 +4993,32 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const isAssignedOrManager =
+      const isAdminOrDirector =
+        user.accessLevel === 'ADMINISTRADOR' || user.accessLevel === 'DIRETORIA';
+      const isAssignedOperator =
         freight.expedicaoResponsavelId === user.id ||
         freight.monitoramentoResponsavelId === user.id ||
-        canViewFreightTeam(user);
+        freight.comercialResponsavelId === user.id;
       const hasOperationalPerm =
-        canAccessExpedicaoFreights(user) || canAccessMonitoramentoFreights(user);
-      if (!hasOperationalPerm || !isAssignedOrManager) {
+        isAdminOrDirector ||
+        isLogisticsManager(user) ||
+        canAccessExpedicaoFreights(user) ||
+        canAccessMonitoramentoFreights(user) ||
+        canOperateMonitoring(user) ||
+        canAccessFinanceiroFreights(user);
+      const hasScopeAccess =
+        isAdminOrDirector || isLogisticsManager(user) || isAssignedOperator || canViewFreightTeam(user);
+
+      if (!hasOperationalPerm || !hasScopeAccess) {
         res.status(403).json({
           error:
-            'Apenas o responsável da Expedição ou do Monitoramento pode atestar a conferência de documentos.',
+            'Apenas o responsável da Expedição, do Monitoramento ou a Gestão pode atestar a conferência de documentos.',
           code: 'FORBIDDEN_VERIFY_ATTACHMENT',
         });
         return;
       }
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const att = sub.anexos.find((a) => a.id === attId);
       if (!att) {
         res.status(404).json({ error: 'Anexo não encontrado.' });
@@ -4946,14 +5026,24 @@ export function registerUnifiedFreightRoutes(
       }
 
       const sp = formatSaoPauloDateTime();
-      att.conferido = Boolean(req.body?.conferido ?? true);
-      att.conferidoPorId = user.id;
-      att.conferidoPorNome = user.name;
-      att.conferidoEmFormatado = sp.formatted;
+      const nextVerified = req.body?.conferido === undefined ? true : Boolean(req.body.conferido);
+      if (req.body?.markAsDeliveryProof === true && att.category === 'OUTRO') {
+        att.category = 'COMPROVANTE_ENTREGA';
+      }
+      att.conferido = nextVerified;
+      if (nextVerified) {
+        att.conferidoPorId = user.id;
+        att.conferidoPorNome = user.name;
+        att.conferidoEmFormatado = sp.formatted;
+      } else {
+        att.conferidoPorId = undefined;
+        att.conferidoPorNome = undefined;
+        att.conferidoEmFormatado = undefined;
+      }
 
-      if (att.category === 'COMPROVANTE_ENTREGA') {
-        freight.comprovanteEntregaConferido = att.conferido;
-        freight.comprovanteEntregaAnexoId = att.conferido ? att.id : undefined;
+      if (isDeliveryProofAttachment(att) || req.body?.markAsDeliveryProof === true) {
+        freight.comprovanteEntregaConferido = nextVerified;
+        freight.comprovanteEntregaAnexoId = att.id;
       }
 
       freight.updatedAtIso = sp.iso;
@@ -5079,7 +5169,7 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const attIdx = sub.anexos.findIndex((a) => a.id === attId);
       if (attIdx === -1) {
         res.status(404).json({ error: 'Anexo não encontrado.' });
@@ -5145,7 +5235,7 @@ export function registerUnifiedFreightRoutes(
         return;
       }
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const count = sub.anexos.length;
 
       for (const att of sub.anexos) {
@@ -5236,7 +5326,7 @@ export function registerUnifiedFreightRoutes(
       }
 
       const sp = formatSaoPauloDateTime();
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       const targetSector = String(sector || 'EXPEDICAO').toUpperCase();
 
       if (targetSector === 'COMERCIAL') {
@@ -5407,7 +5497,7 @@ export function registerUnifiedFreightRoutes(
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
@@ -5517,7 +5607,7 @@ export function registerUnifiedFreightRoutes(
       freight.updatedAtFormatted = sp.formatted;
       freight.revision += 1;
 
-      const sub = freightSubDocs.get(freight.id)!;
+      const sub = getOrCreateSubDoc(freight.id);
       appendHistoryEntry(sub, {
         actorId: user.id,
         actorName: user.name,
